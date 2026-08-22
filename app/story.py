@@ -339,11 +339,17 @@ async def fetch_day_image(
     return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height)
 
 
-async def generate_chapter(day_index: int, previous_beats: list[str], win_rule=None, echoes=None) -> dict:
-    authored = compose_chapter(day_index, previous_beats, win_rule, echoes)
+async def generate_chapter(
+    day_index: int,
+    previous_beats: list[str],
+    win_rule=None,
+    echoes=None,
+    distant_echoes: list[str] | None = None,
+) -> dict:
+    authored = compose_chapter(day_index, previous_beats, win_rule, echoes, distant_echoes)
     if not settings.use_free_story_llm:
         return authored
-    neural = await _free_story_llm(day_index, previous_beats, win_rule, echoes)
+    neural = await _free_story_llm(day_index, previous_beats, win_rule, echoes, distant_echoes)
     return neural or authored
 
 
@@ -410,7 +416,13 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     return data
 
 
-def _build_story_prompt(day_index: int, previous_beats: list[str], win_rule=None, echoes=None) -> str:
+def _build_story_prompt(
+    day_index: int,
+    previous_beats: list[str],
+    win_rule=None,
+    echoes=None,
+    distant_echoes: list[str] | None = None,
+) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
     law_line = ""
@@ -431,11 +443,21 @@ def _build_story_prompt(day_index: int, previous_beats: list[str], win_rule=None
             "Игроки должны сами узнать повтор, если помнят:\n"
             + "\n".join(echo_prompt_lines(echoes)) + "\n"
         )
+    distant_block = ""
+    if distant_echoes:
+        distant_block = (
+            "Давний канон (дни старше двух недель; мир сам их вспомнил, потому "
+            "что они похожи на сегодняшнюю ситуацию). Вплети максимум одну из "
+            "этих строк лёгким касанием — одной фразой в тексте главы, без "
+            "пересказа целиком:\n"
+            + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
+        )
     return (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
         f"{echo_block}"
+        f"{distant_block}"
         "Напиши главу дня — цельный мини-рассказ на 400-900 знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
         "героев: Гавкус, Миска, Рекс-9, Пиксель и Безымянная — только фоновый "
@@ -465,8 +487,14 @@ def _build_story_prompt(day_index: int, previous_beats: list[str], win_rule=None
     )
 
 
-async def _free_story_llm(day_index: int, previous_beats: list[str], win_rule=None, echoes=None) -> dict | None:
-    prompt = _build_story_prompt(day_index, previous_beats, win_rule, echoes)
+async def _free_story_llm(
+    day_index: int,
+    previous_beats: list[str],
+    win_rule=None,
+    echoes=None,
+    distant_echoes: list[str] | None = None,
+) -> dict | None:
+    prompt = _build_story_prompt(day_index, previous_beats, win_rule, echoes, distant_echoes)
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},

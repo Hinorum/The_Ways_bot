@@ -18,7 +18,7 @@ def offline_generation(monkeypatch):
     """Сетевые генераторы заменены мгновенными: тестируем только конвейер."""
     from app import rounds as rounds_mod
 
-    async def instant_chapter(day_index, beats, rule=None, echoes=None):
+    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None):
         return compose_chapter(day_index, beats, rule, echoes)
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)

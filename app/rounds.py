@@ -33,6 +33,7 @@ from app.models import (
     WinRule,
 )
 from app.art_director import build_image_prompt, plan_day_art, short_image_prompt
+from app.memory import recall_beats
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
 from app.ton_pay import pending_payout_count
 
@@ -206,7 +207,20 @@ async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
     echoes = await collect_due_echoes(session, day_index)
     rule = secrets.choice(list(WinRule))
     salt = secrets.token_hex(16)
-    chapter = await generate_chapter(day_index, beats, rule, echoes)
+
+    # Дальняя память мира: из давнего канона (старше окна) достаём дни,
+    # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
+    canon_rows = await session.execute(
+        select(StoryBeat).order_by(StoryBeat.day_index.asc())
+    )
+    canon = [
+        f"{beat.winning_title}: {beat.winning_text}"
+        for beat in canon_rows.scalars()
+    ]
+    query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
+    distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
+
+    chapter = await generate_chapter(day_index, beats, rule, echoes, distant_echoes=distant)
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.

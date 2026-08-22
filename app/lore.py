@@ -204,7 +204,13 @@ _IMAGE_PROMPTS = {
 }
 
 
-def compose_chapter(day_index: int, previous_beats: list[str], win_rule=None, echoes=None) -> dict:
+def compose_chapter(
+    day_index: int,
+    previous_beats: list[str],
+    win_rule=None,
+    echoes=None,
+    distant_echoes: list[str] | None = None,
+) -> dict:
     rng = _rng(day_index, "|".join(previous_beats[-5:]))
     history_tags = tags_from_beats(previous_beats)
     last = previous_beats[-1] if previous_beats else None
@@ -252,6 +258,15 @@ def compose_chapter(day_index: int, previous_beats: list[str], win_rule=None, ec
             if sentence[-1] not in ".!?…":
                 sentence += "."
             text += f" {sentence}"
+    for distant in distant_echoes or []:
+        snippet = " ".join(distant.split())
+        if not snippet or snippet in text:
+            continue
+        if len(snippet) > 160:
+            snippet = snippet[:157] + "…"
+        if snippet[-1] not in ".!?…":
+            snippet += "."
+        text += f" В глубине канона шевелится давнее: {snippet}"
     return {
         "title": f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}",
         "text": text,
