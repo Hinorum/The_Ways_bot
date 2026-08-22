@@ -389,6 +389,78 @@ async def test_monthly_pot_carried_when_leader_has_no_wallet(
             await session.commit()
 
 
+async def test_monthly_pot_ignores_already_settled_months(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Чемпион позапрошлого (уже выплаченного) месяца не забирает новый горш.
+
+    Окно лидерборда — от начала самого старого невыплатенного месяца до
+    начала текущего; голоса за его пределами не считаются.
+    """
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    pid_champ = 940_000 + int.from_bytes(os.urandom(2), "big")
+    pid_new = pid_champ + 1
+    wallet_new = "0:" + os.urandom(32).hex()
+    now = datetime.now(timezone.utc)
+    prev_first = (now.replace(day=1) - timedelta(days=1)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    two_ago_key = (prev_first - timedelta(days=1)).strftime("%Y-%m")
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_champ, username=f"u{pid_champ}"),
+                Player(id=pid_new, username=f"u{pid_new}", wallet_address=wallet_new),
+            ]
+        )
+        # Чемпион: 2 верных в позапрошлом месяце (вне окна выплат).
+        champ_round_a = _closed_round(703_001, prev_first - timedelta(days=10))
+        champ_round_b = _closed_round(703_003, prev_first - timedelta(days=5))
+        # Новичок: 1 верный в прошлом месяце (внутри окна).
+        new_round = _closed_round(703_002, prev_first + timedelta(days=5))
+        session.add_all([champ_round_a, champ_round_b, new_round])
+        await session.flush()
+        session.add_all(
+            [
+                Vote(round_id=champ_round_a.id, player_id=pid_champ, card_position=1),
+                Vote(round_id=champ_round_b.id, player_id=pid_champ, card_position=1),
+                Vote(round_id=new_round.id, player_id=pid_new, card_position=1),
+            ]
+        )
+        pot = LeaderboardPot(month=prev_first.strftime("%Y-%m"), nanotons=to_nano(1))
+        month_key = pot.month
+        session.add(pot)
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is True
+            rows = (
+                (
+                    await session.execute(
+                        select(Payout).where(Payout.kind == "leaderboard", Payout.round_id.is_(None))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+            assert rows[0].player_id == pid_new
+            assert rows[0].dest_address == wallet_new
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
+            await session.execute(
+                LeaderboardPot.__table__.delete().where(LeaderboardPot.month.in_([month_key, two_ago_key]))
+            )
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([pid_champ, pid_new])))
+            for round_row in (champ_round_a, champ_round_b, new_round):
+                await session.delete(round_row)
+            for pid in (pid_champ, pid_new):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
 # ---------- Стоп-фильтр генераций ----------
 
 

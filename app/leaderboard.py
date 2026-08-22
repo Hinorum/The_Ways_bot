@@ -35,14 +35,19 @@ def previous_month_key(now: datetime | None = None) -> str:
     return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
 
 
-async def _top_correct_voters(session, until: datetime) -> list[tuple[int, int]]:
-    """Игроки с максимумом верных ответов по закрытые дни с итогами до `until`."""
+async def _top_correct_voters(session, since: datetime, until: datetime) -> list[tuple[int, int]]:
+    """Игроки с максимумом верных ответов в окне [since, until).
+
+    Нижняя граница обязательна: без неё «чемпион всех времён» забирал бы
+    копилку каждого следующего месяца, даже ничего не отгадав в нём.
+    """
     result = await session.execute(
         select(Vote.player_id, func.count())
         .join(Round, Round.id == Vote.round_id)
         .where(
             Vote.card_position == Round.winner_card,
             Round.status == RoundStatus.CLOSED,
+            Round.tally_ends_at >= since,
             Round.tally_ends_at < until,
         )
         .group_by(Vote.player_id)
@@ -77,7 +82,14 @@ async def settle_month_if_due(bot: Bot | None = None) -> bool:
             )
         ).scalars().all()
         total = sum(pot.nanotons for pot in pots)
-        winners = await _top_correct_voters(session, month_start)
+        # Период лидерборда: от начала самого старого НЕвыплаченного месяца
+        # (после простоя копилка копится за несколько месяцев сразу) до начала
+        # текущего — ровно то, за что платим.
+        period_start = month_start
+        if pots:
+            year, mon = map(int, pots[0].month.split("-"))
+            period_start = datetime(year, mon, 1, tzinfo=timezone.utc)
+        winners = await _top_correct_voters(session, period_start, month_start)
 
         payable_ids: list[int] = []
         wallets: dict[int, str] = {}
