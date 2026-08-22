@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter
 
 from app.config import settings
 from app.echoes import echo_prompt_lines
@@ -73,40 +73,6 @@ def _looks_like_image(content: bytes) -> bool:
     return png or jpeg or webp
 
 
-def _font(size: int) -> ImageFont.ImageFont:
-    candidates = [
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for name in candidates:
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def _wrap(text: str, width: int) -> str:
-    words = text.split()
-    lines: list[str] = []
-    current: list[str] = []
-    for word in words:
-        trial = " ".join(current + [word])
-        if len(trial) <= width:
-            current.append(word)
-        else:
-            if current:
-                lines.append(" ".join(current))
-            current = [word]
-    if current:
-        lines.append(" ".join(current))
-    if len(lines) > 10:
-        lines = lines[:10]
-        lines[-1] = lines[-1].rstrip(" ,.;:") + "…"
-    return "\n".join(lines)
-
-
 def _save_image(image: Image.Image, path: Path) -> None:
     if path.suffix.lower() in {".jpg", ".jpeg"}:
         image.save(path, "JPEG", quality=88, optimize=True)
@@ -114,49 +80,94 @@ def _save_image(image: Image.Image, path: Path) -> None:
         image.save(path, "PNG", optimize=True)
 
 
+def _gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image.Image:
+    strip = Image.new("RGB", (1, size[1]))
+    for y in range(size[1]):
+        t = y / max(size[1] - 1, 1)
+        strip.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+    return strip.resize(size)
+
+
+def _abstract_scene(
+    size: tuple[int, int],
+    seed: str,
+    base: tuple,
+    accent: tuple,
+    rings_center: tuple[float, float],
+) -> Image.Image:
+    """Абстрактный арт без текста: градиент, туманные пятна, свечение портала.
+
+    Фолбэк, когда сеть генерации молчит. Никаких надписей — текст дня живёт
+    в подписях и кнопках Telegram, картинка остаётся картинкой.
+    """
+    rng = random.Random(seed)
+    image = _gradient(size, base, tuple(max(c - 26, 0) for c in base))
+    glow = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(glow)
+    secondary = (
+        min(255, accent[0] + 30),
+        min(255, accent[1] + 18),
+        min(255, accent[2] + 40),
+    )
+    for _ in range(6):
+        radius = rng.randint(min(size) // 5, min(size) // 2)
+        x = rng.randint(-radius // 2, size[0] - radius // 2)
+        y = rng.randint(-radius // 2, size[1] - radius // 2)
+        color = accent if rng.random() < 0.6 else secondary
+        alpha = rng.randint(36, 84)
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(*color, alpha))
+    glow = glow.filter(ImageFilter.GaussianBlur(min(size) // 8))
+    image = Image.alpha_composite(image.convert("RGBA"), glow)
+
+    rings = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(rings)
+    cx, cy = int(rings_center[0] * size[0]), int(rings_center[1] * size[1])
+    outer = int(min(size) * rng.uniform(0.28, 0.38))
+    for delta in (0, outer // 7, outer // 3):
+        r = outer - delta
+        ring_width = max(4, outer // 22 - delta // 60)
+        draw.ellipse(
+            (cx - r, cy - r, cx + r, cy + r),
+            outline=(*secondary, max(120, 190 - delta)),
+            width=ring_width,
+        )
+    core_r = outer // 4
+    draw.ellipse((cx - core_r, cy - core_r, cx + core_r, cy + core_r), fill=(*accent, 110))
+    rings = rings.filter(ImageFilter.GaussianBlur(6))
+
+    vignette = Image.new("L", size, 0)
+    vdraw = ImageDraw.Draw(vignette)
+    vdraw.ellipse(
+        (-size[0] // 4, -size[1] // 4, size[0] + size[0] // 4, size[1] + size[1] // 4),
+        fill=255,
+    )
+    vignette = vignette.filter(ImageFilter.GaussianBlur(min(size) // 10))
+    dark = Image.new("RGBA", size, (8, 6, 14, 150))
+    image = Image.composite(image, dark, vignette)
+    return image.convert("RGB").filter(ImageFilter.GaussianBlur(0.4))
+
+
 def render_card(path: Path, title: str, description: str, position: int) -> None:
+    """Локальный фолбэк карты пути: абстракция без текста."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    palettes = [
-        ((22, 18, 16), (214, 118, 64), (255, 228, 190)),
-        ((14, 24, 28), (84, 168, 168), (226, 244, 240)),
-        ((26, 16, 36), (168, 96, 210), (242, 220, 255)),
-    ]
-    bg, accent, ink = palettes[position % 3]
-    image = Image.new("RGB", (768, 1024), bg)
-    overlay = Image.new("RGB", (768, 1024), accent)
-    faded = Image.blend(image, overlay, 0.12).filter(ImageFilter.GaussianBlur(0.4))
-    draw = ImageDraw.Draw(faded)
-    draw.rounded_rectangle((28, 28, 740, 996), radius=40, outline=accent, width=6)
-    draw.rounded_rectangle((64, 120, 704, 430), radius=28, fill=accent)
-    draw.text((72, 52), f"ПУТЬ {['I', 'II', 'III'][position]}", fill=accent, font=_font(24))
-    draw.multiline_text((84, 170), _wrap(title, 16), fill=bg, font=_font(44), spacing=6)
-    draw.multiline_text((72, 480), _wrap(description, 26), fill=ink, font=_font(30), spacing=8)
-    draw.text((72, 930), settings.world_name.upper(), fill=accent, font=_font(22))
-    _save_image(faded, path)
+    bases = [(20, 16, 14), (12, 22, 26), (24, 15, 34)]
+    accents = [(214, 118, 64), (84, 168, 168), (168, 96, 210)]
+    centers = [(0.32, 0.34), (0.68, 0.42), (0.5, 0.62)]
+    scene = _abstract_scene(
+        (768, 1024),
+        f"{title}|{position}",
+        bases[position % 3],
+        accents[position % 3],
+        centers[position % 3],
+    )
+    _save_image(scene, path)
 
 
 def render_cover(path: Path, title: str, body: str = "") -> None:
-    """Локальная обложка дня: заголовок главы и завязка сюжета."""
+    """Локальный фолбэк обложки дня: абстракция без текста."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    bg, accent, ink = (18, 15, 14), (214, 118, 64), (240, 222, 198)
-    width, height = 1280, 720
-    image = Image.new("RGB", (width, height), bg)
-    overlay = Image.new("RGB", (width, height), accent)
-    faded = Image.blend(image, overlay, 0.10).filter(ImageFilter.GaussianBlur(0.6))
-    draw = ImageDraw.Draw(faded)
-    draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=36, outline=accent, width=6)
-    draw.text((64, 56), settings.world_name.upper(), fill=accent, font=_font(30))
-    draw.multiline_text((64, 128), _wrap(title, 28), fill=ink, font=_font(58), spacing=10)
-    if body:
-        draw.multiline_text(
-            (64, 330),
-            _wrap(body.replace("\n", " ")[:520], 60),
-            fill=(206, 190, 168),
-            font=_font(26),
-            spacing=6,
-        )
-    draw.text((64, height - 78), "СЮЖЕТ ДНЯ", fill=accent, font=_font(24))
-    _save_image(faded, path)
+    scene = _abstract_scene((1280, 720), f"{title}|cover", (17, 14, 13), (214, 118, 64), (0.5, 0.48))
+    _save_image(scene, path)
 
 
 async def fetch_free_image(
@@ -207,6 +218,25 @@ async def fetch_free_image(
             except Exception as exc:
                 logger.warning("Pollinations %s (попытка %d) не удалась: %s", model, attempt, exc)
     return False
+
+
+async def fetch_day_image(
+    prompt: str,
+    short_prompt: str,
+    dest: Path,
+    seed: int | None = None,
+    width: int = 768,
+    height: int = 1024,
+) -> bool:
+    """Двухступенчатая генерация кадра: полный промпт по лестнице моделей,
+    затем одна попытка сжатым промптом (длинные промпты иногда давят модель).
+    False — вызывающий код рисует локальный абстракт."""
+    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height):
+        return True
+    if not settings.use_free_images:
+        return False
+    retry_seed = None if seed is None else seed + 9_000_001
+    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height)
 
 
 async def generate_chapter(day_index: int, previous_beats: list[str], win_rule=None, echoes=None) -> dict:

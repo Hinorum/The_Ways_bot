@@ -227,13 +227,19 @@ async def test_create_next_round_dedupes_on_race(session, monkeypatch) -> None:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from app.art_director import offline_bible
     from app import rounds as rounds_mod
 
     async def instant_chapter(day_index, beats, rule=None, echoes=None):
         return compose_chapter(day_index, beats, rule, echoes)
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
-    monkeypatch.setattr(rounds_mod, "fetch_free_image", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        rounds_mod,
+        "plan_day_art",
+        AsyncMock(side_effect=lambda chapter, beats=None: offline_bible(chapter)),
+    )
+    monkeypatch.setattr(rounds_mod, "fetch_day_image", AsyncMock(return_value=True))
 
     row_k, created_first = await rounds_mod.create_next_round_detailed(session)
     assert created_first is True

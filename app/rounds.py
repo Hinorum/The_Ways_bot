@@ -30,7 +30,8 @@ from app.models import (
     Vote,
     WinRule,
 )
-from app.story import fetch_free_image, generate_chapter, generate_epilogue, render_card, render_cover
+from app.art_director import build_image_prompt, plan_day_art, short_image_prompt
+from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
 
 
 def _now() -> datetime:
@@ -201,27 +202,29 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
             raise
         return existing, False
 
-    cover_prompt = chapter.get("cover_prompt") or (
-        "dark fairy-tale digital painting, wide shot, pack of stray dogs before a glowing "
-        "unstable portal, teal and violet palette, volumetric fog, cinematic light, no text"
-    )
+    # Арт-директор: сначала визуальный план дня (отдельный LLM-запрос),
+    # затем промпты каждого кадра собираются из него — картинки выходят
+    # в едином стиле, но разными кадрами под смысл каждого пути.
+    day_seed = 10_000 + day_index * 7
+    bible = await plan_day_art(chapter, beats)
+    cover_prompt = build_image_prompt(bible, "cover", seed=day_seed)
     jobs = []
     for position, card in enumerate(chapter["cards"]):
         image_path = media_root / f"day{day_index}_card{position}.jpg"
-        prompt = card.get(
-            "image_prompt",
-            f"dark fairy-tale tarot card, {card['title']}, stray dog before a glitching portal, no text",
-        )
-        jobs.append((position, card, image_path, prompt))
-    day_seed = 10_000 + day_index * 7
+        prompt = build_image_prompt(bible, str(position), seed=day_seed + position + 1)
+        short = short_image_prompt(bible, str(position), seed=day_seed + position + 1)
+        jobs.append((position, card, image_path, prompt, short))
     fetched = await asyncio.gather(
-        # Обложка — широкий кинематографичный кадр, карты — портретные таро.
-        fetch_free_image(cover_prompt, cover_path, seed=day_seed, width=1280, height=720),
-        *(fetch_free_image(job[3], job[2], seed=day_seed + job[0] + 1) for job in jobs),
+        # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
+        fetch_day_image(cover_prompt, short_image_prompt(bible, "cover", seed=day_seed), cover_path, seed=day_seed, width=1280, height=720),
+        *(
+            fetch_day_image(job[3], job[4], job[2], seed=day_seed + job[0] + 1)
+            for job in jobs
+        ),
     )
     if not fetched[0]:
         render_cover(cover_path, chapter["title"], chapter["text"])
-    for (position, card, image_path, _prompt), ok in zip(jobs, fetched[1:]):
+    for (position, card, image_path, _prompt, _short), ok in zip(jobs, fetched[1:]):
         if not ok:
             render_card(image_path, card["title"], card["description"], position)
         session.add(
