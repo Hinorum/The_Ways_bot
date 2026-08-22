@@ -9,11 +9,13 @@ from app.db import SessionLocal
 from app.models import RoundStatus
 from app.rounds import (
     _now,
+    claim_announcement,
     close_voting,
     create_next_round_detailed,
     ensure_current_round,
     finish_tally,
     get_latest_round,
+    utc_aware,
     write_epilogue,
 )
 from app.tally import award_points
@@ -35,14 +37,17 @@ async def tick(bot: Bot | None = None) -> None:
         current = await ensure_current_round(session)
 
         # Первый запуск или только что созданный день — анонсим без итогов.
+        # claim_announcement гарантирует ровно один пост на день, даже если
+        # после деплоя секунду работают два процесса.
         if previous is None or current.id > previous.id:
-            await announce_new_day(bot, current)
+            if await claim_announcement(session, current):
+                await announce_new_day(bot, current)
 
         now = _now()
-        if current.status == RoundStatus.OPEN and now >= current.voting_ends_at:
+        if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
             await close_voting(session, current)
             return
-        if current.status == RoundStatus.TALLYING and now >= current.tally_ends_at:
+        if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
             finished, closed_here = await finish_tally(session, current)
             if closed_here:
                 await award_points(session, finished)

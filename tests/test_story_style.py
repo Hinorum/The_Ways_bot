@@ -3,9 +3,9 @@ from app.story import DM_SYSTEM_PROMPT, STYLE_SUFFIX, styled_prompt
 
 
 def test_styled_prompt_appends_cinematic_style() -> None:
-    prompt = styled_prompt("dark fantasy tarot card, rusted gates")
-    assert prompt.startswith("dark fantasy tarot card, rusted gates")
-    for mark in ("grimdark", "chiaroscuro", "no text", "no watermark"):
+    prompt = styled_prompt("dark fairy-tale tarot card, rusted gates")
+    assert prompt.startswith("dark fairy-tale tarot card, rusted gates")
+    for mark in ("portal", "cinematic", "no text", "no watermark"):
         assert mark in prompt
     assert not prompt.rstrip().endswith(",")
 

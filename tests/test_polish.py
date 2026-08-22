@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
 from app.broadcast import status_text
@@ -33,7 +34,7 @@ def test_canon_keeps_newest_days_in_budget() -> None:
     # Хронологический порядок сохранён внутри окна.
     positions = [text.index(f"День {day}.") for day in range(20, 31)]
     assert positions == sorted(positions)
-    assert len(text) <= 3500 + len("Ранние дни растворились в тумане Тракта.\n\n")
+    assert len(text) <= 3500 + len("Ранние дни растворились в шуме порталов.\n\n")
 
 
 def test_canon_fits_all_when_short() -> None:
@@ -297,6 +298,37 @@ async def test_results_message_appends_epilogue() -> None:
     assert "Пёс запомнил" not in await results_message(finished)
 
 
+async def test_claim_announcement_is_exactly_once(session) -> None:
+    """Двойной пост дня невозможен: второй претендент получает False."""
+    from app.rounds import claim_announcement
+
+    rnd = Round(
+        day_index=41,
+        status=RoundStatus.OPEN,
+        win_rule=WinRule.MAJORITY,
+        rule_commitment="c",
+        chapter_title="t",
+        chapter_text="text",
+        lore_summary="lore",
+        opens_at=datetime.now(timezone.utc),
+        voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
+        tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    session.add(rnd)
+    await session.commit()
+    try:
+        assert await claim_announcement(session, rnd) is True
+        assert await claim_announcement(session, rnd) is False
+        # Читаем метку напрямую из БД, минуя identity map сессии.
+        stamp = (
+            await session.execute(select(Round.announced_at).where(Round.id == rnd.id))
+        ).scalar_one()
+        assert stamp is not None
+    finally:
+        await session.delete(rnd)
+        await session.commit()
+
+
 async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch) -> None:
     """Сброс стирает дни/голоса/ставки/очки, но хранит кошельки и копилку месяца."""
     monkeypatch.setattr(settings, "use_free_images", False)
@@ -363,6 +395,44 @@ async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch)
         for card in list(fresh.cards):
             await session.delete(card)
         await session.delete(fresh)
+        await session.commit()
+
+
+async def test_reset_game_keep_story_preserves_canon(session, monkeypatch) -> None:
+    """«Разделить команды»: счёты и деньги чисты, но канон и эхо живут."""
+    monkeypatch.setattr(settings, "use_free_images", False)
+    monkeypatch.setattr(settings, "use_free_story_llm", False)
+
+    from app.models import LoreEcho, Player, StoryBeat
+    from app.rounds import reset_game
+
+    player = Player(id=9301, username="keeper", score=42)
+    session.add_all(
+        [
+            player,
+            StoryBeat(day_index=7, winning_title="Костёр стаи", winning_text="общий огонь",
+                      win_rule="majority", vote_counts="{}"),
+            LoreEcho(born_day=5, source_day=2, kind="risk", title="Ржавая миска",
+                     description="мелькает у порталов", strength=3,
+                     earliest_day=6, status="surfaced", surfaced_day=6),
+        ]
+    )
+    await session.commit()
+
+    fresh = await reset_game(session, keep_story=True)
+    try:
+        assert fresh.day_index == 1
+        beat = (await session.execute(select(StoryBeat))).scalar_one()
+        assert beat.winning_title == "Костёр стаи"
+        echo = (await session.execute(select(LoreEcho))).scalar_one()
+        assert echo.title == "Ржавая миска"
+        kept = await session.get(Player, 9301)
+        assert kept is not None and kept.score == 0
+        # Новый день вырос из живого канона.
+        assert "Костёр стаи" in fresh.chapter_text or "Костёр стаи" in (fresh.lore_summary or "")
+    finally:
+        await session.execute(sa_delete(StoryBeat))
+        await session.execute(sa_delete(LoreEcho))
         await session.commit()
 
 

@@ -39,7 +39,7 @@ from app.models import (
     Vote,
 )
 from app.payments import build_revote_payload, parse_revote_payload, revote_memo
-from app.rounds import close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
+from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
 from app.tally import award_points
 from app.ton_utils import from_nano, is_valid_ton_address
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
@@ -62,12 +62,12 @@ async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
         await upsert_player(session, message.from_user)
     lines = [
-        "Это Пепельный Тракт.",
-        "Раз в сутки — три карты. Каждое утро колокол объявляет закон дня: "
+        f"Это «{settings.world_name}» — фанатская игра по мотивам Lost Dogs.",
+        "Раз в сутки — три карты. Каждое утро объявляется закон дня: "
         "побеждает карта с большим, меньшим или средним числом голосов — "
         "так что видно, в какую сторону голосовать. Цифры голосов скрыты до итогов.",
         "",
-        "Сутки Тракта: голосование идёт 23 часа, затем час подсчёта. "
+        "Сутки Стаи: голосование идёт 23 часа, затем час подсчёта. "
         "Итоги и новый день приходят ровно через сутки после открытия — "
         "всегда в одно и то же время.",
         "",
@@ -83,11 +83,11 @@ async def cmd_start(message: Message) -> None:
         lines.append(
             "\nФонд дня: 97% — поставившим на верный путь пропорционально, "
             "2% — угадавшим без ставки поровну, 0,5% — копилка месяца (/top), "
-            "0,5% — на поддержку Тракта."
+            "0,5% — на поддержку Стаи."
         )
     lines.append(
-        "\nТракт — игра, а не вклад: бот и хранитель не отвечают за утраченные "
-        "средства. Ты сам решаешь, на что ставить, и сам за это отвечаешь."
+        f"\n{settings.world_name} — игра, а не вклад: бот и хранитель не отвечают за "
+        "утраченные средства. Ты сам решаешь, на что ставить, и сам за это отвечаешь."
     )
     await message.answer("\n".join(lines))
     await cmd_today(message)
@@ -111,7 +111,7 @@ async def cmd_lore(message: Message) -> None:
         return
     text, truncated = _canon_text(beats)
     if truncated:
-        text = "Ранние дни растворились в тумане Тракта.\n\n" + text
+        text = "Ранние дни растворились в шуме порталов.\n\n" + text
     await message.answer(text)
 
 
@@ -226,7 +226,7 @@ async def on_vote(callback: CallbackQuery) -> None:
         "ok": f"Путь {POSITIONS[position]} принят. Счёт скрыт до итогов.",
         "already": "Ты уже оставил След сегодня.",
         "closed": "Голосование закрыто, идёт подсчёт.",
-        "invalid": "Такого пути нет на Тракте.",
+        "invalid": "Такого пути нет на карте Стаи.",
     }
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)
 
@@ -236,12 +236,12 @@ _ECONOMY_TEXT = (
     "• 97% — поставившим на верный путь, пропорционально ставкам\n"
     "• 2% — угадавшим путь без ставки, поровну (нужен привязанный кошелёк)\n"
     "• 0,5% — копилка месяца: в конце месяца её забирают лидеры /top\n"
-    "• 0,5% — на поддержку Тракта\n"
+    "• 0,5% — на поддержку Стаи\n"
     "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
 )
 
 _DYOR_TEXT = (
-    "Тракт — игра, а не вклад: бот и хранитель не отвечают за утраченные "
+    "Игра, а не вклад: бот и хранитель не отвечают за утраченные "
     "средства по любой причине. Ты сам решаешь, на что ставить, "
     "и сам отвечаешь за свои ставки. DYOR."
 )
@@ -478,7 +478,7 @@ async def on_successful_payment(message: Message) -> None:
     else:
         await message.answer(
             "Оплата прошла, но день уже закрылся — грант сохранён. "
-            "Напиши хранителю Тракта для возврата."
+            "Напиши хранителю игры для возврата."
         )
 
 
@@ -534,15 +534,19 @@ async def track_chat(event: ChatMemberUpdated) -> None:
 @router.message(Command("advance"))
 async def cmd_advance(message: Message) -> None:
     if message.from_user.id not in settings.admin_id_set:
-        await message.answer("Команда только для хранителя Тракта.")
+        await message.answer("Команда только для хранителя игры.")
         return
     closed_here = False
+    claimed = False
     async with SessionLocal() as session:
         round_row = await get_active_round(session)
         if round_row is None:
             round_row = await ensure_current_round(session)
-            await announce_new_day(message.bot, round_row)
-            await message.answer(f"Открыт день {round_row.day_index}.")
+            if await claim_announcement(session, round_row):
+                await announce_new_day(message.bot, round_row)
+                await message.answer(f"Открыт день {round_row.day_index}.")
+            else:
+                await message.answer(f"День {round_row.day_index} уже объявлен.")
             return
         if round_row.status.value == "open":
             await close_voting(session, round_row)
@@ -559,8 +563,10 @@ async def cmd_advance(message: Message) -> None:
             nxt, created = await create_next_round_detailed(session)
         else:
             return
-    if not created:
-        # День уже создан и объявлен планировщиком — второй пост не нужен.
+        if created:
+            claimed = await claim_announcement(session, nxt)
+    if not created or not claimed:
+        # День уже создан/объявлен планировщиком — второй пост не нужен.
         await message.answer(f"День {nxt.day_index} уже объявлен.")
         return
     delivered = await announce_new_day(message.bot, nxt, round_row if closed_here else None)
@@ -577,24 +583,34 @@ async def cmd_advance(message: Message) -> None:
 
 @router.message(Command("resetgame"))
 async def cmd_resetgame(message: Message) -> None:
-    """Полный сброс игры до первого дня — только для хранителя Тракта."""
+    """Сброс игры — только для хранителя. Два режима:
+    /resetgame confirm — всё с нуля, включая канон истории;
+    /resetgame confirm keepstory — счёты чисты, но мир помнит прошлое."""
     if message.from_user.id not in settings.admin_id_set:
-        await message.answer("Команда только для хранителя Тракта.")
+        await message.answer("Команда только для хранителя игры.")
         return
-    words = (message.text or "").split()
-    if not words or words[-1].lower() != "confirm":
+    words = (message.text or "").lower().split()
+    if "confirm" not in words:
         await message.answer(
             "Это сотрёт все дни, голоса, ставки, выплаты и очки игроков.\n"
             "Кошельки, чаты и копилка месяца останутся.\n"
-            "Подтверди командой: <code>/resetgame confirm</code>"
+            "<code>/resetgame confirm</code> — полный сброс вместе с каноном истории.\n"
+            "<code>/resetgame confirm keepstory</code> — сброс счётов, "
+            "но мир и эхо прошлого сохраняются."
         )
         return
+    keep_story = "keepstory" in words
     async with SessionLocal() as session:
-        new_round = await reset_game(session)
+        new_round = await reset_game(session, keep_story=keep_story)
+        first = await claim_announcement(session, new_round)
+    if not first:
+        await message.answer(f"День {new_round.day_index} только что объявил другой процесс бота.")
+        return
     await announce_new_day(message.bot, new_round)
+    mode = "Канон истории сохранён." if keep_story else "История стёрта полностью."
     await message.answer(
         f"Игра обнулена. День {new_round.day_index} объявлен в чатах. "
-        f"Голосование до {new_round.voting_ends_at:%H:%M} UTC."
+        f"{mode} Голосование до {new_round.voting_ends_at:%H:%M} UTC."
     )
 
 

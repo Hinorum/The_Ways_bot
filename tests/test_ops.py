@@ -419,7 +419,7 @@ def test_chapter_with_profanity_is_rejected() -> None:
 async def test_epilogue_with_profanity_falls_back_to_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {"choices": [{"message": {"content": "Тракт принял решение и всё охуело."}}]}
+    payload = {"choices": [{"message": {"content": "Стая решила и всё охуело."}}]}
 
     async def fake_completion(messages, timeout=45):
         return payload, "test-model"

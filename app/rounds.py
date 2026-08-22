@@ -37,6 +37,16 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def utc_aware(value: datetime) -> datetime:
+    """Гарантирует tzinfo=UTC у даты из БД.
+
+    Postgres с TIMESTAMPTZ возвращает aware-даты, но SQLite игнорирует
+    timezone=True и отдаёт наивные значения — без нормализации любое
+    сравнение «дата из базы против _now()» падает на локальных прогонах.
+    """
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 _ROMAN = ("I", "II", "III")
 
 
@@ -141,7 +151,7 @@ async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
 
     Окно ограничено: без лимита через несколько месяцев канон переполнил бы
     контекст модели и генерация молча деградировала бы до офлайн-лора.
-    Ранние дни растворяются в тумане Тракта — как и в /lore.
+    Ранние дни растворяются в шуме порталов — как и в /lore.
     """
     result = await session.execute(
         select(StoryBeat).order_by(StoryBeat.day_index.desc()).limit(limit)
@@ -164,7 +174,7 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
     # Первый день стартует немедленно; следующие открываются ровно в момент
     # окончания подсчёта предыдущего (11:00 UTC по сетке) — расписание не
     # плывёт ни при простоях, ни при долгой генерации.
-    opens_at = now if latest is None or latest.tally_ends_at is None else max(now, latest.tally_ends_at)
+    opens_at = now if latest is None or latest.tally_ends_at is None else max(now, utc_aware(latest.tally_ends_at))
     voting_ends_at, tally_ends_at = _day_window(opens_at)
     media_root = Path(settings.media_dir)
     cover_path = media_root / f"day{day_index}_cover.jpg"
@@ -192,15 +202,15 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
         return existing, False
 
     cover_prompt = chapter.get("cover_prompt") or (
-        "dark fantasy matte painting, wide shot, ashen road under a cracked bell tower, "
-        "lone nameless dog guide, embers, cinematic light, no text"
+        "dark fairy-tale digital painting, wide shot, pack of stray dogs before a glowing "
+        "unstable portal, teal and violet palette, volumetric fog, cinematic light, no text"
     )
     jobs = []
     for position, card in enumerate(chapter["cards"]):
         image_path = media_root / f"day{day_index}_card{position}.jpg"
         prompt = card.get(
             "image_prompt",
-            f"dark fantasy tarot card, {card['title']}, nameless dog guide, no text",
+            f"dark fairy-tale tarot card, {card['title']}, stray dog before a glitching portal, no text",
         )
         jobs.append((position, card, image_path, prompt))
     day_seed = 10_000 + day_index * 7
@@ -241,25 +251,45 @@ async def create_next_round(session: AsyncSession) -> Round:
     return row
 
 
-async def reset_game(session: AsyncSession) -> Round:
-    """Полный сброс игры: чистая история и первый день заново.
+async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
+    """Сброс игры: чистые счёты и первый день заново.
 
     Стираются дни, карты, голоса, ставки, выплаты, эхо и канон; счёт игроков
     обнуляется. Кошельки, привязки чатов и копилка месяца не трогаются — это
     реальные обязательства казны, а не «результаты».
+
+    keep_story=True — «разделить команды»: статистика и деньги обнуляются,
+    но канон истории (StoryBeat) и эхо остаются, и новый первый день
+    продолжает тот же мир с памятью о прошлом.
     """
     await session.execute(delete(Payout))
     await session.execute(delete(Stake))
     await session.execute(delete(Vote))
     await session.execute(delete(RevoteGrant))
     await session.execute(delete(Card))
-    await session.execute(delete(StoryBeat))
-    await session.execute(delete(LoreEcho))
+    if not keep_story:
+        await session.execute(delete(StoryBeat))
+        await session.execute(delete(LoreEcho))
     await session.execute(delete(Round))
     await session.execute(update(Player).values(score=0, correct_picks=0))
     await session.commit()
     row, _created = await create_next_round_detailed(session)
     return row
+
+
+async def claim_announcement(session: AsyncSession, round_row: Round) -> bool:
+    """Занимает право объявить день: True только для первого вызывающего.
+
+    Условный UPDATE по пустому announced_at защищает от двойного поста,
+    когда после деплоя секунду живут два процесса бота.
+    """
+    result = await session.execute(
+        update(Round)
+        .where(Round.id == round_row.id, Round.announced_at.is_(None))
+        .values(announced_at=_now())
+    )
+    await session.commit()
+    return result.rowcount > 0
 
 
 async def ensure_current_round(session: AsyncSession) -> Round:
@@ -269,7 +299,7 @@ async def ensure_current_round(session: AsyncSession) -> Round:
     latest = await get_latest_round(session)
     if latest is not None and latest.status != RoundStatus.CLOSED:
         return latest
-    if latest is not None and latest.tally_ends_at > _now():
+    if latest is not None and utc_aware(latest.tally_ends_at) > _now():
         return latest
     return await create_next_round(session)
 

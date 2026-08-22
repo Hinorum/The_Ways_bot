@@ -92,6 +92,9 @@ class Round(Base):
     tally_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     winner_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vote_counts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Момент первой успешной рассылки дня: повторный анонс того же дня
+    # невозможен даже при гонке двух процессов после деплоя.
+    announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pot_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     rake_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)

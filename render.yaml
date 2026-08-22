@@ -72,6 +72,10 @@ services:
         value: "5"
       - key: CONTENT_FILTER
         value: "true"
+      - key: WORLD_NAME
+        value: "Эхо Стаи"
+      - key: WORLD_BRIEF
+        sync: false
       - key: REVOTE_ENABLED
         value: "true"
       - key: REVOTE_STARS
