@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -281,7 +281,8 @@ async def _bind_wallet(message: Message, address: str) -> bool:
         await message.answer(
             "Это не похоже на адрес TON.\n"
             "Адрес начинается с UQ или EQ — длинная строка вроде "
-            "<code>UQD5…</code>. Пришли её целиком одним сообщением."
+            "<code>UQD5…</code>. Пришли её целиком одним сообщением.",
+            parse_mode=ParseMode.HTML,
         )
         return False
     uid = message.from_user.id if message.from_user else 0
@@ -328,7 +329,8 @@ async def cmd_wallet(message: Message) -> None:
                     "Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
                     "Он начинается с UQ или EQ и выглядит примерно так:\n"
                     "<code>UQD5…длинный набор букв и цифр</code>\n\n"
-                    "Отменить: напиши <b>отмена</b>."
+                    "Отменить: напиши <b>отмена</b>.",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
             await message.answer(await _wallet_view_text(message.from_user))
@@ -405,13 +407,13 @@ async def cmd_stake(message: Message) -> None:
             reply_markup=_personal_keyboard("stake:view", "Как поставить"),
         )
         return
-    await message.answer(await _stake_view_text(message.from_user))
+    await message.answer(await _stake_view_text(message.from_user), parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(F.data == "stake:view")
 async def on_stake_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
-        await callback.message.answer(await _stake_view_text(callback.from_user))
+        await callback.message.answer(await _stake_view_text(callback.from_user), parse_mode=ParseMode.HTML)
         await callback.answer()
         return
     hint = (
@@ -603,7 +605,8 @@ async def on_payton(callback: CallbackQuery) -> None:
         f"<code>{address}</code>\n\n"
         f"Обязательно с комментарием (memo):\n<code>{revote_memo(int(raw))}</code>\n\n"
         "Кошелёк должен быть привязан: /wallet. Грант придёт в течение минуты. "
-        "Неиспользованный до конца дня грант сгорает."
+        "Неиспользованный до конца дня грант сгорает.",
+        parse_mode=ParseMode.HTML,
     )
     await callback.answer()
 
@@ -699,7 +702,8 @@ async def cmd_resetgame(message: Message) -> None:
             "Кошельки, чаты и копилка месяца останутся.\n"
             "<code>/resetgame confirm</code> — полный сброс вместе с каноном истории.\n"
             "<code>/resetgame confirm keepstory</code> — сброс счётов, "
-            "но мир и эхо прошлого сохраняются."
+            "но мир и эхо прошлого сохраняются.",
+            parse_mode=ParseMode.HTML,
         )
         return
     keep_story = "keepstory" in words
