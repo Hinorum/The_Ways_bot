@@ -320,6 +320,7 @@ async def test_successful_payment_creates_single_grant(monkeypatch) -> None:
             from_user=SimpleNamespace(id=pid, username=f"u{pid}", first_name="Т"),
             successful_payment=SimpleNamespace(
                 invoice_payload=build_revote_payload(rid),
+                total_amount=settings.revote_stars,
                 telegram_payment_charge_id=charge_id,
             ),
             answer=AsyncMock(),
@@ -378,6 +379,7 @@ async def test_successful_payment_for_closed_day_records_orphan() -> None:
             from_user=SimpleNamespace(id=pid, username=None, first_name="Т"),
             successful_payment=SimpleNamespace(
                 invoice_payload=build_revote_payload(999_999),
+                total_amount=settings.revote_stars,
                 telegram_payment_charge_id=charge_id,
             ),
             answer=AsyncMock(),
@@ -402,3 +404,5 @@ async def test_successful_payment_for_closed_day_records_orphan() -> None:
             if player_db is not None:
                 await db.delete(player_db)
             await db.commit()
+
+

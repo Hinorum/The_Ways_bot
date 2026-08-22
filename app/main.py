@@ -19,12 +19,23 @@ log = logging.getLogger("way")
 
 
 async def health(_request: web.Request) -> web.Response:
-    return web.Response(text="ok")
+    """Живость + операционный снимок: тик, очередь выплат, watcher, день."""
+    try:
+        from app.ops import snapshot
+
+        payload = await snapshot()
+    except Exception:
+        log.exception("snapshot упал — отвечаем минимальным ok")
+        payload = {"status": "ok"}
+    return web.json_response(payload)
 
 
 async def boot_game(bot) -> None:
     try:
         set_bot(bot)
+        from app.scheduler import boot_maintenance
+
+        await boot_maintenance()
         await apply_profile(bot)
         await tick(bot)
         start_scheduler()

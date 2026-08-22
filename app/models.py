@@ -215,6 +215,9 @@ class Payout(Base):
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Админ уже предупреждён об этой выплате: дедуп алертов живёт в БД,
+    # а не в памяти процесса — переживает рестарт, безопасен при репликах.
+    alerted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -267,3 +270,54 @@ class RevoteGrant(Base):
     status: Mapped[str] = mapped_column(String(16), default="granted")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Income(Base):
+    """Поступление в казну: ledger для сверки с балансом бота и кошелька.
+
+    kind="stars" — Telegram Stars за смену пути (amount_stars), выводятся
+    владельцем через Fragment; kind="ton" — прямые переводы в казну
+    (amount_nanotons). unit_ref — тот же идемпотент, что у гранта.
+    """
+
+    __tablename__ = "incomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    amount_stars: Mapped[int] = mapped_column(Integer, default=0)
+    amount_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    round_id: Mapped[int | None] = mapped_column(ForeignKey("rounds.id"), nullable=True, index=True)
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True, index=True)
+    unit_ref: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WalletDialog(Base):
+    """Диалог привязки кошелька в личке: игрок → ожидаем адрес следующим сообщением.
+
+    В таблице, а не в памяти процесса: переживает рестарт и работает при
+    нескольких инстансах за одним вебхуком.
+    """
+
+    __tablename__ = "wallet_dialogs"
+
+    player_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    since: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PreparedDay(Base):
+    """Заготовка следующего дня, сгенерированная заранее в час подсчёта.
+
+    payload — JSON: глава, правило с солью, пути к готовым картинкам.
+    Материализация в раунд в момент открытия занимает миллисекунды, поэтому
+    сетка 11:00 не плывёт на время нейрогенераций. Если заготовки нет
+    (рестарт посреди генерации) — создание дня падает обратно в старый
+    синхронный путь без потерь.
+    """
+
+    __tablename__ = "prepared_days"
+
+    day_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

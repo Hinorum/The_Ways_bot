@@ -28,9 +28,6 @@ from app.stakes import finalize_day_payouts
 
 logger = logging.getLogger(__name__)
 
-# Выплаты, о которых админ уже предупреждён: не спамим каждый цикл.
-_alerted_payout_ids: set[int] = set()
-
 # Синглтон кошелька казначея: подключение к лайтсерверам дорогое, держим одно.
 _wallet_lock = asyncio.Lock()
 _provider = None
@@ -128,27 +125,48 @@ async def _reset_retriable(session, network: str) -> None:
     )
 
 
-async def _alert_admin(bot: Bot | None, network: str, failed_ids: list[int]) -> None:
-    fresh = [pid for pid in failed_ids if pid not in _alerted_payout_ids]
-    if not fresh or bot is None:
+async def _alert_admin(bot: Bot | None, network: str) -> None:
+    """Алерты о failed-выплатах. Дедуп — колонка payouts.alerted в БД:
+    переживает рестарт и безопасен при нескольких инстансах."""
+    if bot is None:
         return
-    text = (
-        f"⚠️ Выплаты не ушли ({len(fresh)} шт., сеть {network}). "
-        f"Id: {', '.join(map(str, fresh[:10]))}{'…' if len(fresh) > 10 else ''}. "
-        "Проверь казначея и SDK."
-    )
+    async with SessionLocal() as session:
+        fresh = (
+            (
+                await session.execute(
+                    select(Payout.id).where(
+                        Payout.status == "failed",
+                        Payout.alerted.is_(False),
+                        Payout.network == network,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not fresh:
+            return
+        text = (
+            f"⚠️ Выплаты не ушли ({len(fresh)} шт., сеть {network}). "
+            f"Id: {', '.join(map(str, fresh[:10]))}{'…' if len(fresh) > 10 else ''}. "
+            "Проверь казначея и SDK."
+        )
+        await session.execute(
+            update(Payout)
+            .where(Payout.id.in_(fresh))
+            .values(alerted=True)
+        )
+        await session.commit()
     for admin_id in settings.admin_id_set:
         try:
             await bot.send_message(admin_id, text)
         except Exception as exc:
             logger.warning("Алерт админу %s не доставлен: %s", admin_id, exc)
-    _alerted_payout_ids.update(fresh)
 
 
 async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> int:
     sent = 0
     network = "testnet" if settings.is_testnet else "mainnet"
-    failed_ids: list[int] = []
     async with SessionLocal() as session:
         # Ретрай: зависшие failed с неисчерпанным лимитом снова в очередь.
         await _reset_retriable(session, network)
@@ -174,7 +192,6 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
         for payout in payouts:
             if not payout.dest_address:
                 payout.status = "failed"
-                failed_ids.append(payout.id)
                 continue
             try:
                 tx_hash = await send_ton_transfer(
@@ -190,18 +207,19 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 payout.status = "sent"
                 payout.sent_at = datetime.now(timezone.utc)
                 payout.attempts = 0
-                _alerted_payout_ids.discard(payout.id)
                 sent += 1
             elif payout.attempts >= settings.payout_max_attempts:
                 payout.status = "failed"
-                failed_ids.append(payout.id)
             else:
                 # Лимит не исчерпан — вернётся в очередь следующего цикла.
                 payout.status = "pending"
         await session.commit()
-    if failed_ids:
-        logger.warning("Выплаты окончательно не отправлены: %s", failed_ids)
-        await _alert_admin(bot, network, failed_ids)
+    dead = [p.id for p in payouts if p.status == "failed"]
+    if dead:
+        logger.warning("Выплаты окончательно не отправлены: %s", dead)
+    # Алерт по ВСЕМ неотправленным без предупреждения (включая найденные
+    # после рестарта): дедуп внутри _alert_admin по колонке alerted.
+    await _alert_admin(bot, network)
     return sent
 
 

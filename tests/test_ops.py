@@ -129,17 +129,18 @@ async def test_admin_alerted_once_per_payout(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(settings, "admin_ids", "42")  # admin_id_set — property
     bot = SimpleNamespace(send_message=AsyncMock())
     async with SessionLocal() as db:
-        payout = await _mk_payout(db, status="pending", attempts=99)
+        payout = await _mk_payout(db, status="failed", attempts=99)
         try:
             assert await ton_pay.dispatch_pending_payouts(bot=bot) == 0
             await db.refresh(payout)
             assert payout.status == "failed"
+            # Дедуп алертов живёт в БД: флаг выставлен вместе с отправкой.
+            assert payout.alerted is True
             assert bot.send_message.await_count == 1
             # Повторный цикл по той же выплате алерт не дублирует.
             assert await ton_pay.dispatch_pending_payouts(bot=bot) == 0
             assert bot.send_message.await_count == 1
         finally:
-            ton_pay._alerted_payout_ids.discard(payout.id)
             await db.delete(payout)
             await db.commit()
 

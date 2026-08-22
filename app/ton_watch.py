@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Payout, Player, RevoteGrant, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, WatcherState
 from app.payments import parse_revote_memo
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import normalize_address, to_nano
@@ -198,6 +198,17 @@ async def _process_revote(session, transfer: Transfer, player: Player, round_id:
             player_id=player.id,
             source="ton",
             unit_ref=transfer.tx_hash,
+        )
+    )
+    # Ledger доходов: revote-перевод — выручка казны, её надо сверять.
+    session.add(
+        Income(
+            kind="ton",
+            amount_nanotons=transfer.value_nanotons,
+            round_id=round_id,
+            player_id=player.id,
+            unit_ref=transfer.tx_hash,
+            note=f"rv:{round_id}",
         )
     )
     await session.commit()

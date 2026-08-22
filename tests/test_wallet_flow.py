@@ -14,19 +14,20 @@ import pytest
 from app.config import settings
 from app.db import SessionLocal, init_db
 from app.handlers import (
-    _WALLET_PENDING,
+    _dialog_close,
     cmd_stake,
     cmd_wallet,
     on_private_fallback,
     on_stake_view,
 )
-from app.models import Player, Round, RoundStatus, Stake, WinRule
+from app.models import Player, Round, RoundStatus, Stake, WalletDialog, WinRule
 
 
 # Адреса уникальны в рамках прогона: players.wallet_address имеет UNIQUE,
 # а глобальная тестовая БД общая для всех модулей.
 DIALOG_ADDRESS = "UQDD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnX"
 LOCKED_ADDRESS = "UQED39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnE"
+RESTART_ADDRESS = "UQFD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnF"
 
 _uid = 800_000
 
@@ -57,10 +58,22 @@ async def _handlers_db():
     yield
 
 
+async def _dialog_active(uid: int) -> bool:
+    async with SessionLocal() as session:
+        return await session.get(WalletDialog, uid) is not None
+
+
 @pytest.fixture(autouse=True)
 def _clean_pending():
     yield
-    _WALLET_PENDING.clear()
+
+
+@pytest.fixture(autouse=True)
+async def _wipe_dialogs_after():
+    yield
+    async with SessionLocal() as session:
+        await session.execute(WalletDialog.__table__.delete())
+        await session.commit()
 
 
 async def start_dialog(uid: int) -> None:
@@ -73,7 +86,7 @@ async def test_wallet_without_args_opens_dialog() -> None:
     await cmd_wallet(message)
     text = message.answer.call_args.args[0]
     assert "следующим сообщением" in text
-    assert uid in _WALLET_PENDING
+    assert await _dialog_active(uid)
 
 
 async def test_next_message_binds_address() -> None:
@@ -82,7 +95,7 @@ async def test_next_message_binds_address() -> None:
     message = make_message("private", uid, DIALOG_ADDRESS)
     await on_private_fallback(message)
     assert "привязан" in message.answer.call_args.args[0]
-    assert uid not in _WALLET_PENDING
+    assert not await _dialog_active(uid)
 
 
 async def test_bad_address_keeps_dialog_open() -> None:
@@ -91,7 +104,7 @@ async def test_bad_address_keeps_dialog_open() -> None:
     message = make_message("private", uid, "не адрес")
     await on_private_fallback(message)
     assert "не похоже" in message.answer.call_args.args[0]
-    assert uid in _WALLET_PENDING
+    assert await _dialog_active(uid)
 
 
 async def test_cancel_word_closes_dialog() -> None:
@@ -100,7 +113,7 @@ async def test_cancel_word_closes_dialog() -> None:
     message = make_message("private", uid, "отмена")
     await on_private_fallback(message)
     assert "Отменено" in message.answer.call_args.args[0]
-    assert uid not in _WALLET_PENDING
+    assert not await _dialog_active(uid)
 
 
 async def test_other_command_closes_dialog_silently() -> None:
@@ -111,7 +124,18 @@ async def test_other_command_closes_dialog_silently() -> None:
     message = make_message("private", uid, "/чтоугодно")
     await on_private_fallback(message)
     assert message.answer.call_count == 0
-    assert uid not in _WALLET_PENDING
+    assert not await _dialog_active(uid)
+
+
+async def test_dialog_survives_restart() -> None:
+    """Диалог живёт в БД: после «рестарта» (новый процесс, та же БД) ожидание
+    продолжает работать — перезапуск не теряет игрока посреди привязки."""
+    uid = next_uid()
+    await start_dialog(uid)
+    # Рестарт ничего не стирает: helpers читают ту же таблицу заново.
+    message = make_message("private", uid, RESTART_ADDRESS)
+    await on_private_fallback(message)
+    assert "привязан" in message.answer.call_args.args[0]
 
 
 async def test_fallback_ignores_strangers() -> None:

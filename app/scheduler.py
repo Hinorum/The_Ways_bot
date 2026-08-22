@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -21,6 +23,7 @@ from app.rounds import (
 from app.tally import award_points
 
 
+logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 _bot: Bot | None = None
 
@@ -32,6 +35,9 @@ def set_bot(bot: Bot) -> None:
 
 async def tick(bot: Bot | None = None) -> None:
     bot = bot or _bot
+    from app.ops import mark_tick
+
+    await mark_tick()
     async with SessionLocal() as session:
         previous = await get_latest_round(session)
         current = await ensure_current_round(session)
@@ -65,18 +71,45 @@ async def tick(bot: Bot | None = None) -> None:
 async def _ton_maintenance() -> None:
     """Финализация дней, очередь выплат, ретраи — и копилка месяца 1-го числа."""
     from app.leaderboard import settle_month_if_due
+    from app.ops import check_anomalies
     from app.ton_pay import settle_closed_rounds
 
     await settle_closed_rounds(bot=_bot)
     await settle_month_if_due(bot=_bot)
+    try:
+        problems = await check_anomalies(_bot)
+        if problems:
+            logger.warning("Аномалии: %s", "; ".join(problems))
+    except Exception:
+        logger.exception("Проверка аномалий упала (не мешает обслуживанию)")
+
+
+async def boot_maintenance() -> None:
+    """Разовые задачи при старте: свежий бэкап БД до всего остального."""
+    from app.backups import backup_job
+
+    await backup_job()
 
 
 def start_scheduler() -> None:
+    from app.backups import backup_job
+
     scheduler.add_job(
         tick,
         "interval",
         seconds=15,
         id="way-tick",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Суточный бэкап в «мёртвый» час: 04:17 UTC.
+    scheduler.add_job(
+        backup_job,
+        "cron",
+        hour=4,
+        minute=17,
+        id="db-backup",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

@@ -29,6 +29,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import (
     Chat,
+    Income,
     LeaderboardPot,
     Player,
     RevoteGrant,
@@ -37,6 +38,7 @@ from app.models import (
     Stake,
     StoryBeat,
     Vote,
+    WalletDialog,
 )
 from app.payments import build_revote_payload, parse_revote_payload, revote_memo
 from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
@@ -271,10 +273,34 @@ async def _wallet_view_text(user) -> str:
     )
 
 
-# Пользователи, которые вызвали /wallet без адреса и должны прислать адрес
-# следующим сообщением. Живёт в памяти процесса: после рестарта достаточно
-# вызвать /wallet ещё раз.
-_WALLET_PENDING: set[int] = set()
+# Диалог «пришли адрес следующим сообщением» живёт в БД (wallet_dialogs):
+# переживает рестарт и работает при нескольких инстансах за одним вебхуком.
+
+
+async def _dialog_open(uid: int) -> bool:
+    if uid <= 0:
+        return False
+    async with SessionLocal() as session:
+        return await session.get(WalletDialog, uid) is not None
+
+
+async def _dialog_start(uid: int) -> None:
+    if uid <= 0:
+        return
+    async with SessionLocal() as session:
+        if await session.get(WalletDialog, uid) is None:
+            session.add(WalletDialog(player_id=uid))
+            await session.commit()
+
+
+async def _dialog_close(uid: int) -> None:
+    if uid <= 0:
+        return
+    async with SessionLocal() as session:
+        row = await session.get(WalletDialog, uid)
+        if row is not None:
+            await session.delete(row)
+            await session.commit()
 
 
 async def _bind_wallet(message: Message, address: str) -> bool:
@@ -305,7 +331,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             .limit(1)
         )
         if locked.scalar_one_or_none() is not None:
-            _WALLET_PENDING.discard(uid)
+            await _dialog_close(uid)
             await message.answer(f"{warn_mark('locked')} У тебя ставка в игре — кошелёк закреплён до итогов дня.")
             return True
         # Храним канонический raw-hex: watcher сопоставляет отправителя
@@ -313,7 +339,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
         player.wallet_address = normalize_address(address)
         player.wallet_linked_at = datetime.now(timezone.utc)
         await session.commit()
-    _WALLET_PENDING.discard(uid)
+    await _dialog_close(uid)
     confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(confirmation)
@@ -331,7 +357,7 @@ async def cmd_wallet(message: Message) -> None:
             async with SessionLocal() as session:
                 player = await upsert_player(session, message.from_user)
             if not player.wallet_address:
-                _WALLET_PENDING.add(message.from_user.id)
+                await _dialog_start(message.from_user.id)
                 await message.answer(
                     f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
                     "Он начинается с UQ или EQ и выглядит примерно так:\n"
@@ -587,6 +613,17 @@ async def on_successful_payment(message: Message) -> None:
                 unit_ref=payment.telegram_payment_charge_id,
             )
         )
+        # Ledger доходов: звёзды оседают на балансе бота — фиксируем сумму.
+        session.add(
+            Income(
+                kind="stars",
+                amount_stars=payment.total_amount,
+                round_id=round_id if valid else None,
+                player_id=player.id,
+                unit_ref=payment.telegram_payment_charge_id,
+                note="revote",
+            )
+        )
         await session.commit()
     if valid:
         await message.answer(f"{ok_mark(str(round_id))} Оплачено ⭐ Нажми теперь на другую карту — выбор обновится.")
@@ -739,6 +776,55 @@ async def cmd_resetgame(message: Message) -> None:
     )
 
 
+@router.message(Command("revenue"))
+async def cmd_revenue(message: Message) -> None:
+    """Касса игры для хранителя: ledger доходов из Income.
+
+    Звёзды сверяются с балансом бота во Fragment, TON — с историей казны.
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    def _block(title: str, data) -> str:
+        parts = []
+        for kind, count, stars, nanotons in data:
+            if kind == "stars":
+                parts.append(f"⭐ {stars} ({count} оплат)")
+            else:
+                parts.append(f"💎 {from_nano(nanotons):.4f} TON ({count} переводов)")
+        return f"{title}: " + ("; ".join(parts) if parts else "пусто")
+
+    async with SessionLocal() as session:
+        month_rows = (
+            await session.execute(
+                select(
+                    Income.kind,
+                    func.count(),
+                    func.coalesce(func.sum(Income.amount_stars), 0),
+                    func.coalesce(func.sum(Income.amount_nanotons), 0),
+                )
+                .where(Income.created_at >= month_start)
+                .group_by(Income.kind)
+            )
+        ).all()
+        total_rows = (
+            await session.execute(
+                select(
+                    Income.kind,
+                    func.count(),
+                    func.coalesce(func.sum(Income.amount_stars), 0),
+                    func.coalesce(func.sum(Income.amount_nanotons), 0),
+                ).group_by(Income.kind)
+            )
+        ).all()
+    await message.answer(
+        f"{money_mark('revenue')} Касса игры\n{_block('Месяц', month_rows)}\n{_block('Всего', total_rows)}"
+    )
+
+
 @router.message(F.chat.type == ChatType.PRIVATE)
 async def on_private_fallback(message: Message) -> None:
     """Диалог привязки кошелька: следующее сообщение игрока — это адрес.
@@ -747,19 +833,19 @@ async def on_private_fallback(message: Message) -> None:
     обработчиками раньше. Для всех остальных сообщений молчит.
     """
     uid = message.from_user.id if message.from_user else 0
-    if uid not in _WALLET_PENDING:
+    if not await _dialog_open(uid):
         return
     text = (message.text or "").strip()
     if not text:
         await message.answer(f"{hint_mark('retry')} Пришли адрес текстом (UQ…/EQ…) или напиши «отмена».")
         return
     if text.lower() in {"отмена", "cancel"}:
-        _WALLET_PENDING.discard(uid)
+        await _dialog_close(uid)
         await message.answer(f"{ok_mark('cancel')} Отменено. Когда будешь готов: /wallet")
         return
     if text.startswith("/"):
         # Любая другая команда закрывает режим ожидания без лишнего шума.
-        _WALLET_PENDING.discard(uid)
+        await _dialog_close(uid)
         return
     await _bind_wallet(message, text)
 
