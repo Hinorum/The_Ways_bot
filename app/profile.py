@@ -38,15 +38,17 @@ PRIVATE_COMMANDS = [
     BotCommand(command="today", description="Карты дня"),
     BotCommand(command="lore", description="Канон прошлых дней"),
     BotCommand(command="score", description="Твои Следы"),
+    BotCommand(command="stake", description="Как поставить TON на путь"),
+    BotCommand(command="wallet", description="Привязать кошелёк TON"),
     BotCommand(command="top", description="Копилка месяца и лидеры"),
     BotCommand(command="change", description="Сменить путь (⭐ или TON)"),
-    BotCommand(command="wallet", description="Кошелёк для ставок TON"),
 ]
 
 # Группы и каналы: только то, что там уместно.
 GROUP_COMMANDS = [
     BotCommand(command="today", description="Карты дня"),
     BotCommand(command="lore", description="Канон прошлых дней"),
+    BotCommand(command="stake", description="Как поставить TON на путь"),
 ]
 
 

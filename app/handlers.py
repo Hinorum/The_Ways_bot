@@ -78,7 +78,8 @@ async def cmd_start(message: Message) -> None:
     if settings.revote_enabled:
         lines.append("/change — сменить выбор (⭐ Stars или TON)")
     if settings.ton_enabled:
-        lines.append("/wallet — кошелёк для ставок")
+        lines.append("/wallet — привязать кошелёк для ставок")
+        lines.append("/stake — как поставить TON на путь")
         lines.append("/top — копилка месяца и лидеры")
         lines.append(
             "\nФонд дня: 97% — поставившим на верный путь пропорционально, "
@@ -253,34 +254,37 @@ async def _wallet_view_text(user) -> str:
         if player.wallet_address:
             return (
                 f"Привязанный кошелёк: {player.wallet_address[:6]}…{player.wallet_address[-6:]}\n"
-                "Чтобы перепривязать: /wallet <адрес>"
+                "Чтобы перепривязать: /wallet <адрес>\n"
+                "Как поставить на путь: /stake"
                 f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
             )
     return (
         "Кошелёк не привязан.\n"
-        "Привяжи TON-кошелёк: /wallet <твой адрес>\n"
+        "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
         "Он нужен для ставок на путь, бонуса угадавшим и выигрышей.\n"
         f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
     )
 
 
-@router.message(Command("wallet"))
-async def cmd_wallet(message: Message) -> None:
-    parts = (message.text or "").split()
-    if len(parts) == 1:
-        text = await _wallet_view_text(message.from_user)
-        if message.chat.type == ChatType.PRIVATE:
-            await message.answer(text)
-        else:
-            await message.answer(
-                "Информация о кошельке видна только тебе — нажми кнопку.",
-                reply_markup=_personal_keyboard("wallet:view", "Мой кошелёк"),
-            )
-        return
-    address = parts[1]
+# Пользователи, которые вызвали /wallet без адреса и должны прислать адрес
+# следующим сообщением. Живёт в памяти процесса: после рестарта достаточно
+# вызвать /wallet ещё раз.
+_WALLET_PENDING: set[int] = set()
+
+
+async def _bind_wallet(message: Message, address: str) -> bool:
+    """Общая привязка для «/wallet <адрес>» и диалогового режима.
+
+    False — адрес не распознан и можно попробовать снова (диалог открыт).
+    """
     if not is_valid_ton_address(address):
-        await message.answer("Это не похоже на адрес TON. Проверь и пришли снова: /wallet <адрес>")
-        return
+        await message.answer(
+            "Это не похоже на адрес TON.\n"
+            "Адрес начинается с UQ или EQ — длинная строка вроде "
+            "<code>UQD5…</code>. Пришли её целиком одним сообщением."
+        )
+        return False
+    uid = message.from_user.id if message.from_user else 0
     async with SessionLocal() as session:
         player = await upsert_player(session, message.from_user)
         # Защита от угона выплат: пока ставка в незакрытом дне, кошелёк менять нельзя.
@@ -295,17 +299,46 @@ async def cmd_wallet(message: Message) -> None:
             .limit(1)
         )
         if locked.scalar_one_or_none() is not None:
+            _WALLET_PENDING.discard(uid)
             await message.answer("У тебя ставка в игре — кошелёк закреплён до итогов дня.")
-            return
+            return True
         player.wallet_address = address.strip()
         player.wallet_linked_at = datetime.now(timezone.utc)
         await session.commit()
+    _WALLET_PENDING.discard(uid)
     confirmation = "Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(confirmation)
     else:
         # Без деталей: сам адрес уже засветился в сообщении группы.
         await message.answer("Кошелёк привязан (детали — в личке у бота).")
+    return True
+
+
+@router.message(Command("wallet"))
+async def cmd_wallet(message: Message) -> None:
+    parts = (message.text or "").split()
+    if len(parts) == 1:
+        if message.chat.type == ChatType.PRIVATE:
+            async with SessionLocal() as session:
+                player = await upsert_player(session, message.from_user)
+            if not player.wallet_address:
+                _WALLET_PENDING.add(message.from_user.id)
+                await message.answer(
+                    "Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
+                    "Он начинается с UQ или EQ и выглядит примерно так:\n"
+                    "<code>UQD5…длинный набор букв и цифр</code>\n\n"
+                    "Отменить: напиши <b>отмена</b>."
+                )
+                return
+            await message.answer(await _wallet_view_text(message.from_user))
+            return
+        await message.answer(
+            "Информация о кошельке видна только тебе — нажми кнопку.",
+            reply_markup=_personal_keyboard("wallet:view", "Мой кошелёк"),
+        )
+        return
+    await _bind_wallet(message, parts[1])
 
 
 @router.callback_query(F.data == "wallet:view")
@@ -316,6 +349,76 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
         return
     text = await _wallet_view_text(callback.from_user)
     await callback.answer(text[:200], show_alert=True)
+
+
+_STAKE_HOWTO = (
+    "Ставка на путь — три шага:\n"
+    "1. Привяжи кошелёк: /wallet (один раз и навсегда).\n"
+    "2. Переведи от {min:g} до {max:g} TON казначею со СВОЕГО привязанного кошелька:\n"
+    "<code>{treasury}</code>\n"
+    "Комментарий не нужен: watcher найдёт перевод по отправителю примерно за минуту.\n"
+    "3. Нажми кнопку с картой пути — когда угодно до закрытия голосования.\n\n"
+    "Порядок не важен: голос и перевод можно заносить в любой последовательности, "
+    "важно только успеть до дедлайна «Голосование до». Одна ставка на игрока в день. "
+    "Если перевод не смог стать ставкой — кошелёк не привязан, ставка уже есть или день "
+    "закрылся — деньги вернутся автоматически."
+)
+
+
+async def _stake_view_text(user) -> str:
+    if not settings.ton_enabled:
+        return "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+    head = _STAKE_HOWTO.format(
+        min=settings.stake_min_ton,
+        max=settings.stake_max_ton,
+        treasury=settings.active_treasury_address or "(адрес казначея ещё не настроен)",
+    )
+    status = ""
+    async with SessionLocal() as session:
+        player = await upsert_player(session, user)
+        if not player.wallet_address:
+            status = "\n\nКошелёк пока не привязан — начни с шага 1: /wallet"
+        else:
+            round_row = await get_active_round(session)
+            if round_row is not None:
+                stake = (
+                    await session.execute(
+                        select(Stake).where(Stake.player_id == player.id, Stake.round_id == round_row.id)
+                    )
+                ).scalar_one_or_none()
+                if stake is not None:
+                    state = "подтверждена" if stake.status == "confirmed" else "ждёт подтверждения сети"
+                    status = (
+                        f"\n\nТвоя ставка сегодня: {from_nano(stake.amount_nanotons):g} TON ({state}).\n"
+                        "Выигрыш придёт, если твой голос совпадёт с победившим путём."
+                    )
+                elif await get_vote(session, round_row.id, player.id) is not None:
+                    status = "\n\nСтавки нет, но голос уже оставлен. Перевод засчитается в этот же день, если успеет до закрытия."
+    return f"{head}{status}{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
+
+
+@router.message(Command("stake"))
+async def cmd_stake(message: Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "Как поставить TON на путь — нажми кнопку.",
+            reply_markup=_personal_keyboard("stake:view", "Как поставить"),
+        )
+        return
+    await message.answer(await _stake_view_text(message.from_user))
+
+
+@router.callback_query(F.data == "stake:view")
+async def on_stake_view(callback: CallbackQuery) -> None:
+    if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
+        await callback.message.answer(await _stake_view_text(callback.from_user))
+        await callback.answer()
+        return
+    hint = (
+        f"Ставка: переведи {settings.stake_min_ton:g}-{settings.stake_max_ton:g} TON казначею "
+        "со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
+    )
+    await callback.answer(hint[:200], show_alert=True)
 
 
 def _format_top(rows: list[tuple[str, int]], pot_nanotons: float) -> str:
@@ -612,6 +715,31 @@ async def cmd_resetgame(message: Message) -> None:
         f"Игра обнулена. День {new_round.day_index} объявлен в чатах. "
         f"{mode} Голосование до {new_round.voting_ends_at:%H:%M} UTC."
     )
+
+
+@router.message(F.chat.type == ChatType.PRIVATE)
+async def on_private_fallback(message: Message) -> None:
+    """Диалог привязки кошелька: следующее сообщение игрока — это адрес.
+
+    Регистрируется последним, поэтому команды перехватываются своими
+    обработчиками раньше. Для всех остальных сообщений молчит.
+    """
+    uid = message.from_user.id if message.from_user else 0
+    if uid not in _WALLET_PENDING:
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Пришли адрес текстом (UQ…/EQ…) или напиши «отмена».")
+        return
+    if text.lower() in {"отмена", "cancel"}:
+        _WALLET_PENDING.discard(uid)
+        await message.answer("Отменено. Когда будешь готов: /wallet")
+        return
+    if text.startswith("/"):
+        # Любая другая команда закрывает режим ожидания без лишнего шума.
+        _WALLET_PENDING.discard(uid)
+        return
+    await _bind_wallet(message, text)
 
 
 def build_dispatcher() -> Dispatcher:
