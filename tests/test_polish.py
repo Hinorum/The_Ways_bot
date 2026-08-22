@@ -237,7 +237,7 @@ async def test_create_next_round_dedupes_on_race(session, monkeypatch) -> None:
     monkeypatch.setattr(
         rounds_mod,
         "plan_day_art",
-        AsyncMock(side_effect=lambda chapter, beats=None: offline_bible(chapter)),
+        AsyncMock(side_effect=lambda chapter, beats=None, anchor=None: offline_bible(chapter)),
     )
     monkeypatch.setattr(rounds_mod, "fetch_day_image", AsyncMock(return_value=True))
 

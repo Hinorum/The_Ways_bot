@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Bot
@@ -8,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.broadcast import announce_new_day
 from app.config import settings
 from app.db import SessionLocal
-from app.models import RoundStatus
+from app.models import Round, RoundStatus
 from app.rounds import (
     _now,
     claim_announcement,
@@ -17,6 +18,7 @@ from app.rounds import (
     ensure_current_round,
     finish_tally,
     get_latest_round,
+    prepare_next_day,
     utc_aware,
     write_epilogue,
 )
@@ -26,6 +28,30 @@ from app.tally import award_points
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 _bot: Bot | None = None
+
+
+def set_bot(bot: Bot) -> None:
+    global _bot
+    _bot = bot
+
+
+async def _prepare_job(round_id: int) -> None:
+    """Фоновая заготовка следующего дня в час подсчёта.
+
+    Ошибки не роняют тик: если заготовка не удалась, день откроется старым
+    синхронным путём (чуть позже по сетке) — деградация мягкая.
+    """
+    await asyncio.sleep(0)
+    try:
+        async with SessionLocal() as session:
+            round_row = await session.get(Round, round_id)
+            if round_row is None or round_row.status != RoundStatus.TALLYING:
+                return
+            started = await prepare_next_day(session, round_row.day_index)
+            if started:
+                logger.info("Заготовка дня %s собрана заранее", round_row.day_index + 1)
+    except Exception:
+        logger.exception("Прегенерация следующего дня не удалась — откроем синхронно")
 
 
 def set_bot(bot: Bot) -> None:
@@ -53,6 +79,10 @@ async def tick(bot: Bot | None = None) -> None:
         if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
             await close_voting(session, current)
             return
+        if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
+            # Час подсчёта — свободное окно: готовим следующий день заранее,
+            # чтобы в 11:00 UTC открыть его мгновенно из готовой заготовки.
+            asyncio.create_task(_prepare_job(current.id))
         if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
             finished, closed_here = await finish_tally(session, current)
             if closed_here:

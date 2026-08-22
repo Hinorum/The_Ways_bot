@@ -17,14 +17,16 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.echoes import collect_due_echoes, spawn_echoes_from_round
 from app.models import (
-    RULE_PHRASES,
     Card,
+    LeaderboardPot,
     LoreEcho,
     Payout,
     Player,
+    PreparedDay,
     RevoteGrant,
     Round,
     RoundStatus,
+    RULE_PHRASES,
     Stake,
     StoryBeat,
     Vote,
@@ -194,55 +196,27 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
     await session.commit()
 
 
-async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool]:
-    """Создаёт следующий день. Второе значение — был ли день создан сейчас."""
-    latest = await get_latest_round(session)
-    day_index = 1 if latest is None else latest.day_index + 1
+async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
+    """Тяжёлая половина создания дня: глава, библия арта и четыре картинки.
+
+    Всё сетевое и медленное — здесь. Результат — лёгкий JSON-payload,
+    который материализуется в раунд за миллисекунды.
+    """
     beats = await previous_beats(session)
     echoes = await collect_due_echoes(session, day_index)
     rule = secrets.choice(list(WinRule))
     salt = secrets.token_hex(16)
     chapter = await generate_chapter(day_index, beats, rule, echoes)
-    now = _now()
-    # Первый день стартует немедленно; следующие открываются ровно в момент
-    # окончания подсчёта предыдущего (11:00 UTC по сетке) — расписание не
-    # плывёт ни при простоях, ни при долгой генерации.
-    opens_at = now if latest is None or latest.tally_ends_at is None else max(now, utc_aware(latest.tally_ends_at))
-    voting_ends_at, tally_ends_at = _day_window(opens_at)
-    media_root = Path(settings.media_dir)
-    cover_path = media_root / f"day{day_index}_cover.jpg"
-    round_row = Round(
-        day_index=day_index,
-        status=RoundStatus.OPEN,
-        win_rule=rule,
-        rule_commitment=commit_rule(rule, salt) + ":" + salt,
-        chapter_title=chapter["title"],
-        chapter_text=chapter["text"],
-        lore_summary=chapter["lore_summary"],
-        cover_path=str(cover_path),
-        opens_at=opens_at,
-        voting_ends_at=voting_ends_at,
-        tally_ends_at=tally_ends_at,
-    )
-    session.add(round_row)
-    try:
-        await session.flush()
-    except IntegrityError:
-        await session.rollback()
-        existing = await get_latest_round(session)
-        if existing is None:
-            raise
-        return existing, False
 
-    # Арт-директор: сначала визуальный план дня (отдельный LLM-запрос),
-    # затем промпты каждого кадра собираются из него — картинки выходят
-    # в едином стиле, но разными кадрами под смысл каждого пути.
+    # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.
-    day_seed = 10_000 + day_index * 7
     anchor = await _load_art_anchor(session)
     bible = await plan_day_art(chapter, beats, anchor=anchor)
     await _save_art_anchor(session, bible)
-    cover_prompt = build_image_prompt(bible, "cover", seed=day_seed)
+
+    media_root = Path(settings.media_dir)
+    cover_path = media_root / f"day{day_index}_cover.jpg"
+    day_seed = 10_000 + day_index * 7
     jobs = []
     for position, card in enumerate(chapter["cards"]):
         image_path = media_root / f"day{day_index}_card{position}.jpg"
@@ -251,7 +225,14 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
         jobs.append((position, card, image_path, prompt, short))
     fetched = await asyncio.gather(
         # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
-        fetch_day_image(cover_prompt, short_image_prompt(bible, "cover", seed=day_seed), cover_path, seed=day_seed, width=1280, height=720),
+        fetch_day_image(
+            build_image_prompt(bible, "cover", seed=day_seed),
+            short_image_prompt(bible, "cover", seed=day_seed),
+            cover_path,
+            seed=day_seed,
+            width=1280,
+            height=720,
+        ),
         *(
             fetch_day_image(job[3], job[4], job[2], seed=day_seed + job[0] + 1)
             for job in jobs
@@ -260,20 +241,184 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
     if not fetched[0]:
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
         await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
+    cards_payload = []
     for (position, card, image_path, _prompt, _short), ok in zip(jobs, fetched[1:]):
         if not ok:
             await asyncio.to_thread(render_card, image_path, card["title"], card["description"], position)
-        session.add(
-            Card(
-                round_id=round_row.id,
-                position=position,
-                title=card["title"],
-                description=card["description"],
-                consequence=card["consequence"],
-                tag=card.get("tag", "care"),
-                image_path=str(image_path),
-            )
+        cards_payload.append(
+            {
+                "position": position,
+                "title": card["title"],
+                "description": card["description"],
+                "consequence": card["consequence"],
+                "tag": card.get("tag", "care"),
+                "image_path": str(image_path),
+            }
         )
+    return {
+        "day_index": day_index,
+        "rule": rule.value,
+        "commitment": commit_rule(rule, salt) + ":" + salt,
+        "chapter_title": chapter["title"],
+        "chapter_text": chapter["text"],
+        "lore_summary": chapter["lore_summary"],
+        "cover_path": str(cover_path),
+        "cards": cards_payload,
+    }
+
+
+def _payload_cards(payload: dict) -> list[dict]:
+    cards = [dict(card) for card in payload.get("cards") or []]
+    for position, card in enumerate(cards):
+        card.setdefault("position", position)
+        card.setdefault("tag", "care")
+    return cards
+
+
+async def _ensure_art_files(session: AsyncSession, payload: dict) -> None:
+    """Страховка: если файлы заготовки пропали (чистка диска), рисуем фолбэк."""
+    import os
+
+    cover = payload.get("cover_path", "")
+    if cover and not os.path.exists(cover):
+        await asyncio.to_thread(render_cover, Path(cover), payload["chapter_title"], payload["chapter_text"])
+    for card in _payload_cards(payload):
+        image = card.get("image_path", "")
+        if image and not os.path.exists(image):
+            await asyncio.to_thread(
+                render_card, Path(image), card["title"], card["description"], card["position"]
+            )
+
+
+async def _materialize_round(
+    session: AsyncSession, payload: dict, latest: Round | None
+) -> Round:
+    """Быстрая половина: раунд и карты из готового payload. Только БД."""
+    day_index = int(payload["day_index"])
+    now = _now()
+    opens_at = now if latest is None or latest.tally_ends_at is None else max(now, utc_aware(latest.tally_ends_at))
+    voting_ends_at, tally_ends_at = _day_window(opens_at)
+    round_row = Round(
+        day_index=day_index,
+        status=RoundStatus.OPEN,
+        win_rule=WinRule(payload["rule"]),
+        rule_commitment=payload["commitment"],
+        chapter_title=payload["chapter_title"],
+        chapter_text=payload["chapter_text"],
+        lore_summary=payload["lore_summary"],
+        cover_path=payload.get("cover_path", ""),
+        opens_at=opens_at,
+        voting_ends_at=voting_ends_at,
+        tally_ends_at=tally_ends_at,
+    )
+    session.add(round_row)
+    await session.flush()
+    for card in _payload_cards(payload):
+        session.add(Card(round_id=round_row.id, **card))
+    return round_row
+
+
+_PREGEN_LOCK_PREFIX = "pregen_lock:"
+_PREGEN_LOCK_TTL = 1800  # секунд: генерация дольше получаса считается мёртвой
+
+
+async def prepare_next_day(session: AsyncSession, current_day_index: int) -> bool:
+    """Прегенерация следующего дня в час подсчёта.
+
+    Тяжёлая генерация уходит в окно TALLYING, поэтому в 11:00 UTC день
+    открывается мгновенно из готовой заготовки. Claim через PreparedDay-строку
+    и временный лок в watcher_state: повторные тики и второй инстанс не плодят
+    параллельных генераций. False — готовить нечего/уже готовится.
+    """
+    day_index = current_day_index + 1
+    existing = (
+        await session.execute(select(Round.id).where(Round.day_index == day_index).limit(1))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return False
+    prepared = await session.get(PreparedDay, day_index)
+    if prepared is not None and prepared.payload:
+        return False
+    from app.models import WatcherState
+
+    lock_key = f"{_PREGEN_LOCK_PREFIX}{day_index}"
+    now_stamp = int(_now().timestamp())
+    lock = await session.get(WatcherState, lock_key)
+    if lock is not None:
+        try:
+            if now_stamp - int(lock.value) < _PREGEN_LOCK_TTL:
+                return False
+        except ValueError:
+            pass
+        lock.value = str(now_stamp)
+    else:
+        session.add(WatcherState(key=lock_key, value=str(now_stamp)))
+    await session.commit()
+    try:
+        payload = await _plan_and_render(session, day_index)
+        blob = json.dumps(payload, ensure_ascii=False)
+        if prepared is None:
+            session.add(PreparedDay(day_index=day_index, payload=blob))
+        else:
+            prepared.payload = blob
+        await session.commit()
+        return True
+    finally:
+        fresh = await session.get(WatcherState, lock_key)
+        if fresh is not None:
+            await session.delete(fresh)
+            await session.commit()
+
+
+async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool]:
+    """Создаёт следующий день. Второе значение — был ли день создан сейчас.
+
+    Сначала пробует готовую заготовку из часа подсчёта (мгновенно), иначе
+    делает полный цикл «план → рендер → материализация» на месте.
+    """
+    latest = await get_latest_round(session)
+    if latest is not None:
+        next_day = latest.day_index + 1
+        prepared = await session.get(PreparedDay, next_day)
+        if prepared is not None and prepared.payload:
+            try:
+                payload = json.loads(prepared.payload)
+                await _ensure_art_files(session, payload)
+                round_row = await _materialize_round(session, payload, latest)
+            except (ValueError, KeyError, TypeError):
+                # Битая заготовка — выбрасываем и идём обычным путём.
+                # Rollback протухает объекты: day_index держим в переменной,
+                # а latest перечитываем заново.
+                await session.rollback()
+                await session.execute(
+                    delete(PreparedDay).where(PreparedDay.day_index == next_day)
+                )
+                await session.commit()
+                latest = await get_latest_round(session)
+            else:
+                await session.delete(prepared)
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    existing = await get_latest_round(session)
+                    if existing is None:
+                        raise
+                    return existing, False
+                loaded = await get_latest_round(session)
+                assert loaded is not None
+                return loaded, True
+
+    day_index = 1 if latest is None else latest.day_index + 1
+    payload = await _plan_and_render(session, day_index)
+    try:
+        round_row = await _materialize_round(session, payload, latest)
+    except IntegrityError:
+        await session.rollback()
+        existing = await get_latest_round(session)
+        if existing is None:
+            raise
+        return existing, False
     try:
         await session.commit()
     except IntegrityError:
@@ -316,6 +461,8 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     await session.execute(delete(Vote))
     await session.execute(delete(RevoteGrant))
     await session.execute(delete(Card))
+    # Заготовки старого канона больше не имеют силы: мир переписан заново.
+    await session.execute(delete(PreparedDay))
     if not keep_story:
         await session.execute(delete(StoryBeat))
         await session.execute(delete(LoreEcho))
