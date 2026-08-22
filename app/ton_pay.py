@@ -19,7 +19,7 @@ import logging
 from datetime import datetime, timezone
 
 from aiogram import Bot
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db import SessionLocal
@@ -36,6 +36,18 @@ _wallet_lock = asyncio.Lock()
 _provider = None
 _wallet = None
 _wallet_network: str | None = None
+
+
+async def pending_payout_count(session) -> int:
+    """Сколько переводов ещё не ушли (обе сети, включая dead-letter failed).
+
+    «sent» — единственное конечное состояние: всё остальное значит, что
+    деньги игроку ещё должны. Сброс игры обязан ждать, пока долг закрыт.
+    """
+    result = await session.execute(
+        select(func.count()).select_from(Payout).where(Payout.status != "sent")
+    )
+    return int(result.scalar_one())
 
 
 async def _get_wallet():

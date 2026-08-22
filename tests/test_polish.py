@@ -367,8 +367,10 @@ async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch)
             Vote(round_id=old_round.id, player_id=player.id, card_position=0),
             Stake(round_id=old_round.id, player_id=player.id, amount_nanotons=500_000_000,
                   tx_hash="reset-tx-1", status="confirmed", network=settings.ton_network),
+            # status="sent": сброс стирает только ЗАКРЫТЫЕ обязательства;
+            # висящий в очереди перевод блокировал бы сброс (см. test_guards).
             Payout(round_id=old_round.id, kind="rake", amount_nanotons=2_500_000,
-                   dest_address="", network=settings.ton_network),
+                   dest_address="", network=settings.ton_network, status="sent"),
             StoryBeat(day_index=5, winning_title="t", winning_text="x",
                       win_rule="majority", vote_counts="{}"),
             LeaderboardPot(month="2030-01", nanotons=7_700_000_000),

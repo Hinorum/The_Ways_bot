@@ -14,7 +14,7 @@ from sqlalchemy import delete
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Player, Round, RoundStatus, WatcherState, WinRule
+from app.models import Payout, Player, Round, RoundStatus, WatcherState, WinRule
 from app.ton_utils import is_valid_ton_address, normalize_address
 from app.ton_watch import WALLET_NORM_KEY, Transfer, _migrate_wallet_formats, process_transfer
 
@@ -93,6 +93,13 @@ async def test_old_friendly_row_would_miss_and_migration_fixes_it(ton_on) -> Non
         assert player.wallet_address == old_raw
         assert await session.get(WatcherState, WALLET_NORM_KEY) is not None
 
-    # Повторный запуск — идемпотентный.
+    # Повторный запуск — идемпотентный. Заодно гигиена общей БД: возврат
+    # из «до-миграционного» промаха не должен остаться в очереди выплат.
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
+        await session.execute(delete(Payout).where(Payout.tx_hash == "mig-before-1"))
+        await session.commit()
+        stray = await session.execute(
+            delete(Payout).where(Payout.tx_hash == "mig-before-1")
+        )
+        assert stray.rowcount == 0

@@ -32,6 +32,7 @@ from app.models import (
 )
 from app.art_director import build_image_prompt, plan_day_art, short_image_prompt
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
+from app.ton_pay import pending_payout_count
 
 
 def _now() -> datetime:
@@ -265,7 +266,17 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     keep_story=True — «разделить команды»: статистика и деньги обнуляются,
     но канон истории (StoryBeat) и эхо остаются, и новый первый день
     продолжает тот же мир с памятью о прошлом.
+
+    Защита: пока в очереди есть хоть одна неотправленная выплата, сброс
+    запрещён — иначе обнуление стёрло бы реальные денежные обязательства
+    казны. Сначала разгреби очередь (автоциклы или вручную).
     """
+    owed = await pending_payout_count(session)
+    if owed:
+        raise RuntimeError(
+            f"Сброс запрещён: в очереди {owed} неотправленных выплат. "
+            "Дождись автоплатежей или разбери зависшие вручную."
+        )
     await session.execute(delete(Payout))
     await session.execute(delete(Stake))
     await session.execute(delete(Vote))

@@ -42,6 +42,7 @@ from app.payments import build_revote_payload, parse_revote_payload, revote_memo
 from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
 from app.style import day_mark, hint_mark, money_mark, ok_mark, path_mark, result_mark, warn_mark
 from app.tally import award_points
+from app.ton_pay import pending_payout_count
 from app.ton_utils import from_nano, is_valid_ton_address, normalize_address
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
@@ -717,6 +718,14 @@ async def cmd_resetgame(message: Message) -> None:
         return
     keep_story = "keepstory" in words
     async with SessionLocal() as session:
+        owed = await pending_payout_count(session)
+        if owed:
+            await message.answer(
+                f"{warn_mark('queue')} Сброс отложен: в очереди {owed} неотправленных переводов.\n"
+                "Сначала дай выплатам уйти (автоцикл) или разбери зависшие вручную —\n"
+                "обнуление стёрло бы чужие деньги."
+            )
+            return
         new_round = await reset_game(session, keep_story=keep_story)
         first = await claim_announcement(session, new_round)
     if not first:
