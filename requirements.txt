@@ -1,0 +1,11 @@
+aiogram==3.22.0
+SQLAlchemy==2.0.43
+aiosqlite==0.21.0
+asyncpg==0.30.0
+pydantic-settings==2.10.1
+APScheduler==3.11.0
+httpx==0.28.1
+Pillow==11.3.0
+python-dotenv==1.1.1
+greenlet==3.2.4
+pytoniq==0.1.43

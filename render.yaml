@@ -1,0 +1,80 @@
+services:
+  - type: web
+    name: the-ways-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: TIMEZONE
+        value: Europe/Moscow
+      - key: ROUND_SECONDS
+        value: "82800"
+      - key: TALLY_SECONDS
+        value: "3600"
+      - key: USE_FREE_IMAGES
+        value: "true"
+      - key: USE_FREE_STORY_LLM
+        value: "true"
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        value: https://router.huggingface.co/v1/chat/completions
+      - key: LLM_MODELS
+        value: meta-llama/Llama-3.3-70B-Instruct
+      - key: MEDIA_DIR
+        value: ./media/generated
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: TON_ENABLED
+        value: "false"
+      - key: TON_NETWORK
+        value: mainnet
+      - key: TREASURY_ADDRESS
+        sync: false
+      - key: TREASURY_MNEMONIC
+        sync: false
+      - key: TREASURY_TESTNET_ADDRESS
+        sync: false
+      - key: TREASURY_TESTNET_MNEMONIC
+        sync: false
+      - key: TON_API_BASE
+        value: https://tonapi.io
+      - key: TON_API_BASE_TESTNET
+        value: https://testnet.tonapi.io
+      - key: TON_API_KEY
+        sync: false
+      - key: STAKE_MIN_TON
+        value: "0.1"
+      - key: STAKE_MAX_TON
+        value: "10"
+      - key: OWNER_RAKE_PCT
+        value: "0.5"
+      - key: LEADERBOARD_RAKE_PCT
+        value: "0.5"
+      - key: FREE_WINNERS_PCT
+        value: "2"
+      - key: OWNER_WALLET_ADDRESS
+        sync: false
+      - key: STAKE_CONFIRM_SECONDS
+        value: "40"
+      - key: PAYOUT_MAX_ATTEMPTS
+        value: "5"
+      - key: CONTENT_FILTER
+        value: "true"
+      - key: REVOTE_ENABLED
+        value: "true"
+      - key: REVOTE_STARS
+        value: "25"
+      - key: REVOTE_TON
+        value: "0.1"
