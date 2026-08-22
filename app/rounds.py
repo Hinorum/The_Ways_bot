@@ -163,6 +163,37 @@ async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     return [f"{beat.winning_title}: {beat.winning_text}" for beat in rows]
 
 
+async def _load_art_anchor(session: AsyncSession) -> dict | None:
+    from app.models import WatcherState
+    from app.art_director import AnchorKey
+
+    row = await session.get(WatcherState, AnchorKey)
+    if row is None:
+        return None
+    try:
+        data = json.loads(row.value)
+        return data if isinstance(data, dict) and data.get("palette") else None
+    except ValueError:
+        return None
+
+
+async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
+    """Сохраняем компактный якорь библии: следующий день продолжит стиль."""
+    from app.art_director import AnchorKey, compact_anchor
+    from app.models import WatcherState
+
+    anchor = compact_anchor(bible)
+    if not anchor.get("palette"):
+        return
+    blob = json.dumps(anchor, ensure_ascii=False)[:250]
+    row = await session.get(WatcherState, AnchorKey)
+    if row is None:
+        session.add(WatcherState(key=AnchorKey, value=blob))
+    else:
+        row.value = blob
+    await session.commit()
+
+
 async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool]:
     """Создаёт следующий день. Второе значение — был ли день создан сейчас."""
     latest = await get_latest_round(session)
@@ -206,8 +237,11 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
     # Арт-директор: сначала визуальный план дня (отдельный LLM-запрос),
     # затем промпты каждого кадра собираются из него — картинки выходят
     # в едином стиле, но разными кадрами под смысл каждого пути.
+    # Якорь предыдущего дня держит сериальность палитры и мотивов.
     day_seed = 10_000 + day_index * 7
-    bible = await plan_day_art(chapter, beats)
+    anchor = await _load_art_anchor(session)
+    bible = await plan_day_art(chapter, beats, anchor=anchor)
+    await _save_art_anchor(session, bible)
     cover_prompt = build_image_prompt(bible, "cover", seed=day_seed)
     jobs = []
     for position, card in enumerate(chapter["cards"]):
@@ -439,3 +473,4 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         loaded = await get_round(session, round_row.id)
         return (loaded or round_row), False
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
+

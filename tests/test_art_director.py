@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from app.art_director import (
+    _build_art_prompt,
     build_image_prompt,
+    compact_anchor,
     offline_bible,
     plan_day_art,
     short_image_prompt,
@@ -99,3 +101,34 @@ def test_abstract_fallbacks_have_no_text_layer(tmp_path: Path) -> None:
     cover = tmp_path / "day9_cover.jpg"
     render_cover(cover, "День 9. Тихий порт")
     assert cover.exists() and cover.stat().st_size > 1000
+
+
+async def test_anchor_continues_palette_offline(offline_llm) -> None:
+    """Офлайн-палитра продолжается с якоря предыдущего дня, а не с нуля."""
+    from app.art_director import _PALETTE_ROTATION
+
+    anchor_palette = _PALETTE_ROTATION[1][0]
+    bible = await plan_day_art(CHAPTER, anchor={"palette": anchor_palette})
+    assert bible["palette"] == _PALETTE_ROTATION[2][0]
+
+
+def test_prompt_carries_anchor_for_llm() -> None:
+    prompt = _build_art_prompt(
+        CHAPTER,
+        ["вчерашний итог"],
+        anchor={"palette": "cold slate", "lighting": "moonlit rim", "motifs": ["iron ring"]},
+    )
+    assert "ПРЕДЫДУЩИЙ ДЕНЬ" in prompt and "cold slate" in prompt
+    assert "локацию" in prompt  # требование сменить декорации сохранено
+
+
+def test_compact_anchor_fits_state_limit() -> None:
+    bible = {
+        "palette": "x" * 300,
+        "lighting": "y" * 300,
+        "motifs": ["m" * 100, "n" * 100, "o" * 100],
+    }
+    import json
+
+    blob = json.dumps(compact_anchor(bible), ensure_ascii=False)
+    assert len(blob) <= 255

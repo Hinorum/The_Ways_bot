@@ -88,6 +88,78 @@ def _gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image.Image:
     return strip.resize(size)
 
 
+def _ridge_layer(
+    size: tuple[int, int], rng: random.Random, level: int, base: tuple
+) -> Image.Image:
+    """Силуэт горного хребта: ломаная с случайным рельефом, темнеет к переду."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = size
+    base_y = int(h * (0.58 + 0.13 * level))
+    amp = max(6, h // (9 + level * 3))
+    points = [(0, base_y)]
+    steps = 16
+    for i in range(1, steps + 1):
+        x = w * i // steps
+        peak = base_y - rng.randint(amp // 2, amp)
+        points.append((x, peak))
+        points.append((x, base_y + rng.randint(-amp // 4, amp // 4)))
+    points += [(w, h), (0, h)]
+    shade = tuple(int(c * max(0.18, 0.42 - 0.11 * level)) for c in base)
+    draw.polygon(points, fill=(*shade, 235))
+    return layer
+
+
+def _pack_silhouettes(
+    size: tuple[int, int], rng: random.Random, base: tuple
+) -> Image.Image:
+    """Стая собак-путешественников идёт по гребню: простые чёрные силуэты."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = size
+    ground = int(h * 0.72)
+    ink = (max(base[0] - 14, 4), max(base[1] - 12, 3), max(base[2] - 10, 5), 255)
+    count = rng.randint(3, 5)
+    for index in range(count):
+        cx = int(w * (0.14 + 0.72 * index / max(count - 1, 1)) + rng.randint(-w // 40, w // 40))
+        s = max(10, min(w, h) // rng.randint(26, 34))
+        cy = ground - rng.randint(0, h // 30)
+        # корпус
+        draw.ellipse((cx - s, cy - s * 0.45, cx + s, cy + s * 0.2), fill=ink)
+        # голова и морда
+        draw.ellipse((cx + s * 0.7, cy - s * 0.95, cx + s * 1.3, cy - s * 0.3), fill=ink)
+        draw.polygon(
+            [
+                (cx + s * 0.78, cy - s * 0.9),
+                (cx + s * 0.92, cy - s * 1.28),
+                (cx + s * 1.02, cy - s * 0.82),
+            ],
+            fill=ink,
+        )
+        draw.rectangle(
+            (cx + s * 1.2, cy - s * 0.52, cx + s * 1.48, cy - s * 0.34), fill=ink
+        )
+        # хвост
+        draw.line(
+            (cx - s * 0.95, cy - s * 0.2, cx - s * 1.45, cy - s * 0.75),
+            fill=ink,
+            width=max(3, s // 7),
+        )
+        # лапы
+        leg_w = max(3, s // 6)
+        for lx in (-0.65, -0.25, 0.35, 0.75):
+            draw.rectangle(
+                (
+                    cx + s * lx,
+                    cy + s * 0.05,
+                    cx + s * lx + leg_w,
+                    cy + s * 0.62,
+                ),
+                fill=ink,
+            )
+    return layer
+
+
 def _abstract_scene(
     size: tuple[int, int],
     seed: str,
@@ -95,13 +167,13 @@ def _abstract_scene(
     accent: tuple,
     rings_center: tuple[float, float],
 ) -> Image.Image:
-    """Абстрактный арт без текста: градиент, туманные пятна, свечение портала.
-
-    Фолбэк, когда сеть генерации молчит. Никаких надписей — текст дня живёт
-    в подписях и кнопках Telegram, картинка остаётся картинкой.
-    """
+    """«Минималистичная тёмная сказка»: градиент неба, свечение портала,
+    хребты в дымке и силуэт стаи на гребне. Без единой буквы — текст дня
+    живёт в подписях Telegram, картинка остаётся картинкой."""
     rng = random.Random(seed)
     image = _gradient(size, base, tuple(max(c - 26, 0) for c in base))
+
+    # Туманные пятна глубины.
     glow = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(glow)
     secondary = (
@@ -119,10 +191,11 @@ def _abstract_scene(
     glow = glow.filter(ImageFilter.GaussianBlur(min(size) // 8))
     image = Image.alpha_composite(image.convert("RGBA"), glow)
 
+    # Портал: концентрические кольца со светящимся ядром.
     rings = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(rings)
     cx, cy = int(rings_center[0] * size[0]), int(rings_center[1] * size[1])
-    outer = int(min(size) * rng.uniform(0.28, 0.38))
+    outer = int(min(size) * rng.uniform(0.24, 0.32))
     for delta in (0, outer // 7, outer // 3):
         r = outer - delta
         ring_width = max(4, outer // 22 - delta // 60)
@@ -134,7 +207,28 @@ def _abstract_scene(
     core_r = outer // 4
     draw.ellipse((cx - core_r, cy - core_r, cx + core_r, cy + core_r), fill=(*accent, 110))
     rings = rings.filter(ImageFilter.GaussianBlur(6))
+    image = Image.alpha_composite(image, rings)
 
+    # Хребты от дальнего к ближнему, между ними полосы тумана.
+    for level in range(3):
+        image = Image.alpha_composite(image, _ridge_layer(size, rng, level, base))
+        if level < 2:
+            fog = Image.new("RGBA", size, (0, 0, 0, 0))
+            fdraw = ImageDraw.Draw(fog)
+            band_y = int(size[1] * (0.60 + 0.13 * level))
+            band_h = max(10, size[1] // 14)
+            fdraw.rectangle(
+                (0, band_y, size[0], band_y + band_h),
+                fill=(min(255, accent[0] + 40), min(255, accent[1] + 34), min(255, accent[2] + 50), 46),
+            )
+            image = Image.alpha_composite(
+                image, fog.filter(ImageFilter.GaussianBlur(band_h // 2))
+            )
+
+    # Стая на переднем плане.
+    image = Image.alpha_composite(image, _pack_silhouettes(size, rng, base))
+
+    # Виньетка.
     vignette = Image.new("L", size, 0)
     vdraw = ImageDraw.Draw(vignette)
     vdraw.ellipse(
@@ -144,7 +238,11 @@ def _abstract_scene(
     vignette = vignette.filter(ImageFilter.GaussianBlur(min(size) // 10))
     dark = Image.new("RGBA", size, (8, 6, 14, 150))
     image = Image.composite(image, dark, vignette)
-    return image.convert("RGB").filter(ImageFilter.GaussianBlur(0.4))
+
+    result = image.convert("RGB").filter(ImageFilter.GaussianBlur(0.4))
+    # Плёночное зерно: лёгкий шум поверх всего кадра.
+    grain = Image.effect_noise(size, 16).convert("RGB")
+    return Image.blend(result, grain, 0.06)
 
 
 def render_card(path: Path, title: str, description: str, position: int) -> None:

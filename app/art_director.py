@@ -67,11 +67,26 @@ _PALETTE_ROTATION = [
 ]
 
 
-def offline_bible(chapter: dict) -> dict:
-    """Детерминированный план дня без сети: сцены берём из image_prompt карт."""
+# Междинная преемственность: якорь предыдущего дня (палитра/свет/мотивы)
+# протаскивается в библию следующего — сериальность вместо лотереи.
+AnchorKey = "art_anchor"
+
+
+def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
+    """Детерминированный план дня без сети: сцены берём из image_prompt карт.
+
+    anchor — компактный якорь предыдущего дня: палитра продолжает ротацию
+    с него (а не с нуля), чтобы офлайн-дни тоже шли «серией».
+    """
     day_key = str(chapter.get("title", "")) or "day"
     seed = int(hashlib.sha256(day_key.encode("utf-8")).hexdigest()[:8], 16)
-    palette, lighting = _PALETTE_ROTATION[seed % len(_PALETTE_ROTATION)]
+    palettes = [pair[0] for pair in _PALETTE_ROTATION]
+    try:
+        base_idx = palettes.index(str((anchor or {}).get("palette", "")))
+        palette_idx = (base_idx + 1) % len(_PALETTE_ROTATION)
+    except ValueError:
+        palette_idx = seed % len(_PALETTE_ROTATION)
+    palette, lighting = _PALETTE_ROTATION[palette_idx]
     shots: dict[str, dict[str, str]] = {
         "cover": {
             "scene": chapter.get(
@@ -103,7 +118,7 @@ def offline_bible(chapter: dict) -> dict:
     }
 
 
-def _build_art_prompt(chapter: dict, recent_beats: list[str]) -> str:
+def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | None = None) -> str:
     cards_block = ""
     for position, card in enumerate(chapter.get("cards") or []):
         cards_block += (
@@ -112,12 +127,22 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str]) -> str:
             f"Черновой образ: {card.get('image_prompt', '')}"
         )
     last_beat = recent_beats[-1] if recent_beats else ""
+    anchor_block = ""
+    if anchor and anchor.get("palette"):
+        motifs = ", ".join(anchor.get("motifs") or [])
+        anchor_block = (
+            f"\nПРЕДЫДУЩИЙ ДЕНЬ: палитра «{anchor.get('palette', '')}», свет "
+            f"«{anchor.get('lighting', '')}», мотивы: {motifs}. Сохрани узнаваемость "
+            "стиля (та же гамма и сквозные мотивы), но полностью смени локацию "
+            "и ракурсы — новый день не должен выглядеть копией вчерашнего.\n"
+        )
     return (
         "Ответь только JSON, все текстовые значения на английском. Собери "
         "визуальную библию одного дня игры.\n\n"
         f"ГЛАВА ДНЯ: «{chapter.get('title', '')}»\n{chapter.get('text', '')[:700]}\n"
         f"{cards_block}\n"
-        f"КАНОН ВЧЕРАШНЕГО ДНЯ: {last_beat}\n\n"
+        f"КАНОН ВЧЕРАШНЕГО ДНЯ: {last_beat}\n"
+        f"{anchor_block}"
         "Требования. Обложка — широкий кинематографичный кадр всей сцены дня. "
         "Каждый путь — отдельная портретная сцена, передающая СМЫСЛ выбора, а не "
         "буквальную подпись. Четыре кадра должны быть в разных локациях, с разных "
@@ -161,14 +186,19 @@ def _parse_bible(payload: dict) -> dict | None:
     return {"palette": palette[:200], "lighting": lighting[:200], "motifs": motifs, "shots": shots}
 
 
-async def plan_day_art(chapter: dict, recent_beats: list[str] | None = None) -> dict:
-    """Библия дня: LLM-план с одной повторной попыткой, иначе офлайн-план."""
+async def plan_day_art(
+    chapter: dict, recent_beats: list[str] | None = None, anchor: dict | None = None
+) -> dict:
+    """Библия дня: LLM-план с одной повторной попыткой, иначе офлайн-план.
+
+    anchor — якорь предыдущего дня для преемственности стиля.
+    """
     beats = recent_beats or []
     if not settings.use_free_story_llm:
-        return offline_bible(chapter)
+        return offline_bible(chapter, anchor=anchor)
     messages = [
         {"role": "system", "content": ART_SYSTEM_PROMPT},
-        {"role": "user", "content": _build_art_prompt(chapter, beats)},
+        {"role": "user", "content": _build_art_prompt(chapter, beats, anchor)},
     ]
     for attempt in range(1, 3):
         result = await _chat_completion(messages)
@@ -185,6 +215,15 @@ async def plan_day_art(chapter: dict, recent_beats: list[str] | None = None) -> 
             return bible
         logger.warning("Модель %s вернула неполную библию (попытка %d)", used_model, attempt)
     return offline_bible(chapter)
+
+
+def compact_anchor(bible: dict) -> dict:
+    """Компактный якорь для хранения в watcher_state (лимит 255 символов)."""
+    return {
+        "palette": str(bible.get("palette", ""))[:60],
+        "lighting": str(bible.get("lighting", ""))[:60],
+        "motifs": [str(m)[:40] for m in (bible.get("motifs") or [])][:2],
+    }
 
 
 def build_image_prompt(bible: dict, slot: str, seed: int = 0) -> str:
