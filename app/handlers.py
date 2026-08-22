@@ -40,8 +40,9 @@ from app.models import (
 )
 from app.payments import build_revote_payload, parse_revote_payload, revote_memo
 from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
+from app.style import day_mark, hint_mark, money_mark, ok_mark, path_mark, result_mark, warn_mark
 from app.tally import award_points
-from app.ton_utils import from_nano, is_valid_ton_address
+from app.ton_utils import from_nano, is_valid_ton_address, normalize_address
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
 
@@ -62,7 +63,7 @@ async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
         await upsert_player(session, message.from_user)
     lines = [
-        f"Это «{settings.world_name}» — фанатская игра по мотивам Lost Dogs.",
+        f"{day_mark(str(message.from_user.id))} Это «{settings.world_name}» — фанатская игра по мотивам Lost Dogs.",
         "Раз в сутки — три карты. Каждое утро объявляется закон дня: "
         "побеждает карта с большим, меньшим или средним числом голосов — "
         "так что видно, в какую сторону голосовать. Цифры голосов скрыты до итогов.",
@@ -108,11 +109,11 @@ async def cmd_lore(message: Message) -> None:
     async with SessionLocal() as session:
         beats = (await session.execute(select(StoryBeat).order_by(StoryBeat.day_index))).scalars().all()
     if not beats:
-        await message.answer("Канон ещё пуст: первый След появится после итогов дня.")
+        await message.answer(f"{hint_mark('lore-empty')} Канон ещё пуст: первый След появится после итогов дня.")
         return
     text, truncated = _canon_text(beats)
     if truncated:
-        text = "Ранние дни растворились в шуме порталов.\n\n" + text
+        text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме порталов.\n\n" + text
     await message.answer(text)
 
 
@@ -143,12 +144,15 @@ async def _score_text(user) -> str:
         round_row = await get_active_round(session) or await get_latest_round(session)
         vote = await get_vote(session, round_row.id, player.id) if round_row else None
     if vote is None:
-        choice = "Сегодня ты ещё не выбрал путь."
+        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал путь."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
-        choice = f"Сегодня твой путь: {POSITIONS[vote.card_position]}."
+        choice = f"{path_mark('care', str(user.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}."
     else:
         choice = f"В прошлом дне ты выбрал путь {POSITIONS[vote.card_position]}."
-    return f"{choice}\nОчки: {player.score}\nУгаданных законов: {player.correct_picks}"
+    return (
+        f"{choice}\n{result_mark(f'score:{user.id}')} Очки: {player.score}\n"
+        f"Угаданных законов: {player.correct_picks}"
+    )
 
 
 @router.message(Command("score"))
@@ -224,10 +228,10 @@ async def on_vote(callback: CallbackQuery) -> None:
             await callback.answer(hint[:200], show_alert=True)
             return
     texts = {
-        "ok": f"Путь {POSITIONS[position]} принят. Счёт скрыт до итогов.",
-        "already": "Ты уже оставил След сегодня.",
-        "closed": "Голосование закрыто, идёт подсчёт.",
-        "invalid": "Такого пути нет на карте Стаи.",
+        "ok": f"{ok_mark(str(round_id))} Путь {POSITIONS[position]} принят. Счёт скрыт до итогов.",
+        "already": f"{hint_mark('already')} Ты уже оставил След сегодня.",
+        "closed": f"{warn_mark('closed')} Голосование закрыто, идёт подсчёт.",
+        "invalid": f"{warn_mark('invalid')} Такого пути нет на карте Стаи.",
     }
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)
 
@@ -253,13 +257,13 @@ async def _wallet_view_text(user) -> str:
         player = await upsert_player(session, user)
         if player.wallet_address:
             return (
-                f"Привязанный кошелёк: {player.wallet_address[:6]}…{player.wallet_address[-6:]}\n"
+                f"{money_mark(str(user.id))} Привязанный кошелёк: {player.wallet_address[:6]}…{player.wallet_address[-6:]}\n"
                 "Чтобы перепривязать: /wallet <адрес>\n"
                 "Как поставить на путь: /stake"
                 f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
             )
     return (
-        "Кошелёк не привязан.\n"
+        f"{money_mark('none')} Кошелёк не привязан.\n"
         "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
         "Он нужен для ставок на путь, бонуса угадавшим и выигрышей.\n"
         f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
@@ -279,7 +283,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
     """
     if not is_valid_ton_address(address):
         await message.answer(
-            "Это не похоже на адрес TON.\n"
+            f"{warn_mark('badaddr')} Это не похоже на адрес TON.\n"
             "Адрес начинается с UQ или EQ — длинная строка вроде "
             "<code>UQD5…</code>. Пришли её целиком одним сообщением.",
             parse_mode=ParseMode.HTML,
@@ -301,18 +305,20 @@ async def _bind_wallet(message: Message, address: str) -> bool:
         )
         if locked.scalar_one_or_none() is not None:
             _WALLET_PENDING.discard(uid)
-            await message.answer("У тебя ставка в игре — кошелёк закреплён до итогов дня.")
+            await message.answer(f"{warn_mark('locked')} У тебя ставка в игре — кошелёк закреплён до итогов дня.")
             return True
-        player.wallet_address = address.strip()
+        # Храним канонический raw-hex: watcher сопоставляет отправителя
+        # транзакции именно с ним, а UQ/EQ-формы разных кошельков дают один raw.
+        player.wallet_address = normalize_address(address)
         player.wallet_linked_at = datetime.now(timezone.utc)
         await session.commit()
     _WALLET_PENDING.discard(uid)
-    confirmation = "Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
+    confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(confirmation)
     else:
         # Без деталей: сам адрес уже засветился в сообщении группы.
-        await message.answer("Кошелёк привязан (детали — в личке у бота).")
+        await message.answer(f"{ok_mark('group')} Кошелёк привязан (детали — в личке у бота).")
     return True
 
 
@@ -326,7 +332,7 @@ async def cmd_wallet(message: Message) -> None:
             if not player.wallet_address:
                 _WALLET_PENDING.add(message.from_user.id)
                 await message.answer(
-                    "Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
+                    f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
                     "Он начинается с UQ или EQ и выглядит примерно так:\n"
                     "<code>UQD5…длинный набор букв и цифр</code>\n\n"
                     "Отменить: напиши <b>отмена</b>.",
@@ -354,7 +360,7 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
 
 
 _STAKE_HOWTO = (
-    "Ставка на путь — три шага:\n"
+    "{mark} Ставка на путь — три шага:\n"
     "1. Привяжи кошелёк: /wallet (один раз и навсегда).\n"
     "2. Переведи от {min:g} до {max:g} TON казначею со СВОЕГО привязанного кошелька:\n"
     "<code>{treasury}</code>\n"
@@ -371,6 +377,7 @@ async def _stake_view_text(user) -> str:
     if not settings.ton_enabled:
         return "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
     head = _STAKE_HOWTO.format(
+        mark=money_mark(str(user.id)),
         min=settings.stake_min_ton,
         max=settings.stake_max_ton,
         treasury=settings.active_treasury_address or "(адрес казначея ещё не настроен)",
@@ -379,7 +386,7 @@ async def _stake_view_text(user) -> str:
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
         if not player.wallet_address:
-            status = "\n\nКошелёк пока не привязан — начни с шага 1: /wallet"
+            status = f"\n\n{hint_mark('stake-nowallet')} Кошелёк пока не привязан — начни с шага 1: /wallet"
         else:
             round_row = await get_active_round(session)
             if round_row is not None:
@@ -389,13 +396,13 @@ async def _stake_view_text(user) -> str:
                     )
                 ).scalar_one_or_none()
                 if stake is not None:
-                    state = "подтверждена" if stake.status == "confirmed" else "ждёт подтверждения сети"
+                    state = "подтверждена ✅" if stake.status == "confirmed" else "ждёт подтверждения сети ⏳"
                     status = (
-                        f"\n\nТвоя ставка сегодня: {from_nano(stake.amount_nanotons):g} TON ({state}).\n"
+                        f"\n\n{money_mark(str(round_row.id))} Твоя ставка сегодня: {from_nano(stake.amount_nanotons):g} TON ({state}).\n"
                         "Выигрыш придёт, если твой голос совпадёт с победившим путём."
                     )
                 elif await get_vote(session, round_row.id, player.id) is not None:
-                    status = "\n\nСтавки нет, но голос уже оставлен. Перевод засчитается в этот же день, если успеет до закрытия."
+                    status = f"\n\n{hint_mark('vote-first')} Ставки нет, но голос уже оставлен. Перевод засчитается в этот же день, если успеет до закрытия."
     return f"{head}{status}{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
 
 
@@ -424,7 +431,9 @@ async def on_stake_view(callback: CallbackQuery) -> None:
 
 
 def _format_top(rows: list[tuple[str, int]], pot_nanotons: float) -> str:
-    lines = [f"Копилка месяца: {pot_nanotons:g} TON"]
+    from app.style import money_mark
+
+    lines = [f"{money_mark('top')} Копилка месяца: {pot_nanotons:g} TON"]
     if not rows:
         lines.append("Верных путей в этом месяце ещё нет — всё впереди.")
     else:
@@ -486,12 +495,12 @@ async def _revote_status(user) -> tuple[str, int | None]:
         player = await upsert_player(session, user)
         round_row = await get_active_round(session)
         if round_row is None or round_row.status != RoundStatus.OPEN:
-            return "День закрыт — идёт подсчёт. Менять путь поздно.", None
+            return f"{warn_mark('revote-closed')} День закрыт — идёт подсчёт. Менять путь поздно.", None
         vote = await get_vote(session, round_row.id, player.id)
         if vote is None:
-            return "Ты ещё не выбрал путь сегодня — первый выбор бесплатный.", None
+            return f"{hint_mark('revote-free')} Ты ещё не выбрал путь сегодня — первый выбор бесплатный.", None
         return (
-            f"Сегодня твой путь: {POSITIONS[vote.card_position]}. "
+            f"{path_mark('care', str(player.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}. "
             "Оплати смену и нажми другую карту. Грант действует до закрытия дня.",
             round_row.id,
         )
@@ -500,7 +509,7 @@ async def _revote_status(user) -> tuple[str, int | None]:
 @router.message(Command("change"))
 async def cmd_change(message: Message) -> None:
     if not settings.revote_enabled:
-        await message.answer("Смена выбора сейчас недоступна.")
+        await message.answer(f"{warn_mark('revote-off')} Смена выбора сейчас недоступна.")
         return
     status, round_id = await _revote_status(message.from_user)
     if message.chat.type == ChatType.PRIVATE:
@@ -579,10 +588,10 @@ async def on_successful_payment(message: Message) -> None:
         )
         await session.commit()
     if valid:
-        await message.answer("Оплачено ⭐ Нажми теперь на другую карту — выбор обновится.")
+        await message.answer(f"{ok_mark(str(round_id))} Оплачено ⭐ Нажми теперь на другую карту — выбор обновится.")
     else:
         await message.answer(
-            "Оплата прошла, но день уже закрылся — грант сохранён. "
+            f"{warn_mark('late-pay')} Оплата прошла, но день уже закрылся — грант сохранён. "
             "Напиши хранителю игры для возврата."
         )
 
@@ -601,7 +610,7 @@ async def on_payton(callback: CallbackQuery) -> None:
         return
     address = settings.active_treasury_address
     await callback.message.answer(
-        f"Переведи {settings.revote_ton:g} TON (или больше) на адрес казначея:\n"
+        f"{money_mark(raw)} Переведи {settings.revote_ton:g} TON (или больше) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
         f"Обязательно с комментарием (memo):\n<code>{revote_memo(int(raw))}</code>\n\n"
         "Кошелёк должен быть привязан: /wallet. Грант придёт в течение минуты. "
@@ -639,7 +648,7 @@ async def track_chat(event: ChatMemberUpdated) -> None:
 
 @router.message(Command("advance"))
 async def cmd_advance(message: Message) -> None:
-    if message.from_user.id not in settings.admin_id_set:
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
     closed_here = False
@@ -692,13 +701,13 @@ async def cmd_resetgame(message: Message) -> None:
     """Сброс игры — только для хранителя. Два режима:
     /resetgame confirm — всё с нуля, включая канон истории;
     /resetgame confirm keepstory — счёты чисты, но мир помнит прошлое."""
-    if message.from_user.id not in settings.admin_id_set:
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
     words = (message.text or "").lower().split()
     if "confirm" not in words:
         await message.answer(
-            "Это сотрёт все дни, голоса, ставки, выплаты и очки игроков.\n"
+            f"{warn_mark('reset')} Это сотрёт все дни, голоса, ставки, выплаты и очки игроков.\n"
             "Кошельки, чаты и копилка месяца останутся.\n"
             "<code>/resetgame confirm</code> — полный сброс вместе с каноном истории.\n"
             "<code>/resetgame confirm keepstory</code> — сброс счётов, "
@@ -716,7 +725,7 @@ async def cmd_resetgame(message: Message) -> None:
     await announce_new_day(message.bot, new_round)
     mode = "Канон истории сохранён." if keep_story else "История стёрта полностью."
     await message.answer(
-        f"Игра обнулена. День {new_round.day_index} объявлен в чатах. "
+        f"{ok_mark('reset')} Игра обнулена. День {new_round.day_index} объявлен в чатах. "
         f"{mode} Голосование до {new_round.voting_ends_at:%H:%M} UTC."
     )
 
@@ -733,11 +742,11 @@ async def on_private_fallback(message: Message) -> None:
         return
     text = (message.text or "").strip()
     if not text:
-        await message.answer("Пришли адрес текстом (UQ…/EQ…) или напиши «отмена».")
+        await message.answer(f"{hint_mark('retry')} Пришли адрес текстом (UQ…/EQ…) или напиши «отмена».")
         return
     if text.lower() in {"отмена", "cancel"}:
         _WALLET_PENDING.discard(uid)
-        await message.answer("Отменено. Когда будешь готов: /wallet")
+        await message.answer(f"{ok_mark('cancel')} Отменено. Когда будешь готов: /wallet")
         return
     if text.startswith("/"):
         # Любая другая команда закрывает режим ожидания без лишнего шума.

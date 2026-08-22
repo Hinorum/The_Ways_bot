@@ -89,7 +89,9 @@ async def test_wallet_bind_in_group_hides_details() -> None:
 
 
 async def test_wallet_bind_in_private_confirms() -> None:
-    address = "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnW"
+    # Адрес с другим raw: после нормализации UQ/EQ одной пары ключей дают
+    # одинаковый canonical-вид и UNIQUE(players.wallet_address) честно ругается.
+    address = "UQF7x2QmVbNjKdS8pLwAyHrTcEuIoPzXvBnMkJhGfdSwqLmZ"
     message = make_message("private", 700_006, text=f"/wallet {address}")
     await cmd_wallet(message)
     assert "привязан" in message.answer.call_args.args[0]

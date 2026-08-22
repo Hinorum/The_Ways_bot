@@ -223,10 +223,11 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
         ),
     )
     if not fetched[0]:
-        render_cover(cover_path, chapter["title"], chapter["text"])
+        # PIL-рендер синхронный и тяжёлый — уводим из event loop.
+        await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
     for (position, card, image_path, _prompt, _short), ok in zip(jobs, fetched[1:]):
         if not ok:
-            render_card(image_path, card["title"], card["description"], position)
+            await asyncio.to_thread(render_card, image_path, card["title"], card["description"], position)
         session.add(
             Card(
                 round_id=round_row.id,

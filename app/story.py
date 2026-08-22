@@ -183,10 +183,12 @@ async def fetch_free_image(
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     base = "https://image.pollinations.ai/prompt/" + quote(styled_prompt(prompt))
+    # Щедрые таймауты: бесплатная очередь flux иногда держит запрос минуту.
+    long, mid = settings.image_timeout_seconds, max(45, settings.image_timeout_seconds - 25)
     plans = [
-        ("flux", 60, 1),
-        ("sana", 45, 2),
-        ("turbo", 30, 2),
+        ("flux", long, 1),
+        ("sana", mid, 2),
+        ("turbo", 45, 2),
     ]
     for model, seconds, attempts in plans:
         for attempt in range(1, attempts + 1):
@@ -247,13 +249,15 @@ async def generate_chapter(day_index: int, previous_beats: list[str], win_rule=N
     return neural or authored
 
 
-async def _chat_completion(messages: list[dict], timeout: int = 45) -> tuple[dict, str] | None:
+async def _chat_completion(messages: list[dict], timeout: int | None = None) -> tuple[dict, str] | None:
     """OpenAI-совместимый запрос по цепочке провайдеров и моделей.
 
     Если задан LLM_API_KEY — сначала кастомный провайдер (Hugging Face, Groq,
     OpenRouter, локальная Ollama), затем бесплатный Pollinations. Первый
     валидный ответ побеждает; иначе None и вызывающий код уходит в офлайн-лор.
     """
+    if timeout is None:
+        timeout = settings.llm_timeout_seconds
     providers: list[tuple[str, str, list[str]]] = []
     if settings.llm_api_key:
         providers.append((settings.llm_base_url, settings.llm_api_key, settings.llm_model_chain))
@@ -410,7 +414,7 @@ async def generate_epilogue(
             {"role": "system", "content": DM_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        timeout=30,
+        timeout=55,
     )
     if result is None:
         return ""

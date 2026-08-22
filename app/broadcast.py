@@ -20,6 +20,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Chat, Round
 from app.story import render_card, render_cover
+from app.style import day_mark, path_mark
 from app.tally import format_results
 
 logger = logging.getLogger(__name__)
@@ -49,21 +50,22 @@ def _clamp(text: str, limit: int) -> str:
 def status_text(round_row: Round) -> str:
     from app.models import RULE_PHRASES
 
+    mark = day_mark(str(round_row.id))
     if round_row.status.value == "open":
-        phase = f"Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
+        phase = f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
     elif round_row.status.value == "tallying":
-        phase = "Голосование закрыто. Идёт час подсчёта."
+        phase = "⏳ Голосование закрыто. Идёт час подсчёта."
     else:
-        phase = "День закрыт."
+        phase = "🌙 День закрыт."
     cards = "\n\n".join(
         f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}\n{_clamp(card.description, 280)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     text = (
-        f"{round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 1200)}\n\n"
+        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 1200)}\n\n"
         f"{cards}\n\n{phase}\n"
-        f"Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
-        f"Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
+        f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
+        f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
     )
     return text[:_MAX_TEXT_LEN]
 
@@ -74,7 +76,7 @@ def _card_media(card) -> InputMediaPhoto:
         render_card(path, card.title, card.description, card.position)
     return InputMediaPhoto(
         media=FSInputFile(path),
-        caption=f"{POSITIONS[card.position]}. {card.title}",
+        caption=f"{path_mark(getattr(card, 'tag', 'care'), str(card.round_id) + str(card.position))} Путь {POSITIONS[card.position]}. {card.title}",
     )
 
 
@@ -86,7 +88,10 @@ def _cover_media(round_row: Round) -> InputMediaPhoto:
         path = Path(settings.media_dir) / f"day{round_row.day_index}_cover.jpg"
     if not path.exists():
         render_cover(path, round_row.chapter_title, round_row.chapter_text)
-    return InputMediaPhoto(media=FSInputFile(path), caption=round_row.chapter_title[:1000])
+    return InputMediaPhoto(
+        media=FSInputFile(path),
+        caption=f"{day_mark(str(round_row.id))} {round_row.chapter_title[:1000]}",
+    )
 
 
 def day_media_group(round_row: Round) -> list[InputMediaPhoto]:

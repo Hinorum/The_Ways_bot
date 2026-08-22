@@ -171,7 +171,7 @@ async def plan_day_art(chapter: dict, recent_beats: list[str] | None = None) -> 
         {"role": "user", "content": _build_art_prompt(chapter, beats)},
     ]
     for attempt in range(1, 3):
-        result = await _chat_completion(messages, timeout=40)
+        result = await _chat_completion(messages)
         if result is None:
             break
         payload, used_model = result

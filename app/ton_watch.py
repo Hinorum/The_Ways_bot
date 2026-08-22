@@ -23,11 +23,13 @@ from app.db import SessionLocal
 from app.models import Payout, Player, RevoteGrant, Round, RoundStatus, WatcherState
 from app.payments import parse_revote_memo
 from app.stakes import confirm_stake, current_network, register_stake
-from app.ton_utils import to_nano
+from app.ton_utils import normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
 
 CURSOR_KEY = "ton_watch_cursor_utime"
+# Одноразовая миграция старых привязок из UQ/EQ-формы в канонический raw-hex.
+WALLET_NORM_KEY = "wallet_norm_v1"
 # Стартовый откат для первого запуска: не глубже полусуток.
 _CURSOR_FALLBACK_HOURS = 12
 # TonAPI v2 отдаёт страницы транзакций; идём вглубь, пока не накроем курсор
@@ -140,7 +142,7 @@ async def process_transfer(transfer: Transfer) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
     async with SessionLocal() as session:
         player_result = await session.execute(
-            select(Player).where(Player.wallet_address == transfer.source)
+            select(Player).where(Player.wallet_address == normalize_address(transfer.source))
         )
         player = player_result.scalar_one_or_none()
         if player is None:
@@ -253,8 +255,31 @@ async def _collect_transfers(since: int) -> list[Transfer]:
     return sorted(transfers, key=lambda item: item.utime)
 
 
+async def _migrate_wallet_formats(session) -> None:
+    """Разовый перевод старых привязок UQ/EQ… в канонический raw-hex.
+
+    До нормализации watcher не находил отправителя: TonAPI отдаёт raw, а в БД
+    лежала дружественная строка. Флаг в WatcherState делает миграцию идемпотентной.
+    """
+    row = await session.get(WatcherState, WALLET_NORM_KEY)
+    if row is not None:
+        return
+    result = await session.execute(select(Player).where(Player.wallet_address.is_not(None)))
+    changed = 0
+    for player in result.scalars():
+        normalized = normalize_address(player.wallet_address)
+        if normalized != player.wallet_address:
+            player.wallet_address = normalized
+            changed += 1
+    session.add(WatcherState(key=WALLET_NORM_KEY, value="1"))
+    await session.commit()
+    if changed:
+        logger.info("Нормализовано адресов кошельков: %d", changed)
+
+
 async def watch_once() -> None:
     async with SessionLocal() as session:
+        await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
     transfers = await _collect_transfers(since)
     processed_through = since

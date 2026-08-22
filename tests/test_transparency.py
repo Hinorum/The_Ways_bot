@@ -71,13 +71,14 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
 
 def test_format_top_lists_leaders_and_pot() -> None:
     from app.handlers import _format_top
+    from app.style import money_mark
 
     empty = _format_top([], 0.0)
     assert "ещё нет" in empty and "0 TON" in empty
 
     filled = _format_top([("Пёс", 7), ("Кот", 3)], 1.25)
     lines = filled.splitlines()
-    assert lines[0] == "Копилка месяца: 1.25 TON"
+    assert lines[0] == f"{money_mark('top')} Копилка месяца: 1.25 TON"
     assert lines[1] == "Лидеры месяца по верным путям:"
     assert "1. Пёс — 7" in filled and "2. Кот — 3" in filled
 

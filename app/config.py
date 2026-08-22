@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     media_dir: str = "./media/generated"
     use_free_images: bool = True
     use_free_story_llm: bool = True
+    # Бесплатные модели неторопливы: таймауты щедрые, чтобы день собирался
+    # нейросетью, а не фолбэками. Настраивается из Environment.
+    llm_timeout_seconds: int = 75
+    image_timeout_seconds: int = 90
     story_models: str = "openai-fast,openai,mistral"
     llm_api_key: str = ""
     llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"

@@ -36,22 +36,25 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
 
 
 def format_results(round_row: Round) -> str:
+    from app.style import result_mark
+
     raw = json.loads(round_row.vote_counts_json or "{}")
     counts = {int(key): int(value) for key, value in raw.items()}
     names = {card.position: card.title for card in round_row.cards}
+    mark_key = str(getattr(round_row, "id", round_row.day_index))
     lines = [
-        f"Итог дня {round_row.day_index}",
-        f"Закон дня: {RULE_PHRASES[round_row.win_rule]}",
+        f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
+        f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}",
         "",
     ]
     for position in range(3):
-        mark = " ← След" if position == round_row.winner_card else ""
+        mark = " ← 🏆 След" if position == round_row.winner_card else ""
         lines.append(f"{names[position]}: {counts.get(position, 0)}{mark}")
     winner = names[round_row.winner_card or 0]
     consequence = next(
         card.consequence for card in round_row.cards if card.position == round_row.winner_card
     )
-    lines += ["", f"Канон: {winner}", consequence]
+    lines += ["", f"📜 Канон: {winner}", consequence]
     return "\n".join(lines)
 
 
