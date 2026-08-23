@@ -135,16 +135,16 @@ def format_economics(stats: dict) -> str:
     if stats["pot"] <= 0:
         return "\n".join(lines)
     ton = from_nano
-    lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} TON · Играло: {stats['players']}")
+    lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram · Играло: {stats['players']}")
     if stats["refunded"]:
         lines.append("🎯 Коэффициент недоступен: все ставки возвращены игрокам")
     elif stats["multiplier"] is not None:
         lines.append(f"🎯 Коэффициент верного пути: ×{stats['multiplier']:.2f}")
     if stats["bonus"] > 0:
-        lines.append(f"🎁 Угадавшим без ставки роздано: {ton(stats['bonus']):.2f} TON")
+        lines.append(f"🎁 Угадавшим без ставки роздано: {ton(stats['bonus']):.2f} Gram")
     if stats["board_today"] > 0 or stats["bank_total"] > 0:
         lines.append(
-            f"🏆 В копилку месяца ушло: {ton(stats['board_today']):.2f} TON"
-            f" · всего в банке месяца: {ton(stats['bank_total']):.2f} TON"
+            f"🏆 В копилку месяца ушло: {ton(stats['board_today']):.2f} Gram"
+            f" · всего в банке месяца: {ton(stats['bank_total']):.2f} Gram"
         )
     return "\n".join(lines)

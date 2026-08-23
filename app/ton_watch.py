@@ -121,7 +121,7 @@ def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
                     _warned_jettons.clear()
                 _warned_jettons.add(tx_hash)
                 logger.warning(
-                    "Входящий перевод %s… — токен (jetton), а не TON. Ставкой не становится "
+                    "Входящий перевод %s… — токен (jetton), а не нативный Gram/TON. Ставкой не становится "
                     "и автоматически не возвращается: верни вручную с казначея.",
                     tx_hash[:16],
                 )

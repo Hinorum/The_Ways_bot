@@ -80,10 +80,10 @@ async def cmd_start(message: Message) -> None:
         "/score — твои Следы",
     ]
     if settings.revote_enabled:
-        lines.append("/change — сменить выбор (⭐ Stars или TON)")
+        lines.append("/change — сменить выбор (⭐ Stars или Gram)")
     if settings.ton_enabled:
         lines.append("/wallet — привязать кошелёк для ставок")
-        lines.append("/stake — как поставить TON на путь")
+        lines.append("/stake — как поставить Gram на путь")
         lines.append("/top — копилка месяца и лидеры")
         lines.append(
             "\nФонд дня: 97% — поставившим на верный путь пропорционально, "
@@ -310,7 +310,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
     """
     if not is_valid_ton_address(address):
         await message.answer(
-            f"{warn_mark('badaddr')} Это не похоже на адрес TON.\n"
+            f"{warn_mark('badaddr')} Это не похоже на адрес Gram-кошелька (бывший TON).\n"
             "Адрес начинается с UQ или EQ — длинная строка вроде "
             "<code>UQD5…</code>. Пришли её целиком одним сообщением.",
             parse_mode=ParseMode.HTML,
@@ -359,7 +359,7 @@ async def cmd_wallet(message: Message) -> None:
             if not player.wallet_address:
                 await _dialog_start(message.from_user.id)
                 await message.answer(
-                    f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего TON-кошелька — привяжу автоматически.\n"
+                    f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего Gram-кошелька (бывший TON) — привяжу автоматически.\n"
                     "Он начинается с UQ или EQ и выглядит примерно так:\n"
                     "<code>UQD5…длинный набор букв и цифр</code>\n\n"
                     "Отменить: напиши <b>отмена</b>.",
@@ -389,7 +389,7 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
 _STAKE_HOWTO = (
     "{mark} Ставка на путь — три шага:\n"
     "1. Привяжи кошелёк: /wallet (один раз и навсегда).\n"
-    "2. Переведи от {min:g} до {max:g} TON казначею со СВОЕГО привязанного кошелька:\n"
+    "2. Переведи от {min:g} до {max:g} Gram казначею со СВОЕГО привязанного кошелька:\n"
     "<code>{treasury}</code>\n"
     "Комментарий не нужен: watcher найдёт перевод по отправителю примерно за минуту.\n"
     "3. Нажми кнопку с картой пути — когда угодно до закрытия голосования.\n\n"
@@ -425,7 +425,7 @@ async def _stake_view_text(user) -> str:
                 if stake is not None:
                     state = "подтверждена ✅" if stake.status == "confirmed" else "ждёт подтверждения сети ⏳"
                     status = (
-                        f"\n\n{money_mark(str(round_row.id))} Твоя ставка сегодня: {from_nano(stake.amount_nanotons):g} TON ({state}).\n"
+                        f"\n\n{money_mark(str(round_row.id))} Твоя ставка сегодня: {from_nano(stake.amount_nanotons):g} Gram ({state}).\n"
                         "Выигрыш придёт, если твой голос совпадёт с победившим путём."
                     )
                 elif await get_vote(session, round_row.id, player.id) is not None:
@@ -437,7 +437,7 @@ async def _stake_view_text(user) -> str:
 async def cmd_stake(message: Message) -> None:
     if message.chat.type != ChatType.PRIVATE:
         await message.answer(
-            "Как поставить TON на путь — нажми кнопку.",
+            "Как поставить Gram на путь — нажми кнопку.",
             reply_markup=_personal_keyboard("stake:view", "Как поставить"),
         )
         return
@@ -451,7 +451,7 @@ async def on_stake_view(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     hint = (
-        f"Ставка: переведи {settings.stake_min_ton:g}-{settings.stake_max_ton:g} TON казначею "
+        f"Ставка: переведи {settings.stake_min_ton:g}-{settings.stake_max_ton:g} Gram казначею "
         "со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
     )
     await callback.answer(hint[:200], show_alert=True)
@@ -460,7 +460,7 @@ async def on_stake_view(callback: CallbackQuery) -> None:
 def _format_top(rows: list[tuple[str, int]], pot_nanotons: float) -> str:
     from app.style import money_mark
 
-    lines = [f"{money_mark('top')} Копилка месяца: {pot_nanotons:g} TON"]
+    lines = [f"{money_mark('top')} Копилка месяца: {pot_nanotons:g} Gram"]
     if not rows:
         lines.append("Верных путей в этом месяце ещё нет — всё впереди.")
     else:
@@ -511,7 +511,7 @@ def _revote_keyboard(round_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"⭐ {settings.revote_stars} Stars", callback_data=f"paystars:{round_id}")],
-            [InlineKeyboardButton(text=f"💎 {settings.revote_ton:g} TON", callback_data=f"payton:{round_id}")],
+            [InlineKeyboardButton(text=f"💎 {settings.revote_ton:g} Gram", callback_data=f"payton:{round_id}")],
         ]
     )
 
@@ -641,14 +641,14 @@ async def on_payton(callback: CallbackQuery) -> None:
         await callback.answer("Оплата — только в личке у бота (/change).", show_alert=True)
         return
     if not settings.ton_enabled or not settings.active_treasury_address:
-        await callback.answer("Приём TON ещё не включён. Используй Stars.", show_alert=True)
+        await callback.answer("Приём Gram ещё не включён. Используй Stars.", show_alert=True)
         return
     if not raw.isdigit():
         await callback.answer("Некорректный счёт.", show_alert=True)
         return
     address = settings.active_treasury_address
     await callback.message.answer(
-        f"{money_mark(raw)} Переведи {settings.revote_ton:g} TON (или больше) на адрес казначея:\n"
+        f"{money_mark(raw)} Переведи {settings.revote_ton:g} Gram (или больше) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
         f"Обязательно с комментарием (memo):\n<code>{revote_memo(int(raw))}</code>\n\n"
         "Кошелёк должен быть привязан: /wallet. Грант придёт в течение минуты. "
@@ -780,7 +780,7 @@ async def cmd_resetgame(message: Message) -> None:
 async def cmd_revenue(message: Message) -> None:
     """Касса игры для хранителя: ledger доходов из Income.
 
-    Звёзды сверяются с балансом бота во Fragment, TON — с историей казны.
+    Звёзды сверяются с балансом бота во Fragment, Gram — с историей казны.
     """
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
@@ -794,7 +794,7 @@ async def cmd_revenue(message: Message) -> None:
             if kind == "stars":
                 parts.append(f"⭐ {stars} ({count} оплат)")
             else:
-                parts.append(f"💎 {from_nano(nanotons):.4f} TON ({count} переводов)")
+                parts.append(f"💎 {from_nano(nanotons):.4f} Gram ({count} переводов)")
         return f"{title}: " + ("; ".join(parts) if parts else "пусто")
 
     async with SessionLocal() as session:

@@ -141,7 +141,7 @@ async def settle_month_if_due(bot: Bot | None = None) -> bool:
     if bot is not None and settings.admin_id_set:
         text = (
             f"🏆 Копилка лидерборда за {prev_key} отправлена: "
-            f"{total / 1e9:.4f} TON между {len(shares)} лидером(ами)."
+            f"{total / 1e9:.4f} Gram между {len(shares)} лидером(ами)."
         )
         for admin_id in settings.admin_id_set:
             try:

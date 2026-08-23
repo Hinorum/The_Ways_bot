@@ -28,7 +28,7 @@ BOT_DESCRIPTION = (
     "Каждое утро объявляется закон дня, нейросеть пишет главу — "
     "и стая выбирает один из трёх путей. Победивший путь становится каноном: "
     "завтрашняя глава вырастет из этого выбора.\n\n"
-    "Передумал — смени путь платно (/change). Веришь в расклад — ставь TON (/wallet).\n"
+    "Передумал — смени путь платно (/change). Веришь в расклад — ставь Gram (/wallet).\n"
     "Нажми START: Первый Лай уже ждёт."
 )
 
@@ -38,17 +38,17 @@ PRIVATE_COMMANDS = [
     BotCommand(command="today", description="Карты дня"),
     BotCommand(command="lore", description="Канон прошлых дней"),
     BotCommand(command="score", description="Твои Следы"),
-    BotCommand(command="stake", description="Как поставить TON на путь"),
-    BotCommand(command="wallet", description="Привязать кошелёк TON"),
+    BotCommand(command="stake", description="Как поставить Gram на путь"),
+    BotCommand(command="wallet", description="Привязать кошелёк Gram"),
     BotCommand(command="top", description="Копилка месяца и лидеры"),
-    BotCommand(command="change", description="Сменить путь (⭐ или TON)"),
+    BotCommand(command="change", description="Сменить путь (⭐ или Gram)"),
 ]
 
 # Группы и каналы: только то, что там уместно.
 GROUP_COMMANDS = [
     BotCommand(command="today", description="Карты дня"),
     BotCommand(command="lore", description="Канон прошлых дней"),
-    BotCommand(command="stake", description="Как поставить TON на путь"),
+    BotCommand(command="stake", description="Как поставить Gram на путь"),
 ]
 
 

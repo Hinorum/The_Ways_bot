@@ -497,12 +497,12 @@ async def test_results_message_shows_day_economics(session) -> None:
     await session.commit()
 
     text = await results_message(rnd, session)
-    assert "Банк дня: 3.00 TON · Играло: 15" in text
+    assert "Банк дня: 3.00 Gram · Играло: 15" in text
     assert "I 13% · II 60% · III 27%" in text
     assert "×2.90" in text
-    assert "Угадавшим без ставки роздано: 0.06 TON" in text
-    assert "В копилку месяца ушло: 0.02 TON" in text
-    assert "всего в банке месяца: 1.34 TON" in text
+    assert "Угадавшим без ставки роздано: 0.06 Gram" in text
+    assert "В копилку месяца ушло: 0.02 Gram" in text
+    assert "всего в банке месяца: 1.34 Gram" in text
 
 
 async def test_results_message_refund_day_has_no_multiplier(session) -> None:
@@ -547,7 +547,7 @@ async def test_results_message_refund_day_has_no_multiplier(session) -> None:
     await session.commit()
 
     text = await results_message(rnd, session)
-    assert "Банк дня: 1.00 TON" in text
+    assert "Банк дня: 1.00 Gram" in text
     assert "возвращены" in text
     assert "×" not in text
 
