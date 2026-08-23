@@ -181,8 +181,16 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
             age_min = int((_now() - moment).total_seconds() // 60)
             if age_min >= _QUEUE_OLD_AFTER.total_seconds() // 60:
                 problems.append(f"очередь выплат стоит {age_min} мин")
+                reason = ""
+                if not settings.ton_enabled:
+                    reason = " Причина: TON выключен (TON_ENABLED=false), ретраи не идут."
+                elif not settings.active_treasury_mnemonic:
+                    reason = " Причина: нет мнемоники казначея для активной сети (TREASURY_TESTNET_MNEMONIC?)."
                 if await _throttled(session, ALERT_QUEUE_KEY):
-                    await notify_admins(bot, f"⚠️ Очередь выплат не двигается {age_min} мин. Проверь казначея/сеть.")
+                    await notify_admins(
+                        bot,
+                        f"⚠️ Очередь выплат не двигается {age_min} мин.{reason} Проверь казначея/сеть.",
+                    )
         # 3. Dead-letter выплаты существуют — деньги ждут ручного разбора.
         dead = (
             await session.execute(

@@ -83,11 +83,12 @@ async def tick(bot: Bot | None = None) -> None:
             if closed_here:
                 await award_points(session, finished)
                 await write_epilogue(session, finished)
-                if settings.ton_enabled:
-                    # Финализируем сразу: пост итогов показывает реальные цифры.
-                    from app.stakes import finalize_day_payouts
+                # Финализируем всегда, а не только при включённом TON:
+                # если флаг погасили посреди дня со ставками, долг игрокам
+                # должен остаться видимым (очередь+алерты), а не исчезнуть.
+                from app.stakes import finalize_day_payouts
 
-                    await finalize_day_payouts(session, finished)
+                await finalize_day_payouts(session, finished)
             nxt, created = await create_next_round_detailed(session)
             if created:
                 await announce_new_day(bot, nxt, finished if closed_here else None)

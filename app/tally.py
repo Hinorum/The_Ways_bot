@@ -50,6 +50,8 @@ def format_results(round_row: Round) -> str:
     for position in range(3):
         mark = " ← 🏆 След" if position == round_row.winner_card else ""
         lines.append(f"{names[position]}: {counts.get(position, 0)}{mark}")
+    if getattr(round_row, "tie_note", None):
+        lines.append(f"🤝 {round_row.tie_note}")
     winner = names[round_row.winner_card or 0]
     consequence = next(
         card.consequence for card in round_row.cards if card.position == round_row.winner_card

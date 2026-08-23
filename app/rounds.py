@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -561,16 +562,28 @@ async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[in
     return counts
 
 
-def pick_winner(counts: dict[int, int], rule: WinRule) -> int:
+def tied_positions(counts: dict[int, int], rule: WinRule) -> list[int]:
+    """Все пути, претендующие на победу по закону дня (без учёта позиций)."""
     items = [(counts.get(i, 0), i) for i in range(3)]
     if rule is WinRule.MAJORITY:
         best = max(item[0] for item in items)
-        return min(index for total, index in items if total == best)
+        return sorted(i for total, i in items if total == best)
     if rule is WinRule.MINORITY:
         worst = min(item[0] for item in items)
-        return min(index for total, index in items if total == worst)
+        return sorted(i for total, i in items if total == worst)
     ordered = sorted(items, key=lambda item: (item[0], item[1]))
-    return ordered[1][1]
+    median = ordered[1][0]
+    return sorted(i for total, i in items if total == median)
+
+
+def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) -> int:
+    """Победитель по закону дня. Без seed — детерминированный fallback
+    (меньший номер пути); с seed — честный жребий, посеянный утренним
+    обязательством дня, чтобы ничья не решалась «номером карты»."""
+    candidates = tied_positions(counts, rule)
+    if len(candidates) > 1 and seed:
+        return random.Random(f"law:{seed}").choice(candidates)
+    return candidates[0]
 
 
 async def close_voting(session: AsyncSession, round_row: Round) -> Round:
@@ -599,7 +612,17 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         loaded = await get_round(session, round_row.id)
         return (loaded or round_row), False
     counts = await count_votes_for_tally(session, round_row.id)
-    winner = pick_winner(counts, round_row.win_rule)
+    # Жребий сеется утренним обязательством: игроки не могут знать исход
+    # ничьей заранее, но после вскрытия обязательства результат проверяем.
+    seed = f"{round_row.rule_commitment}:{round_row.day_index}"
+    winner = pick_winner(counts, round_row.win_rule, seed=seed)
+    tied = tied_positions(counts, round_row.win_rule)
+    tie_note: str | None = None
+    if len(tied) > 1:
+        tie_note = (
+            f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
+            f"жребий закона по обязательству дня выбрал путь {_ROMAN[winner]}."
+        )
     if not round_row.cards:
         loaded = await get_round(session, round_row.id)
         if loaded is not None:
@@ -615,7 +638,12 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     result = await session.execute(
         update(Round)
         .where(Round.id == round_row.id, Round.status == RoundStatus.TALLYING)
-        .values(winner_card=winner, vote_counts_json=counts_json, status=RoundStatus.CLOSED)
+        .values(
+            winner_card=winner,
+            vote_counts_json=counts_json,
+            tie_note=tie_note,
+            status=RoundStatus.CLOSED,
+        )
     )
     if result.rowcount == 0:
         await session.rollback()
@@ -623,6 +651,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         return (loaded or round_row), False
     round_row.winner_card = winner
     round_row.vote_counts_json = counts_json
+    round_row.tie_note = tie_note
     round_row.status = RoundStatus.CLOSED
     session.add(
         StoryBeat(

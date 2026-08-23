@@ -23,6 +23,7 @@ _SQLITE_COLUMN_DDL = {
         "payouts_finalized": "ALTER TABLE rounds ADD COLUMN payouts_finalized BOOLEAN NOT NULL DEFAULT 0",
         "epilogue_text": "ALTER TABLE rounds ADD COLUMN epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
         "announced_at": "ALTER TABLE rounds ADD COLUMN announced_at DATETIME",
+        "tie_note": "ALTER TABLE rounds ADD COLUMN tie_note VARCHAR(200)",
     },
     "cards": {
         "tag": "ALTER TABLE cards ADD COLUMN tag VARCHAR(16) NOT NULL DEFAULT 'care'",
@@ -78,6 +79,8 @@ async def init_db() -> None:
             ))
             # Метка первого анонса дня: защита от дублей при деплое.
             await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ"))
+            # Объяснение ничьей при выборе победившего пути.
+            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
             await conn.execute(text(
