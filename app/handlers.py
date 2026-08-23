@@ -46,7 +46,7 @@ from app.rounds import claim_announcement, close_voting, create_next_round_detai
 from app.style import day_mark, hint_mark, money_mark, ok_mark, path_mark, result_mark, warn_mark
 from app.tally import award_points
 from app.ton_pay import pending_payout_count
-from app.ton_utils import from_nano, is_valid_ton_address, normalize_address
+from app.ton_utils import from_nano, friendly_address, is_valid_ton_address, normalize_address, to_nano
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
 
@@ -260,8 +260,10 @@ async def _wallet_view_text(user) -> str:
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
         if player.wallet_address:
+            shown = friendly_address(player.wallet_address, testnet=settings.is_testnet)
             return (
-                f"{money_mark(str(user.id))} Привязанный кошелёк: {player.wallet_address[:6]}…{player.wallet_address[-6:]}\n"
+                f"{money_mark(str(user.id))} Привязанный кошелёк:\n<code>{shown}</code>\n"
+                "Переводы считаются твоими, если отправлены именно с этого кошелька.\n"
                 "Чтобы перепривязать: /wallet <адрес>\n"
                 "Как поставить на путь: /stake"
                 f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
@@ -456,6 +458,22 @@ async def _stake_view_text(user) -> str:
     return f"{head}{status}{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
 
 
+def _stake_pay_keyboard() -> InlineKeyboardMarkup | None:
+    """Кнопка «открыть кошелёк» с уже вписанным адресом казначея.
+
+    Универсальная ссылка Tonkeeper: на телефоне открывает приложение с
+    готовым получателем и суммой (сумму можно поменять перед отправкой),
+    на компьютере — страницу с QR-кодом.
+    """
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        return None
+    addr = friendly_address(settings.active_treasury_address, testnet=settings.is_testnet)
+    amount_nano = to_nano(settings.stake_min_ton)
+    url = f"https://app.tonkeeper.com/transfer/{addr}?amount={amount_nano}"
+    label = f"💸 Ставка от {settings.stake_min_ton:g} Gram — открыть кошелёк"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, url=url)]])
+
+
 @router.message(Command("stake"))
 async def cmd_stake(message: Message) -> None:
     if message.chat.type != ChatType.PRIVATE:
@@ -464,13 +482,21 @@ async def cmd_stake(message: Message) -> None:
             reply_markup=_personal_keyboard("stake:view", "Как поставить"),
         )
         return
-    await message.answer(await _stake_view_text(message.from_user), parse_mode=ParseMode.HTML)
+    await message.answer(
+        await _stake_view_text(message.from_user),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_stake_pay_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "stake:view")
 async def on_stake_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
-        await callback.message.answer(await _stake_view_text(callback.from_user), parse_mode=ParseMode.HTML)
+        await callback.message.answer(
+            await _stake_view_text(callback.from_user),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_stake_pay_keyboard(),
+        )
         await callback.answer()
         return
     hint = (

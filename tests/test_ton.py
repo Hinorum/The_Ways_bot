@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import stakes as stakes_mod
 from app.config import settings
 from app.models import Payout, Player, Round, RoundStatus, Stake, Vote, WinRule
-from app.ton_utils import from_nano, is_valid_ton_address, normalize_address, to_nano
+from app.ton_utils import from_nano, friendly_address, is_valid_ton_address, normalize_address, to_nano
 
 
 USER_FRIENDLY = "EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnW"
@@ -27,6 +27,23 @@ def test_address_validation() -> None:
 
 def test_normalize_address_matches_friendly_and_raw() -> None:
     assert normalize_address(USER_FRIENDLY) == normalize_address(RAW)
+
+
+def test_friendly_address_roundtrip() -> None:
+    """friendly_address обращает normalize_address: CRC и теги сходятся."""
+    for source in (USER_FRIENDLY, "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnV", RAW):
+        raw = normalize_address(source)
+        shown = friendly_address(raw, testnet=False)
+        assert is_valid_ton_address(shown)
+        assert len(shown) == 48
+        assert normalize_address(shown) == raw
+        # Тестнет-бит не ломает сверку, но меняет префикс.
+        test_shown = friendly_address(raw, testnet=True)
+        assert test_shown[:2] != shown[:2]
+        assert normalize_address(test_shown) == raw
+    # Мусор на входе проходит насквозь, а не падает.
+    assert friendly_address("мусор") == "мусор"
+    assert friendly_address("ff:00") == "ff:00"
 
 
 def test_nano_conversion_roundtrip() -> None:
