@@ -27,6 +27,16 @@ async def _global_db_schema():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Рейт-лимиты хендлеров не должны перетекать между тестами."""
+    from app import handlers
+
+    handlers._WALLET_LAST.clear()
+    yield
+    handlers._WALLET_LAST.clear()
+
+
 @pytest.fixture(scope="module", autouse=True)
 async def _clean_global_db_per_module():
     """Каждый тестовый модуль стартует с пустой глобальной БД.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -349,8 +350,30 @@ async def _bind_wallet(message: Message, address: str) -> bool:
     return True
 
 
+# Рейт-лимит /wallet: команда дёргает БД и диалоги, спамить её незачем.
+# Словарь пер-процессный — при горизонтальном масштабировании лимит просто
+# ослабнет до «по одному на инстанс», что приемлемо.
+_WALLET_LAST: dict[int, float] = {}
+_WALLET_COOLDOWN = 30.0
+
+
+def _wallet_throttled(user_id: int) -> bool:
+    if len(_WALLET_LAST) > 10_000:
+        _WALLET_LAST.clear()
+    now = time.monotonic()
+    last = _WALLET_LAST.get(user_id)
+    _WALLET_LAST[user_id] = now
+    return last is not None and now - last < _WALLET_COOLDOWN
+
+
 @router.message(Command("wallet"))
 async def cmd_wallet(message: Message) -> None:
+    if message.from_user is not None and message.from_user.id not in settings.admin_id_set:
+        if _wallet_throttled(message.from_user.id):
+            await message.answer(
+                f"{hint_mark('wallet-throttle')} Не так часто — попробуй ещё раз через полминуты."
+            )
+            return
     parts = (message.text or "").split()
     if len(parts) == 1:
         if message.chat.type == ChatType.PRIVATE:

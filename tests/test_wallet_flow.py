@@ -211,3 +211,49 @@ async def test_stake_button_alert_short() -> None:
     args, kwargs = callback.answer.call_args
     assert len(args[0]) <= 200
     assert kwargs.get("show_alert") is True
+
+
+async def test_wallet_rate_limited_on_spam(monkeypatch) -> None:
+    """Второй /wallet тем же игроком подряд встречает троттлинг, диалог
+    не переоткрывается; админ и «остывший» игрок проходят свободно."""
+    from app import handlers
+
+    uid = next_uid()
+    first = make_message("private", uid, "/wallet")
+    await cmd_wallet(first)
+    assert "следующим сообщением" in first.answer.call_args.args[0]
+
+    second = make_message("private", uid, "/wallet")
+    await cmd_wallet(second)
+    assert "Не так часто" in second.answer.call_args.args[0]
+    assert await _dialog_active(uid)  # старый диалог не тронут
+
+    # Остывание: обнуляем окно — снова пускает.
+    monkeypatch.setattr(handlers, "_WALLET_COOLDOWN", 0.0)
+    third = make_message("private", uid, "/wallet")
+    await cmd_wallet(third)
+    assert "Не так часто" not in third.answer.call_args.args[0]
+
+
+async def test_wallet_throttle_expires_with_time(monkeypatch) -> None:
+    """Окно троттлинга конечное: после остывания команда снова работает."""
+    from app import handlers
+
+    uid = next_uid()
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["now"])
+    handlers._WALLET_LAST.clear()
+
+    first = make_message("private", uid, "/wallet")
+    await cmd_wallet(first)
+    assert "Не так часто" not in first.answer.call_args.args[0]
+
+    clock["now"] += 5  # ещё в окне
+    second = make_message("private", uid, "/wallet")
+    await cmd_wallet(second)
+    assert "Не так часто" in second.answer.call_args.args[0]
+
+    clock["now"] += 40  # окно вышло
+    third = make_message("private", uid, "/wallet")
+    await cmd_wallet(third)
+    assert "Не так часто" not in third.answer.call_args.args[0]
