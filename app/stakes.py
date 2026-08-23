@@ -88,13 +88,10 @@ async def register_stake(
     if existing.scalar_one_or_none() is not None:
         return "already_staked"
     min_nano = to_nano(settings.stake_min_ton)
-    max_nano = to_nano(settings.stake_max_ton)
     status = "pending"
     reason = ""
     if amount_nanotons < min_nano:
         status, reason = "rejected", "too_small"
-    elif amount_nanotons > max_nano:
-        status, reason = "rejected", "too_large"
     session.add(
         Stake(
             round_id=round_row.id,

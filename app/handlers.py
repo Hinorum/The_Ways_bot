@@ -414,7 +414,7 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
 _STAKE_HOWTO = (
     "{mark} Ставка на путь — три шага:\n"
     "1. Привяжи кошелёк: /wallet (один раз и навсегда).\n"
-    "2. Переведи от {min:g} до {max:g} Gram казначею со СВОЕГО привязанного кошелька:\n"
+    "2. Переведи от {min:g} Gram (потолка нет) казначею со СВОЕГО привязанного кошелька:\n"
     "<code>{treasury}</code>\n"
     "Кнопка ниже открывает кошелёк с готовым получателем — останется ввести сумму.\n"
     "Комментарий не нужен: watcher найдёт перевод по отправителю примерно за минуту.\n"
@@ -432,7 +432,6 @@ async def _stake_view_text(user) -> str:
     head = _STAKE_HOWTO.format(
         mark=money_mark(str(user.id)),
         min=settings.stake_min_ton,
-        max=settings.stake_max_ton,
         treasury=settings.active_treasury_address or "(адрес казначея ещё не настроен)",
     )
     status = ""
@@ -500,7 +499,7 @@ async def on_stake_view(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     hint = (
-        f"Ставка: переведи {settings.stake_min_ton:g}-{settings.stake_max_ton:g} Gram казначею "
+        f"Ставка: переведи от {settings.stake_min_ton:g} Gram казначею "
         "со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
     )
     await callback.answer(hint[:200], show_alert=True)

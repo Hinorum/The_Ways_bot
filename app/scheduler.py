@@ -94,6 +94,13 @@ async def tick(bot: Bot | None = None) -> None:
                 await announce_new_day(bot, nxt, finished if closed_here else None)
 
 
+async def _watch_job() -> None:
+    """Watcher ставок с ботом: игрок получает личное о судьбе перевода."""
+    from app.ton_watch import watch_once
+
+    await watch_once(bot=_bot)
+
+
 async def _ton_maintenance() -> None:
     """Финализация дней, очередь выплат, ретраи — и копилка месяца 1-го числа."""
     from app.leaderboard import settle_month_if_due
@@ -141,10 +148,8 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     if settings.ton_enabled:
-        from app.ton_watch import watch_once
-
         scheduler.add_job(
-            watch_once,
+            _watch_job,
             "interval",
             seconds=60,
             id="ton-watch",

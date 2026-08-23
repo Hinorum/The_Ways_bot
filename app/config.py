@@ -70,8 +70,8 @@ class Settings(BaseSettings):
     ton_api_base: str = "https://tonapi.io"
     ton_api_base_testnet: str = "https://testnet.tonapi.io"
     ton_api_key: str = ""
+    # Нижняя граница ставки; верхней нет — «кит» ограничен только своим кошельком.
     stake_min_ton: float = 0.1
-    stake_max_ton: float = 10.0
     # Распределение фонда дня (в сумме со ставками победителей — 100%):
     # 97% делят поставившие на верный путь пропорционально, 2% получают
     # угадавшие путь без ставки поровну, 0,5% — хранителю, 0,5% — в копилку

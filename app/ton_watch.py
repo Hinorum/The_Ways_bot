@@ -16,14 +16,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from aiogram import Bot
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
 from app.payments import parse_revote_memo
 from app.stakes import confirm_stake, current_network, register_stake
-from app.ton_utils import normalize_address, to_nano
+from app.ton_utils import from_nano, normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,10 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
                 params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before": before_hash} if before_hash else {})},
                 headers=headers,
             )
+            if response.status_code == 404:
+                # Свежий казначей без единой транзакции: TonAPI отдаёт 404.
+                # Это здоровье, а не сбой — цикл успешный, сердцебиение ставим.
+                return [], True
             response.raise_for_status()
             items = response.json().get("transactions", [])
     except Exception as exc:
@@ -186,7 +191,17 @@ async def _stash_refund(session, transfer: Transfer, round_id: int | None) -> st
     return "refund_queued"
 
 
-async def process_transfer(transfer: Transfer) -> str:
+async def _dm_stake(bot: Bot | None, player_id: int, text: str) -> None:
+    """Личное сообщение о судьбе ставки; доставка не обязательна для учёта."""
+    if bot is None or player_id <= 0:
+        return
+    try:
+        await bot.send_message(player_id, text)
+    except Exception as exc:
+        logger.info("Сообщение игроку %s не доставлено: %s", player_id, exc)
+
+
+async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
     async with SessionLocal() as session:
         player_result = await session.execute(
@@ -201,6 +216,12 @@ async def process_transfer(transfer: Transfer) -> str:
             status = await _process_revote(session, transfer, player, revote_round_id)
             if status in ("revote_closed", "revote_too_small"):
                 await _stash_refund(session, transfer, revote_round_id)
+                await _dm_stake(
+                    bot,
+                    player.id,
+                    f"↩️ Оплата {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                    + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
+                )
             return status
         round_result = await session.execute(
             select(Round)
@@ -219,14 +240,61 @@ async def process_transfer(transfer: Transfer) -> str:
             transfer.tx_hash,
             memo=transfer.comment,
         )
+        amount = f"{from_nano(transfer.value_nanotons):g}"
         if result in ("already_staked", "closed"):
             # Ставка-строка не создана: без авто-возврата перевод исчез бы из учёты.
             await _stash_refund(session, transfer, round_row.id)
-        if result == "ok":
+            reason = "ставка на этот день уже есть" if result == "already_staked" else "день уже закрылся"
+            await _dm_stake(bot, player.id, f"↩️ Перевод {amount} Gram возвращается: {reason}.")
+        elif result == "too_small":
+            await _dm_stake(
+                bot,
+                player.id,
+                f"↩️ Ставка {amount} Gram не принята (меньше минимума) — вернём после закрытия дня.",
+            )
+        elif result == "ok":
             age = datetime.now(timezone.utc).timestamp() - transfer.utime
             if age >= settings.stake_confirm_seconds:
-                await confirm_stake(session, transfer.tx_hash)
+                if await confirm_stake(session, transfer.tx_hash):
+                    await _dm_stake(
+                        bot, player.id, f"✅ Ставка {amount} Gram на день {round_row.day_index} принята."
+                    )
     return result
+
+
+async def confirm_aged_pending(bot: Bot | None = None) -> int:
+    """Свежие переводы на момент обработки младше порога и остаются pending.
+
+    Этот проход подтверждает их, когда возраст уже точно больше
+    stake_confirm_seconds, и сообщает игроку. Закрытые дни не трогаем:
+    их pending-ставки финализация вернёт как «залипшие».
+    """
+    confirmed = 0
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        rows = (
+            (await session.execute(select(Stake).where(Stake.status == "pending")))
+            .scalars()
+            .all()
+        )
+        for stake in rows:
+            created = stake.created_at if stake.created_at.tzinfo else stake.created_at.replace(tzinfo=timezone.utc)
+            if now - created < timedelta(seconds=settings.stake_confirm_seconds):
+                continue
+            round_row = await session.get(Round, stake.round_id)
+            if round_row is None or round_row.status != RoundStatus.OPEN:
+                continue
+            stake.status = "confirmed"
+            stake.confirmed_at = now
+            confirmed += 1
+            await _dm_stake(
+                bot,
+                stake.player_id,
+                f"✅ Ставка {from_nano(stake.amount_nanotons):g} Gram на день {round_row.day_index} принята.",
+            )
+        if confirmed:
+            await session.commit()
+    return confirmed
 
 
 async def _process_revote(session, transfer: Transfer, player: Player, round_id: int) -> str:
@@ -353,7 +421,7 @@ async def _migrate_wallet_formats(session) -> None:
         logger.info("Нормализовано адресов кошельков: %d", changed)
 
 
-async def watch_once() -> None:
+async def watch_once(bot: Bot | None = None) -> None:
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
@@ -361,7 +429,7 @@ async def watch_once() -> None:
     processed_through = since
     for transfer in transfers:  # по возрастанию utime — старые раньше новых
         try:
-            status = await process_transfer(transfer)
+            status = await process_transfer(transfer, bot=bot)
             if status not in ("duplicate_tx", "refund_duplicated"):
                 logger.info("Перевод %s: %s", transfer.tx_hash[:16], status)
         except Exception as exc:
@@ -369,6 +437,10 @@ async def watch_once() -> None:
             logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
             break
         processed_through = max(processed_through, transfer.utime)
+    try:
+        await confirm_aged_pending(bot)
+    except Exception:
+        logger.exception("Подтверждение отложенных ставок упало (не мешает циклу)")
     if processed_through > since or api_ok:
         async with SessionLocal() as session:
             if processed_through > since:

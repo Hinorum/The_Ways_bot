@@ -10,13 +10,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Payout, Player, Round, RoundStatus, WatcherState, WinRule
+from app.models import Payout, Player, Round, RoundStatus, Stake, WatcherState, WinRule
 from app.ton_utils import is_valid_ton_address, normalize_address
-from app.ton_watch import WALLET_NORM_KEY, Transfer, _migrate_wallet_formats, process_transfer
+from app.ton_watch import (
+    WALLET_NORM_KEY,
+    Transfer,
+    _migrate_wallet_formats,
+    confirm_aged_pending,
+    process_transfer,
+)
 
 
 # Адреса уникальны в рамках прогона: players.wallet_address имеет UNIQUE,
@@ -103,3 +109,80 @@ async def test_old_friendly_row_would_miss_and_migration_fixes_it(ton_on) -> Non
             delete(Payout).where(Payout.tx_hash == "mig-before-1")
         )
         assert stray.rowcount == 0
+
+class _RecorderBot:
+    def __init__(self):
+        self.messages: list[tuple[int, str]] = []
+
+    async def send_message(self, chat_id, text, **kwargs):
+        self.messages.append((chat_id, text))
+
+
+def _raw(seed: int) -> str:
+    return f"0:{seed:064x}"
+
+
+async def test_confirmed_stake_notifies_player(ton_on) -> None:
+    await _open_round(903)
+    raw = _raw(0xA1)
+    async with SessionLocal() as session:
+        session.add(Player(id=910_003, username="dm", first_name="D", wallet_address=raw))
+        await session.commit()
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(tx_hash="dm-ok-1", source=raw, value_nanotons=500_000_000, comment="", utime=1),
+        bot=bot,
+    )
+    assert status == "ok"
+    assert [(m[0], "принята" in m[1]) for m in bot.messages] == [(910_003, True)]
+    async with SessionLocal() as session:
+        stake = (
+            await session.execute(select(Stake).where(Stake.tx_hash == "dm-ok-1"))
+        ).scalar_one()
+        assert stake.status == "confirmed"
+
+
+async def test_fresh_stake_waits_then_aged_pass_confirms_and_notifies(ton_on) -> None:
+    await _open_round(904)
+    raw = _raw(0xB2)
+    async with SessionLocal() as session:
+        session.add(Player(id=910_004, username="aged", first_name="A", wallet_address=raw))
+        await session.commit()
+
+    bot = _RecorderBot()
+    fresh_utime = int(datetime.now(timezone.utc).timestamp())
+    status = await process_transfer(
+        Transfer(tx_hash="dm-aged-1", source=raw, value_nanotons=400_000_000, comment="", utime=fresh_utime),
+        bot=bot,
+    )
+    assert status == "ok"
+    assert bot.messages == []  # слишком свежий — молча ждёт
+
+    async with SessionLocal() as session:
+        stake = (await session.execute(select(Stake).where(Stake.tx_hash == "dm-aged-1"))).scalar_one()
+        stake.created_at = datetime.now(timezone.utc) - timedelta(seconds=settings.stake_confirm_seconds + 60)
+        await session.commit()
+
+    assert await confirm_aged_pending(bot) == 1
+    assert [(m[0], "принята" in m[1]) for m in bot.messages] == [(910_004, True)]
+    async with SessionLocal() as session:
+        stake = (await session.execute(select(Stake).where(Stake.tx_hash == "dm-aged-1"))).scalar_one()
+        assert stake.status == "confirmed"
+
+
+async def test_rejected_stake_tells_the_reason(ton_on) -> None:
+    await _open_round(905)
+    raw = _raw(0xC3)
+    async with SessionLocal() as session:
+        session.add(Player(id=910_005, username="small", first_name="S", wallet_address=raw))
+        await session.commit()
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(tx_hash="dm-small-1", source=raw, value_nanotons=1, comment="", utime=1),
+        bot=bot,
+    )
+    assert status == "too_small"
+    assert len(bot.messages) == 1
+    assert "не принята" in bot.messages[0][1]

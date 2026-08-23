@@ -119,7 +119,8 @@ async def test_register_stake_flow(session: AsyncSession, monkeypatch: pytest.Mo
     # Повтор той же транзакции и вторая ставка тем же игроком отклоняются.
     assert await stakes_mod.register_stake(session, round_row, player, to_nano(1), "tx1") == "duplicate_tx"
     assert await stakes_mod.register_stake(session, round_row, player, to_nano(2), "tx2") == "already_staked"
-    # Лимиты: отклонённая ставка тоже занимает слот игрока в дне.
+    # Лимиты: отклонённая ставка тоже занимает слот игрока в дне;
+    # верхней границы нет — крупная сумма принимается как обычная ставка.
     other = Player(id=12)
     session.add(other)
     third = Player(id=13)
@@ -127,7 +128,7 @@ async def test_register_stake_flow(session: AsyncSession, monkeypatch: pytest.Mo
     await session.commit()
     assert await stakes_mod.register_stake(session, round_row, other, to_nano(0.01), "tx3") == "too_small"
     assert await stakes_mod.register_stake(session, round_row, other, to_nano(50), "tx4") == "already_staked"
-    assert await stakes_mod.register_stake(session, round_row, third, to_nano(50), "tx5") == "too_large"
+    assert await stakes_mod.register_stake(session, round_row, third, to_nano(500), "tx5") == "ok"
     # Выключенная интеграция и закрытый день.
     monkeypatch.setattr(settings, "ton_enabled", False)
     fourth = Player(id=14)
