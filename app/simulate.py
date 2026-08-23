@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import SessionLocal, init_db
 from app.models import LoreEcho, Player, Vote
-from app.rounds import close_voting, create_next_round, finish_tally, get_latest_round, pick_winner
+from app.rounds import close_voting, create_next_round, finish_tally, pick_winner
 from app.tally import award_points, format_results
 
 

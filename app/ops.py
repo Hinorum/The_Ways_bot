@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
@@ -20,6 +21,8 @@ from app.db import SessionLocal
 from app.models import Payout, Round, RoundStatus, WatcherState
 
 logger = logging.getLogger(__name__)
+
+PROCESS_START = time.time()
 
 TICK_KEY = "last_tick_iso"
 ALERT_WATCHER_KEY = "alert_watcher_ts"
@@ -94,6 +97,7 @@ async def snapshot() -> dict:
         cursor_iso = await _get_state(session, "ton_watch_beat_iso")
         payload = {
             "status": "ok",
+            "uptime_seconds": round(time.time() - PROCESS_START, 1),
             "last_tick_age": _age_seconds(await _get_state(session, TICK_KEY)),
             "round": None,
             "payout_queue": int(queue_count),

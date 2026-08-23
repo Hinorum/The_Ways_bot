@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Vote, WatcherState
-from app.stakes import current_network, split_equal
+from app.stakes import split_equal
 
 logger = logging.getLogger(__name__)
 

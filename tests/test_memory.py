@@ -1,7 +1,7 @@
 """Дальняя память мира: хэш-эмбеддинги, recall и вплетение давнего канона."""
 
 from app.lore import compose_chapter
-from app.memory import cosine, embed, recall_beats, similarity
+from app.memory import embed, recall_beats, similarity
 from app.story import _build_story_prompt
 
 

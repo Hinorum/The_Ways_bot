@@ -3,9 +3,9 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
@@ -335,6 +335,7 @@ async def test_claim_announcement_is_exactly_once(session) -> None:
         await session.commit()
 
 
+@pytest.mark.slow
 async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch) -> None:
     """Сброс стирает дни/голоса/ставки/очки, но хранит кошельки и копилку месяца."""
     monkeypatch.setattr(settings, "use_free_images", False)
@@ -406,6 +407,7 @@ async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch)
         await session.commit()
 
 
+@pytest.mark.slow
 async def test_reset_game_keep_story_preserves_canon(session, monkeypatch) -> None:
     """«Разделить команды»: счёты и деньги чисты, но канон и эхо живут."""
     monkeypatch.setattr(settings, "use_free_images", False)

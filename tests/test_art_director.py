@@ -8,7 +8,6 @@ from app.art_director import (
     _build_art_prompt,
     build_image_prompt,
     compact_anchor,
-    offline_bible,
     plan_day_art,
     short_image_prompt,
 )

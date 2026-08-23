@@ -167,6 +167,8 @@ async def test_finalize_payouts_proportional_and_rake(
     assert ("prize", 3) not in by_kind_player
     # Угадавший без ставки получает свой 2% поровну-сам-себе.
     assert by_kind_player[("bonus", 2)]["amount_nanotons"] == free_pool
+    # Консервация фонда: приз + бонус + рейк = весь пул, ничего не потеряно.
+    assert sum(row["amount_nanotons"] for row in payouts) == pot
     # Доли казны уходят хранителю без игрока.
     assert by_kind_player[("rake", None)]["dest_address"] == "keeper-wallet"
     assert by_kind_player[("leaderboard", None)]["amount_nanotons"] == board_cut
@@ -578,3 +580,49 @@ async def test_failed_revote_payments_are_refunded(monkeypatch: pytest.MonkeyPat
             if player is not None:
                 await db.delete(player)
             await db.commit()
+
+
+def test_split_pot_conserves_money_property() -> None:
+    """Свойство: фонд не теряется и не создаётся. На 300 случайных
+    раздачах сумма долей <= фонда, недобор — только пыль от целочисленного
+    деления (не больше одного нанотона на получателя), доли положительны,
+    а делёж детерминирован."""
+    import random
+
+    from app.stakes import split_pot
+
+    rng = random.Random(20260823)
+    for _ in range(300):
+        pool = rng.randint(1, 10**10)
+        entries = [
+            (rng.randint(1, 50_000), rng.randint(1, 5 * 10**9))
+            for _ in range(rng.randint(1, 12))
+        ]
+        shares = split_pot(pool, entries)
+        assert {pid for pid, _amount in shares} == {pid for pid, _amount in entries}
+        distributed = sum(amount for _pid, amount in shares)
+        assert 0 < distributed <= pool
+        assert pool - distributed <= len(entries)  # пыль, а не потеря
+        assert all(amount > 0 for _pid, amount in shares)
+        assert shares == split_pot(pool, entries)  # детерминизм
+
+
+def test_split_equal_conserves_money_property() -> None:
+    """Равный делёж: сумма ровно равна фонду (пыль уходит первому id),
+    разброс долей не больше одного нанотона."""
+    import random
+
+    from app.stakes import split_equal
+
+    rng = random.Random(20260824)
+    for _ in range(300):
+        total = rng.randint(1, 10**9)
+        ids = rng.sample(range(1, 100_000), rng.randint(1, 15))
+        shares = split_equal(total, ids)
+        assert set(shares) == set(ids)
+        assert sum(shares.values()) == total
+        values = list(shares.values())
+        # Пыль целиком уходит меньшему id: разброс не больше n-1 нанотонов.
+        assert max(values) - min(values) <= len(set(ids)) - 1
+        assert shares[min(ids)] == max(values)
+

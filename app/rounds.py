@@ -18,7 +18,6 @@ from app.config import settings
 from app.echoes import collect_due_echoes, spawn_echoes_from_round
 from app.models import (
     Card,
-    LeaderboardPot,
     LoreEcho,
     Payout,
     Player,
@@ -270,6 +269,7 @@ async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
             }
         )
     return {
+        "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,
         "rule": rule.value,
         "commitment": commit_rule(rule, salt) + ":" + salt,
@@ -325,15 +325,22 @@ async def _materialize_round(
         voting_ends_at=voting_ends_at,
         tally_ends_at=tally_ends_at,
     )
+    for card in _payload_cards(payload):
+        # Коллекция наполняется до session.add: на транзиентном объекте это
+        # чистый Python без ленивой загрузки, а FK проставит каскад на flush.
+        # Возвращённый раунд отдаёт .cards сразу — без обращений к БД.
+        round_row.cards.append(Card(**card))
     session.add(round_row)
     await session.flush()
-    for card in _payload_cards(payload):
-        session.add(Card(round_id=round_row.id, **card))
     return round_row
 
 
 _PREGEN_LOCK_PREFIX = "pregen_lock:"
 _PREGEN_LOCK_TTL = 1800  # секунд: генерация дольше получаса считается мёртвой
+
+# Формат payload'а заготовки. Незнакомая версия выбрасывается при
+# материализации — день честно генерируется заново по текущим правилам.
+PREPARED_PAYLOAD_VERSION = 1
 
 
 async def prepare_next_day(session: AsyncSession, current_day_index: int) -> bool:
@@ -397,8 +404,10 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
         if prepared is not None and prepared.payload:
             try:
                 payload = json.loads(prepared.payload)
+                if int(payload.get("v", 0)) != PREPARED_PAYLOAD_VERSION:
+                    raise ValueError("неизвестная версия заготовки")
                 await _ensure_art_files(session, payload)
-                round_row = await _materialize_round(session, payload, latest)
+                materialized = await _materialize_round(session, payload, latest)
             except (ValueError, KeyError, TypeError):
                 # Битая заготовка — выбрасываем и идём обычным путём.
                 # Rollback протухает объекты: day_index держим в переменной,
@@ -419,9 +428,7 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
                     if existing is None:
                         raise
                     return existing, False
-                loaded = await get_latest_round(session)
-                assert loaded is not None
-                return loaded, True
+                return materialized, True
 
     day_index = 1 if latest is None else latest.day_index + 1
     payload = await _plan_and_render(session, day_index)
@@ -441,7 +448,7 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
         if existing is None:
             raise
         return existing, False
-    return await get_latest_round(session), True  # type: ignore[return-value]
+    return round_row, True
 
 
 async def create_next_round(session: AsyncSession) -> Round:

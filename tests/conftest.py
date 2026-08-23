@@ -27,6 +27,25 @@ async def _global_db_schema():
     yield
 
 
+@pytest.fixture(scope="module", autouse=True)
+async def _clean_global_db_per_module():
+    """Каждый тестовый модуль стартует с пустой глобальной БД.
+
+    Тесты не должны зависеть от порядка запуска файлов: любые сиды,
+    оставшиеся в SessionLocal от предыдущего модуля (чаты, игроки,
+    состояния watcher'а), затираются до первого теста модуля.
+    """
+    from sqlalchemy import delete
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as db:
+        for table in reversed(Base.metadata.sorted_tables):
+            await db.execute(delete(table))
+        await db.commit()
+    yield
+
+
 @pytest.fixture
 async def session(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")

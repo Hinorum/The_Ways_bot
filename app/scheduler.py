@@ -54,11 +54,6 @@ async def _prepare_job(round_id: int) -> None:
         logger.exception("Прегенерация следующего дня не удалась — откроем синхронно")
 
 
-def set_bot(bot: Bot) -> None:
-    global _bot
-    _bot = bot
-
-
 async def tick(bot: Bot | None = None) -> None:
     bot = bot or _bot
     from app.ops import mark_tick

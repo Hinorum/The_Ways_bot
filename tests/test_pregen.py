@@ -111,7 +111,7 @@ async def test_create_consumes_prepared_without_regeneration(session, monkeypatc
 
 
 async def test_corrupt_prepared_falls_back_to_full_generation(session) -> None:
-    round_row = await _seed_tallying_day(session)
+    await _seed_tallying_day(session)
     session.add(PreparedDay(day_index=6, payload="{битый json"))
     await session.commit()
 
@@ -122,6 +122,34 @@ async def test_corrupt_prepared_falls_back_to_full_generation(session) -> None:
     assert await session.get(PreparedDay, 6) is None
 
 
+async def test_prepared_from_other_version_is_discarded(session) -> None:
+    """Заготовка чужой версии формата не материализуется: мир честно
+    генерируется заново, а устаревшая строка удаляется."""
+    await _seed_tallying_day(session)
+    stale = json.dumps(
+        {
+            "v": 999,
+            "day_index": 6,
+            "rule": "majority",
+            "commitment": "c:s",
+            "chapter_title": "Устаревший формат",
+            "chapter_text": "текст",
+            "lore_summary": "лор",
+            "cover_path": "",
+            "cards": [],
+        }
+    )
+    session.add(PreparedDay(day_index=6, payload=stale))
+    await session.commit()
+
+    new_round, created = await create_next_round_detailed(session)
+    assert created is True
+    assert new_round.chapter_title != "Устаревший формат"
+    assert len(new_round.cards) == 3
+    assert await session.get(PreparedDay, 6) is None
+
+
+@pytest.mark.slow
 async def test_reset_clears_prepared_days(session) -> None:
     from app.rounds import reset_game
 

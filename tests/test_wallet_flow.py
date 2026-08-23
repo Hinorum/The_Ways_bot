@@ -14,7 +14,6 @@ import pytest
 from app.config import settings
 from app.db import SessionLocal, init_db
 from app.handlers import (
-    _dialog_close,
     cmd_stake,
     cmd_wallet,
     on_private_fallback,

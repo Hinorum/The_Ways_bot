@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -130,7 +129,7 @@ async def test_echo_surfaces_and_chains(session) -> None:
 
 
 async def test_weak_echoes_may_fade(session) -> None:
-    round_row = await _make_round(session)
+    await _make_round(session)
     for i in range(1, 21):
         session.add(
             LoreEcho(

@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from app.config import settings
 
@@ -86,7 +85,6 @@ def test_format_top_lists_leaders_and_pot() -> None:
 async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
 
-    from app.models import Player
     from app.voting import upsert_player
 
     async with session:
