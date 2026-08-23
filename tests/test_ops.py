@@ -156,7 +156,9 @@ async def test_watch_once_advances_cursor_and_dedupes(monkeypatch: pytest.Monkey
         ton_watch.Transfer(f"c-{i}", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 1000 + i)
         for i in range(3)
     ]
-    monkeypatch.setattr(ton_watch, "fetch_recent_transfers", AsyncMock(return_value=transfers))
+    monkeypatch.setattr(
+        ton_watch, "fetch_recent_transfers", AsyncMock(return_value=(transfers, True))
+    )
 
     # Стартовый курсор раньше всех транзакций (фолбэк «now−12ч» их новее).
     async with SessionLocal() as db:
@@ -197,7 +199,9 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
     bad = ton_watch.Transfer("bad-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 500)
     good = ton_watch.Transfer("good-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 501)
     monkeypatch.setattr(
-        ton_watch, "fetch_recent_transfers", AsyncMock(return_value=[good, bad])
+        ton_watch,
+        "fetch_recent_transfers",
+        AsyncMock(return_value=([good, bad], True)),
     )  # API отдаёт новые сверху; watch обрабатывает по возрастанию
 
     async def exploding(transfer):
@@ -215,6 +219,77 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
         async with SessionLocal() as db:
             await db.execute(WatcherState.__table__.delete().where(WatcherState.key == ton_watch.CURSOR_KEY))
             await db.commit()
+
+
+async def test_watch_beats_on_quiet_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Тишина в цепочке — здоровье: сердцебиение ставится и без переводов.
+
+    Именно этот кейс раньше порождал ложный алерт «watcher ещё ни разу не
+    отмечал курсор»: курсор двигался только переводами.
+    """
+    from app import ops
+    from app import ton_watch
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(
+        ton_watch, "fetch_recent_transfers", AsyncMock(return_value=([], True))
+    )
+    try:
+        await ton_watch.watch_once()
+        async with SessionLocal() as db:
+            beat = await db.get(WatcherState, ton_watch.BEAT_KEY)
+            assert beat is not None  # цикл прошёл успешно — сердце бьётся
+            assert await db.get(WatcherState, ton_watch.CURSOR_KEY) is None
+        # Свежее сердцебиение — аномалий нет, алертов нет.
+        assert await ops.check_anomalies(bot=None) == []
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                WatcherState.__table__.delete().where(
+                    WatcherState.key.in_([ton_watch.BEAT_KEY, ton_watch.CURSOR_KEY])
+                )
+            )
+            await db.execute(
+                WatcherState.__table__.delete().where(
+                    WatcherState.key.in_([ops.ALERT_WATCHER_KEY])
+                )
+            )
+            await db.commit()
+
+
+async def test_api_outage_does_not_beat_and_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TonAPI лежит весь цикл — сердцебиения нет, админ узнает об этом."""
+    from app import ops
+    from app import ton_watch
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    bot = SimpleNamespace(send_message=AsyncMock())
+    monkeypatch.setattr(
+        ton_watch, "fetch_recent_transfers", AsyncMock(return_value=([], False))
+    )
+    try:
+        await ton_watch.watch_once()
+        async with SessionLocal() as db:
+            assert await db.get(WatcherState, ton_watch.BEAT_KEY) is None
+        problems = await ops.check_anomalies(bot=bot)
+        assert problems and "цикл" in problems[0]
+        assert bot.send_message.await_count == 1
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                WatcherState.__table__.delete().where(
+                    WatcherState.key.in_([ton_watch.BEAT_KEY, ops.ALERT_WATCHER_KEY])
+                )
+            )
+            await db.commit()
+
+
+async def test_no_watcher_alerts_when_ton_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import ops
+
+    monkeypatch.setattr(settings, "ton_enabled", False)
+    assert await ops.check_anomalies(bot=None) == []
 
 
 def test_previous_month_key() -> None:

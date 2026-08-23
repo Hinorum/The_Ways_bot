@@ -28,6 +28,10 @@ from app.ton_utils import normalize_address, to_nano
 logger = logging.getLogger(__name__)
 
 CURSOR_KEY = "ton_watch_cursor_utime"
+# Сердцебиение: отметка времени последнего УСПЕШНОГО цикла (пусть и без
+# переводов). Курсор для этого не годится: он двигается только переводами,
+# и на тихой цепочке честно «стареет», хотя watcher здоров.
+BEAT_KEY = "ton_watch_beat_iso"
 # Одноразовая миграция старых привязок из UQ/EQ-формы в канонический raw-hex.
 WALLET_NORM_KEY = "wallet_norm_v1"
 # Стартовый откат для первого запуска: не глубже полусуток.
@@ -48,13 +52,15 @@ class Transfer:
     utime: int
 
 
-async def fetch_recent_transfers(since_utime: int, before_hash: str | None = None) -> list[Transfer]:
+async def fetch_recent_transfers(since_utime: int, before_hash: str | None = None) -> tuple[list[Transfer], bool]:
     """Страница входящих переводов казначея активной сети (новые сверху).
 
-    Ошибки сети не поднимают исключение. before_hash — пагинация вглубь.
+    Ошибки сети не поднимают исключение: возвращается (пусто, False), чтобы
+    цикл знал, что проверка не состоялась, и не ставил сердцебиение.
+    before_hash — пагинация вглубь.
     """
     if not settings.ton_enabled or not settings.active_treasury_address:
-        return []
+        return [], True
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
     headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
     try:
@@ -68,7 +74,7 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
             items = response.json().get("transactions", [])
     except Exception as exc:
         logger.warning("TonAPI недоступен: %s", exc)
-        return []
+        return [], False
     transfers: list[Transfer] = []
     for item in items:
         try:
@@ -91,7 +97,7 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
             )
         except Exception as exc:
             logger.warning("Странная транзакция пропущена: %s", exc)
-    return transfers
+    return transfers, True
 
 
 def _decode_comment(in_msg: dict) -> str:
@@ -231,7 +237,18 @@ async def _write_cursor(session, utime: int) -> None:
     await session.commit()
 
 
-async def _collect_transfers(since: int) -> list[Transfer]:
+async def _write_beat(session) -> None:
+    """Сердцебиение успешного цикла — для алертов и /health."""
+    row = await session.get(WatcherState, BEAT_KEY)
+    stamp = datetime.now(timezone.utc).isoformat()
+    if row is None:
+        session.add(WatcherState(key=BEAT_KEY, value=stamp))
+    else:
+        row.value = stamp
+    await session.commit()
+
+
+async def _collect_transfers(since: int) -> tuple[list[Transfer], bool]:
     """Все переводы после курсора: уходим вглубь пагинацией по before-хешу.
 
     За цикл покрывается до _MAX_PAGES × _PAGE_LIMIT переводов (по умолчанию
@@ -239,13 +256,19 @@ async def _collect_transfers(since: int) -> list[Transfer]:
     после простоя накопившийся хвост догоняется за несколько минут. Пустое
     место (история короче страницы или две страницы подряд без новых
     переводов) завершает проход досрочно — без лишних запросов вглубь.
+    Второе значение — прошла ли хотя бы одна страница успешно: если TonAPI
+    лежал весь цикл, сердцебиение ставить нельзя (проверки не было).
     """
     transfers: list[Transfer] = []
     seen: set[str] = set()
     before: str | None = None
     empty_pages = 0
+    api_ok = False
     for _page in range(_MAX_PAGES):
-        page = await fetch_recent_transfers(since, before_hash=before)
+        page, page_ok = await fetch_recent_transfers(since, before_hash=before)
+        if not page_ok:
+            return transfers, api_ok
+        api_ok = True
         fresh = [t for t in page if t.tx_hash and t.tx_hash not in seen]
         for item in fresh:
             seen.add(item.tx_hash)
@@ -263,7 +286,7 @@ async def _collect_transfers(since: int) -> list[Transfer]:
             empty_pages = 0
         before = oldest.tx_hash
         await asyncio.sleep(0.12)  # бережём лимиты TonAPI на глубоком проходе
-    return sorted(transfers, key=lambda item: item.utime)
+    return sorted(transfers, key=lambda item: item.utime), api_ok
 
 
 async def _migrate_wallet_formats(session) -> None:
@@ -292,7 +315,7 @@ async def watch_once() -> None:
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
-    transfers = await _collect_transfers(since)
+    transfers, api_ok = await _collect_transfers(since)
     processed_through = since
     for transfer in transfers:  # по возрастанию utime — старые раньше новых
         try:
@@ -304,6 +327,11 @@ async def watch_once() -> None:
             logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
             break
         processed_through = max(processed_through, transfer.utime)
-    if processed_through > since:
+    if processed_through > since or api_ok:
         async with SessionLocal() as session:
-            await _write_cursor(session, processed_through)
+            if processed_through > since:
+                await _write_cursor(session, processed_through)
+            if api_ok:
+                # Сердцебиение ставится каждым успешным циклом — даже без
+                # переводов: тишина в цепочке это здоровье, а не простой.
+                await _write_beat(session)

@@ -91,7 +91,7 @@ async def snapshot() -> dict:
                 select(func.count()).select_from(Payout).where(Payout.status == "failed")
             )
         ).scalar_one()
-        cursor_iso = await _get_state(session, "ton_watch_cursor_utime")
+        cursor_iso = await _get_state(session, "ton_watch_beat_iso")
         payload = {
             "status": "ok",
             "last_tick_age": _age_seconds(await _get_state(session, TICK_KEY)),
@@ -99,13 +99,13 @@ async def snapshot() -> dict:
             "payout_queue": int(queue_count),
             "oldest_payout_age": None,
             "dead_letter_payouts": int(dead_count),
-            "watcher_cursor_age": None,
+            "watcher_beat_age": None,
         }
         if oldest_pending is not None:
             moment = oldest_pending if oldest_pending.tzinfo else oldest_pending.replace(tzinfo=timezone.utc)
             payload["oldest_payout_age"] = max(0.0, (_now() - moment).total_seconds())
-        if settings.ton_enabled and cursor_iso is not None and cursor_iso.isdigit():
-            payload["watcher_cursor_age"] = max(0.0, _now().timestamp() - int(cursor_iso))
+        if settings.ton_enabled:
+            payload["watcher_beat_age"] = _age_seconds(cursor_iso)
         if latest is not None:
             payload["round"] = {
                 "day_index": latest.day_index,
@@ -143,19 +143,26 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
     """Фоновые проверки раз в минутный цикл обслуживания; возвращает список проблем."""
     problems: list[str] = []
     async with SessionLocal() as session:
-        # 1. Watcher молчит слишком долго — ставки перестали находиться.
+        # 1. Watcher не завершает успешные циклы — ставки перестают находиться.
+        # Сердцебиение ставит каждый цикл с живым TonAPI, даже если переводов
+        # нет: тишина в цепочке — здоровье, а не простой. Курсор для этого
+        # не годится: он двигается только переводами.
         if settings.ton_enabled:
-            cursor_raw = await _get_state(session, "ton_watch_cursor_utime")
-            stale = True
-            if cursor_raw is not None and cursor_raw.isdigit():
-                age = _now().timestamp() - int(cursor_raw)
-                stale = age > _WATCHER_STALE_AFTER.total_seconds()
-                if stale:
-                    problems.append(f"watcher молчит {int(age // 60)} мин")
-            elif cursor_raw is None:
-                problems.append("watcher ещё ни разу не отмечал курсор")
-            if stale and problems and await _throttled(session, ALERT_WATCHER_KEY):
-                await notify_admins(bot, f"⚠️ TON-watcher отстаёт: {problems[0]}. Ставки копятся необработанными.")
+            from app.ton_watch import BEAT_KEY
+
+            beat_age = _age_seconds(await _get_state(session, BEAT_KEY))
+            watcher_note: str | None = None
+            if beat_age is None:
+                watcher_note = "watcher ещё ни разу не завершал цикл"
+            elif beat_age > _WATCHER_STALE_AFTER.total_seconds():
+                watcher_note = f"watcher молчит {int(beat_age // 60)} мин"
+            if watcher_note is not None:
+                problems.append(watcher_note)
+                if await _throttled(session, ALERT_WATCHER_KEY):
+                    await notify_admins(
+                        bot,
+                        f"⚠️ TON-watcher отстаёт: {watcher_note}. Ставки копятся необработанными.",
+                    )
         # 2. Очередь выплат старше получаса — казначей застрял или сеть лежит.
         oldest = (
             await session.execute(
