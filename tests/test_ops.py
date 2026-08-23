@@ -292,6 +292,65 @@ async def test_no_watcher_alerts_when_ton_disabled(monkeypatch: pytest.MonkeyPat
     assert await ops.check_anomalies(bot=None) == []
 
 
+# ---------- Токены (джеттоны) против фонда ----------
+
+
+def _tx_item(**overrides) -> dict:
+    item = {
+        "hash": "tx-" + os.urandom(8).hex(),
+        "utime": 5000,
+        "in_msg": {
+            "source": {"address": "0:" + os.urandom(32).hex()},
+            "value": str(to_nano(0.5)),
+            "raw_message": "",
+        },
+    }
+    item.update(overrides)
+    return item
+
+
+def test_native_ton_transaction_parses() -> None:
+    from app import ton_watch
+
+    transfer = ton_watch._parse_tx_item(_tx_item(), since_utime=1000)
+    assert transfer is not None
+    assert transfer.value_nanotons == to_nano(0.5)
+
+
+def test_jetton_transfer_is_not_a_stake_and_not_refunded() -> None:
+    """USDt/др. токены не смешиваются с фондом: уведомление джеттона
+    пропускается целиком — ни ставки, ни пыльного авто-возврата."""
+    from app import ton_watch
+
+    jetton = _tx_item(
+        in_msg={
+            "source": {"address": "EQ" + "A" * 46},  # jetton-кошелёк отправителя
+            "value": "1000000",  # копейки газа в обёртке, не сумма перевода
+            "opcode": "0x7362d09c",
+        }
+    )
+    assert ton_watch._is_jetton_notification(jetton["in_msg"])
+    assert ton_watch._parse_tx_item(jetton, since_utime=1000) is None
+
+    # Альтернативная форма сигнала от API — decoded_op.
+    decoded = _tx_item(in_msg={"msg_data": {"decoded_op": "transfer_notification"}})
+    assert ton_watch._is_jetton_notification(decoded["in_msg"])
+    assert ton_watch._parse_tx_item(decoded, since_utime=1000) is None
+
+    # Нативный TON с обычным опкодом джеттоном не считается.
+    native = _tx_item(in_msg={**_tx_item()["in_msg"], "opcode": "0x00000000"})
+    assert not ton_watch._is_jetton_notification(native["in_msg"])
+
+
+def test_old_or_empty_transactions_are_skipped() -> None:
+    from app import ton_watch
+
+    assert ton_watch._parse_tx_item(_tx_item(utime=999), since_utime=1000) is None
+    empty = _tx_item()
+    empty["in_msg"]["value"] = "0"
+    assert ton_watch._parse_tx_item(empty, since_utime=1000) is None
+
+
 def test_previous_month_key() -> None:
     assert previous_month_key(datetime(2026, 8, 22, tzinfo=timezone.utc)) == "2026-07"
     assert previous_month_key(datetime(2026, 1, 5, tzinfo=timezone.utc)) == "2025-12"

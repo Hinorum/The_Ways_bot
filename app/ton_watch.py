@@ -77,27 +77,69 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
         return [], False
     transfers: list[Transfer] = []
     for item in items:
-        try:
-            utime = int(item.get("utime", 0))
-            if utime <= since_utime:
-                continue
-            in_msg = item.get("in_msg") or {}
-            source = ((in_msg.get("source") or {}).get("address")) or ""
-            value = int(in_msg.get("value") or 0)
-            if value <= 0 or not source:
-                continue
-            transfers.append(
-                Transfer(
-                    tx_hash=item.get("hash", ""),
-                    source=source,
-                    value_nanotons=value,
-                    comment=_decode_comment(in_msg),
-                    utime=utime,
-                )
-            )
-        except Exception as exc:
-            logger.warning("Странная транзакция пропущена: %s", exc)
+        transfer = _parse_tx_item(item, since_utime)
+        if transfer is not None:
+            transfers.append(transfer)
     return transfers, True
+
+
+# Jetton::transfer_notification — входящий токен (USDt, NOT, …), а не TON.
+_JETTON_OPCODES = {"0x7362d09c"}
+# Не спамим в лог одним и тем же токеном каждый минутный цикл.
+_warned_jettons: set[str] = set()
+
+
+def _is_jetton_notification(in_msg: dict) -> bool:
+    opcode = str(in_msg.get("opcode") or "").strip().lower()
+    if opcode in _JETTON_OPCODES:
+        return True
+    msg_data = in_msg.get("msg_data")
+    if isinstance(msg_data, dict):
+        decoded_op = str(msg_data.get("decoded_op") or "").strip().lower()
+        if decoded_op == "transfer_notification":
+            return True
+    return False
+
+
+def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
+    """Транзакция страницы -> Transfer либо None (старая/джеттон/мусор).
+
+    Джеттон-уведомление — это НЕ ставка: value внутри обёртки — копейки
+    газа, источник — jetton-кошелёк игрока. Такой перевод нельзя ни
+    зачесть, ни автоматически вернуть, поэтому он пропускается целиком,
+    без пыльного refund-payout: токены ждут ручного возврата с казначея.
+    """
+    try:
+        in_msg = item.get("in_msg") or {}
+        utime = int(item.get("utime", 0))
+        if utime <= since_utime:
+            return None
+        if _is_jetton_notification(in_msg):
+            tx_hash = str(item.get("hash") or "")
+            if tx_hash and tx_hash not in _warned_jettons:
+                if len(_warned_jettons) > 256:
+                    _warned_jettons.clear()
+                _warned_jettons.add(tx_hash)
+                logger.warning(
+                    "Входящий перевод %s… — токен (jetton), а не TON. Ставкой не становится "
+                    "и автоматически не возвращается: верни вручную с казначея.",
+                    tx_hash[:16],
+                )
+            return None
+        source = ((in_msg.get("source") or {}).get("address")) or ""
+        value = int(in_msg.get("value") or 0)
+        if value <= 0 or not source:
+            return None
+        return Transfer(
+            tx_hash=item.get("hash", ""),
+            source=source,
+            value_nanotons=value,
+            comment=_decode_comment(in_msg),
+            utime=utime,
+        )
+    except Exception as exc:
+        logger.warning("Странная транзакция пропущена: %s", exc)
+        return None
 
 
 def _decode_comment(in_msg: dict) -> str:
