@@ -103,6 +103,20 @@ _PLACES = [
     },
 ]
 
+
+# Короткие имена мест маршрута — по индексу совпадают с _PLACES. Память о
+# географии позволяет возвращать стаю туда, где уже всё изменилось.
+_PLACE_NAMES = [
+    "Окраина тумана",
+    "Старый приют",
+    "Бесконечный архив",
+    "Город без теней",
+    "Мост над развязкой",
+    "Река мёртвых порталов",
+    "Ярмарка Лайнеров",
+    "Гнездо Первого Лая",
+]
+
 # Заголовок, описание и последствие связаны намертво: карта называет то,
 # что делает, и последствие вытекает именно из этого действия. Никаких
 # общих вставных фраз между картами.
@@ -210,65 +224,96 @@ def compose_chapter(
     win_rule=None,
     echoes=None,
     distant_echoes: list[str] | None = None,
+    season_block: str | None = None,
 ) -> dict:
     rng = _rng(day_index, "|".join(previous_beats[-5:]))
     history_tags = tags_from_beats(previous_beats)
     last = previous_beats[-1] if previous_beats else None
     echo = _echo(last, history_tags)
-    place = _PLACES[(day_index + len(history_tags)) % len(_PLACES)]
+    place_idx = (day_index + len(history_tags)) % len(_PLACES)
+    place = _PLACES[place_idx]
+    place_name = _PLACE_NAMES[place_idx]
+    is_finale = bool(season_block and "ДЕНЬ ПЕРВОГО ЛАЯ" in season_block)
     cover_prompt = (
         "wide cinematic establishing shot, " + place["scene"]
         + ", dark fairy-tale digital painting, glow of an open portal, "
-        "teal and violet palette, volumetric fog, cinematic composition, no text, no letters"
+        "volumetric fog, cinematic composition, no text, no letters"
     )
-    title_bits = [
-        "Портал лает",
-        "Тёплые миски",
-        "Имя не твоё",
-        "Стая слышит",
-        "Сигнал отвечает",
-        "Город без теней",
-        "Мост из костей",
-        "Первый Лай ближе",
-    ]
-    cards = _cards(rng, day_index)
-    active_echoes = list(echoes or [])
-    text = _chapter_text(day_index, echo, place, history_tags, last, win_rule)
-    if active_echoes:
-        touches = (
-            "На обочине снова мелькает «{name}».",
-            "«{name}» не отстаёт от тропы.",
-            "Где-то за спиной остаётся «{name}».",
+    if is_finale:
+        title = f"День {day_index}. Первый Лай"
+        text = (
+            f"Стая выходит {place['to']}. Сегодня порталы молчат все до одного — "
+            "и в этой тишине Лай звучит изнутри костей. Он зовёт каждого по-своему: "
+            "кто-то слышит тёплый двор, кто-то ловушку, чей-то нос чует, что зов "
+            "можно перехватить. Три тропы расходятся от последнего портала."
         )
-        primary = active_echoes[0]
-        idx = rng.randrange(len(cards))
-        target = cards[idx]
-        cards[idx] = replace(
-            target,
-            consequence=(
-                f"{target.consequence} "
-                + touches[rng.randrange(len(touches))].format(name=primary.title)
-            ),
+        cards = [
+            replace(
+                card,
+                consequence=(
+                    f"Стая выбрала «{card.title}» — и Первый Лай замолкает, "
+                    "оставив мир другим."
+                ),
+            )
+            for card in _finale_cards(rng)
+        ]
+    else:
+        title_bits = [
+            "Портал лает",
+            "Тёплые миски",
+            "Имя не твоё",
+            "Стая слышит",
+            "Сигнал отвечает",
+            "Город без теней",
+            "Мост из костей",
+            "Первый Лай ближе",
+        ]
+        title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
+        cards = _cards(rng, day_index)
+        active_echoes = list(echoes or [])
+        text = _chapter_text(day_index, echo, place, history_tags, last, win_rule)
+        if active_echoes:
+            touches = (
+                "На обочине примостилось «{name}».",
+                "«{name}» не отстаёт от тропы.",
+                "Кто-то оставил у портала «{name}».",
+            )
+            primary = active_echoes[0]
+            idx = rng.randrange(len(cards))
+            target = cards[idx]
+            cards[idx] = replace(
+                target,
+                consequence=(
+                    f"{target.consequence} "
+                    + touches[rng.randrange(len(touches))].format(name=primary.title)
+                ),
+            )
+            for item in active_echoes:
+                sentence = item.description.strip()
+                if not sentence or sentence in text:
+                    # Дословный повтор не добавляем: след должен угадываться.
+                    continue
+                if sentence[-1] not in ".!?…":
+                    sentence += "."
+                text += f" {sentence}"
+        distant_variants = (
+            "Давний след всплывает сам собой: {snippet}",
+            "Из глубины канона проступает: {snippet}",
+            "Старая история догоняет стаю: {snippet}",
         )
-        for item in active_echoes:
-            sentence = item.description.strip()
-            if not sentence or sentence in text:
-                # Эхо часто дословно повторяет недавний канон — не дублируем.
+        for distant in distant_echoes or []:
+            snippet = " ".join(distant.split())
+            if not snippet or snippet in text:
                 continue
-            if sentence[-1] not in ".!?…":
-                sentence += "."
-            text += f" {sentence}"
-    for distant in distant_echoes or []:
-        snippet = " ".join(distant.split())
-        if not snippet or snippet in text:
-            continue
-        if len(snippet) > 160:
-            snippet = snippet[:157] + "…"
-        if snippet[-1] not in ".!?…":
-            snippet += "."
-        text += f" В глубине канона шевелится давнее: {snippet}"
+            if len(snippet) > 160:
+                snippet = snippet[:157] + "…"
+            if snippet[-1] not in ".!?…":
+                snippet += "."
+            text += " " + distant_variants[rng.randrange(len(distant_variants))].format(snippet=snippet)
+
     return {
-        "title": f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}",
+        "title": title,
+        "place": place_name,
         "text": text,
         "lore_summary": echo,
         "cover_prompt": cover_prompt,
@@ -283,6 +328,44 @@ def compose_chapter(
             for card in cards
         ],
     }
+
+
+def _finale_cards(rng: random.Random) -> list[CardDraft]:
+    """Три прочтения Первого Лая: дом (care), ловушка (risk), стать зовом (cunning)."""
+    base = {
+        "care": (
+            "Дверь в старый двор",
+            "Идти на тёплую часть зова: там пахнет мисками и чьим-то ожиданием.",
+            "Лай был домом — но за домом придётся платить памятью о тропе.",
+        ),
+        "risk": (
+            "Клыки на зов",
+            "Встретить Лай оскалом: если это охота — охота закончится здесь.",
+            "Лай был ловушкой — стая сломала капкан, но шум привёл Хозяина Ошибки.",
+        ),
+        "cunning": (
+            "Перехватить зов",
+            "Не отвечать, а подстроиться под гул: пусть сеть лает их голосом.",
+            "Стая стала зовом — теперь миры приходят к ним сами.",
+        ),
+    }
+    order = ["risk", "care", "cunning"]
+    rng.shuffle(order)
+    return [
+        CardDraft(
+            title=base[tag][0],
+            description=base[tag][1],
+            consequence=base[tag][2],
+            tag=tag,
+            image_prompt=(
+                "dark fairy-tale tarot, first bark interpretation, "
+                "stray dog before the source of a glowing call, no text"
+            ),
+        )
+        for tag in order
+    ]
+
+
 
 
 def _echo(last: str | None, tags: list[str]) -> str:

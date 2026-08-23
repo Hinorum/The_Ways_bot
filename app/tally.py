@@ -9,14 +9,22 @@ from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, RULE_
 from app.ton_utils import from_nano
 
 
+_CHUNK = 500  # лимит параметров IN(...): большие дни чанкуются
+
+
+def _chunks(ids: list[int], size: int = _CHUNK):
+    for start in range(0, len(ids), size):
+        yield ids[start : start + size]
+
+
 async def award_points(session: AsyncSession, round_row: Round) -> int:
     if round_row.winner_card is None:
         return 0
     voters = await session.execute(select(Vote.player_id).where(Vote.round_id == round_row.id))
     voter_ids = [row[0] for row in voters.all()]
-    if voter_ids:
+    for chunk in _chunks(voter_ids):
         await session.execute(
-            update(Player).where(Player.id.in_(voter_ids)).values(score=Player.score + 1)
+            update(Player).where(Player.id.in_(chunk)).values(score=Player.score + 1)
         )
     winners = await session.execute(
         select(Vote.player_id).where(
@@ -25,10 +33,10 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
         )
     )
     winner_ids = [row[0] for row in winners.all()]
-    if winner_ids:
+    for chunk in _chunks(winner_ids):
         await session.execute(
             update(Player)
-            .where(Player.id.in_(winner_ids))
+            .where(Player.id.in_(chunk))
             .values(score=Player.score + 10, correct_picks=Player.correct_picks + 1)
         )
     await session.commit()

@@ -98,6 +98,13 @@ class Round(Base):
     # Момент первой успешной рассылки дня: повторный анонс того же дня
     # невозможен даже при гонке двух процессов после деплоя.
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Сезон мира (календарный месяц «YYYY-MM» по UTC): финал сезона — День
+    # Первого Лая последнего дня месяца; 1-го числа, после копилки лидеров,
+    # начинается новый сезон.
+    season: Mapped[str | None] = mapped_column(String(7), nullable=True, index=True)
+    # Место действия дня: даёт сети память о географии — возвращение в место
+    # показывает игрокам перемены от давних выборов.
+    place: Mapped[str | None] = mapped_column(String(80), nullable=True)
     pot_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     rake_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -323,4 +330,18 @@ class PreparedDay(Base):
 
     day_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryHit(Base):
+    """Отметка внимательности: игрок узнал тихий след давнего дня в каноне.
+
+    Бот никогда не подтверждает и не опровергает догадку — только копит
+    счётчик «Память сети», видимый в /score. Одна отметка на игрока в день.
+    """
+
+    __tablename__ = "memory_hits"
+
+    player_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    round_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

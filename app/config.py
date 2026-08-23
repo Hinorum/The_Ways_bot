@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     revote_enabled: bool = True
     revote_stars: int = 25
     revote_ton: float = 0.1
+    # Период само-пинга /health: держит free plan Render от засыпания, чтобы
+    # день открывался по UTC-сетке. 0 — выключить.
+    self_ping_seconds: int = 600
     port: int = 10000
     webhook_base_url: str = ""
     webhook_secret: str = ""

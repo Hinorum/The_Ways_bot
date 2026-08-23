@@ -37,7 +37,13 @@ def cards_keyboard(round_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Путь I", callback_data=f"vote:{round_id}:0"),
                 InlineKeyboardButton(text="Путь II", callback_data=f"vote:{round_id}:1"),
                 InlineKeyboardButton(text="Путь III", callback_data=f"vote:{round_id}:2"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🧠 Я помню этот след",
+                    callback_data=f"remember:{round_id}",
+                )
+            ],
         ]
     )
 
@@ -67,7 +73,28 @@ def status_text(round_row: Round) -> str:
         f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
         f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
     )
+    season_line = _season_status_line(round_row)
+    if season_line:
+        text += f"\n{season_line}"
     return text[:_MAX_TEXT_LEN]
+
+
+def _season_status_line(round_row: Round) -> str | None:
+    """Строка сезона в статусе дня: акты месяца и дистанция до Первого Лая."""
+    try:
+        from app.season import act_line, day_of_season, days_in_season, season_key
+
+        moment = round_row.voting_ends_at
+        if getattr(moment, "tzinfo", None) is None:
+            from datetime import timezone as _tz
+
+            moment = moment.replace(tzinfo=_tz.utc)
+        total = days_in_season(season_key(moment))
+        if day_of_season(moment) == total:
+            return "🐺 Сегодня — День Первого Лая. Финал сезона."
+        return f"🌙 {act_line(day_of_season(moment), total)}"
+    except Exception:
+        return None
 
 
 def _card_media(card) -> InputMediaPhoto:
@@ -175,7 +202,18 @@ def winner_photo(round_row: Round) -> FSInputFile | None:
     return FSInputFile(path)
 
 
-async def _deliver_day(bot: Bot, chat_id: int, round_row: Round, finished: Round | None) -> None:
+_BROADCAST_PARALLELISM = 8
+
+
+async def _deliver_day(
+    bot: Bot,
+    chat_id: int,
+    round_row: Round,
+    finished: Round | None,
+    results_text: str | None = None,
+) -> None:
+    """Полный пакет дня в один чат. Итоги передаются готовым текстом:
+    экономика дня считается один раз на рассылку, а не на каждый чат."""
     if finished is not None:
         photo = winner_photo(finished)
         if photo is not None:
@@ -185,7 +223,9 @@ async def _deliver_day(bot: Bot, chat_id: int, round_row: Round, finished: Round
                 photo=photo,
                 caption=f"Канон дня: {card.title}"[:1000],
             )
-        await bot.send_message(chat_id, await results_message(finished))
+        if results_text is None:
+            results_text = await results_message(finished)
+        await bot.send_message(chat_id, results_text)
     media = day_media_group(round_row)
     if media:
         await bot.send_media_group(chat_id, media=media)
@@ -196,6 +236,35 @@ async def _deliver_day(bot: Bot, chat_id: int, round_row: Round, finished: Round
     )
 
 
+async def _deliver_chat(
+    bot: Bot,
+    chat_id: int,
+    round_row: Round,
+    finished: Round | None,
+    results_text: str | None,
+) -> int | None:
+    """Доставка в чат с одним ретраем после флуд-контроля. None — неудача."""
+    try:
+        await _deliver_day(bot, chat_id, round_row, finished, results_text)
+        return chat_id
+    except TelegramRetryAfter as exc:
+        logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
+        await asyncio.sleep(exc.retry_after + 1)
+        await _deliver_day(bot, chat_id, round_row, finished, results_text)
+        return chat_id
+    except TelegramForbiddenError:
+        await deactivate_chat(chat_id)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Анонс дня %s не доставлен в чат %s: %s", round_row.day_index, chat_id, exc
+        )
+        lowered = str(exc).lower()
+        if any(mark in lowered for mark in _FORGET_MARKS):
+            await deactivate_chat(chat_id)
+        return None
+
+
 async def announce_new_day(
     bot: Bot | None,
     round_row: Round,
@@ -203,40 +272,63 @@ async def announce_new_day(
 ) -> list[int]:
     """Итоги прошлого дня (если передан) + обложка и карты нового дня.
 
-    Возвращает список чатов, куда рассылка прошла успешно.
+    Чаты доставляются параллельно ограниченным пулом: последовательная
+    рассылка (~7 сообщений и 4 аплоада на чат) упирается в часы уже на
+    сотнях чатов. Возвращает список чатов, куда рассылка прошла успешно.
     """
     if bot is None:
         return []
     chat_ids = await active_chat_ids()
-    delivered: list[int] = []
-    for chat_id in chat_ids:
-        try:
-            await _deliver_day(bot, chat_id, round_row, finished)
-            delivered.append(chat_id)
-        except TelegramRetryAfter as exc:
-            logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
-            await asyncio.sleep(exc.retry_after + 1)
-            try:
-                await _deliver_day(bot, chat_id, round_row, finished)
-                delivered.append(chat_id)
-            except Exception as exc_repeat:
-                logger.warning(
-                    "Повтор анонса дня %s в чат %s не удался: %s",
-                    round_row.day_index,
-                    chat_id,
-                    exc_repeat,
-                )
-        except TelegramForbiddenError:
-            await deactivate_chat(chat_id)
-        except Exception as exc:
-            logger.warning("Анонс дня %s не доставлен в чат %s: %s", round_row.day_index, chat_id, exc)
-            lowered = str(exc).lower()
-            if any(mark in lowered for mark in _FORGET_MARKS):
-                await deactivate_chat(chat_id)
+    results_text = await results_message(finished) if finished is not None else None
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(chat_id: int) -> int | None:
+        async with semaphore:
+            return await _deliver_chat(bot, chat_id, round_row, finished, results_text)
+
+    outcomes = await asyncio.gather(*(worker(chat_id) for chat_id in chat_ids))
+    delivered = [chat_id for chat_id in outcomes if chat_id is not None]
     logger.info(
         "Анонс дня %s разослан: доставлено %d из %d чатов",
         round_row.day_index,
         len(delivered),
         len(chat_ids),
     )
+    return delivered
+
+
+async def whisper_to_chats(bot: Bot | None, text: str) -> int:
+    """Полуденный шёпот мира: короткое сообщение во все живые чаты.
+
+    Возвращает число доставленных чатов; провалы не критичны по определению.
+    """
+    if bot is None or not text:
+        return 0
+    chat_ids = await active_chat_ids()
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(chat_id: int) -> bool:
+        async with semaphore:
+            try:
+                await bot.send_message(chat_id, text)
+                return True
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after + 1)
+                try:
+                    await bot.send_message(chat_id, text)
+                    return True
+                except Exception:
+                    return False
+            except TelegramForbiddenError:
+                await deactivate_chat(chat_id)
+                return False
+            except Exception as exc:
+                lowered = str(exc).lower()
+                if any(mark in lowered for mark in _FORGET_MARKS):
+                    await deactivate_chat(chat_id)
+                return False
+
+    outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
+    delivered = sum(1 for ok in outcomes if ok)
+    logger.info("Шёпот дня разослан в %d из %d чатов", delivered, len(chat_ids))
     return delivered

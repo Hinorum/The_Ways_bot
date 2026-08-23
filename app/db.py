@@ -24,6 +24,8 @@ _SQLITE_COLUMN_DDL = {
         "epilogue_text": "ALTER TABLE rounds ADD COLUMN epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
         "announced_at": "ALTER TABLE rounds ADD COLUMN announced_at DATETIME",
         "tie_note": "ALTER TABLE rounds ADD COLUMN tie_note VARCHAR(200)",
+        "season": "ALTER TABLE rounds ADD COLUMN season VARCHAR(7)",
+        "place": "ALTER TABLE rounds ADD COLUMN place VARCHAR(80)",
     },
     "cards": {
         "tag": "ALTER TABLE cards ADD COLUMN tag VARCHAR(16) NOT NULL DEFAULT 'care'",
@@ -81,6 +83,9 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ"))
             # Объяснение ничьей при выборе победившего пути.
             await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)"))
+            # Сезон мира и место действия: память географии между днями.
+            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS season VARCHAR(7)"))
+            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS place VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
             await conn.execute(text(

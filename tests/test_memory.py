@@ -47,11 +47,12 @@ def test_recall_finds_old_wolf_day_and_respects_window() -> None:
 def test_compose_chapter_weaves_distant_canon() -> None:
     distant = ["День 4. Волчья стая: серый вожак перекрыл перевал."]
     chapter = compose_chapter(15, ["Прошлый путь: стая ушла к воде"], distant_echoes=distant)
-    assert "давнее" in chapter["text"]
+    # Формулировка вплетения варьируется, но суть сниппета обязана попасть.
     assert "Волчья стая" in chapter["text"]
+    assert "перевал" in chapter["text"]
     # Пустой список ничего не ломает и ничего не добавляет.
     plain = compose_chapter(15, ["Прошлый путь: стая ушла к воде"], distant_echoes=[])
-    assert "давнее" not in plain["text"]
+    assert "Волчья стая" not in plain["text"]
 
 
 def test_story_prompt_carries_distant_block() -> None:

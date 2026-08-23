@@ -4,6 +4,7 @@ import logging
 import signal
 from pathlib import Path
 
+import httpx
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
@@ -28,6 +29,37 @@ async def health(_request: web.Request) -> web.Response:
         log.exception("snapshot упал — отвечаем минимальным ok")
         payload = {"status": "ok"}
     return web.json_response(payload)
+
+
+async def _self_ping_loop(stop: asyncio.Event) -> None:
+    """Пингует собственный /health: free plan Render засыпает без входящего
+    трафика, а каждый пинг считается входящим запросом. Расписание дней
+    якорится к UTC-сетке, поэтому без пинга день открывался бы при первом
+    пробудившем запросе, а не в 11:00 UTC."""
+    if not settings.public_base_url:
+        return
+    url = f"{settings.public_base_url}/health"
+    while not stop.is_set():
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(url)
+            log.info("self-ping %s -> %s", url, response.status_code)
+        except Exception as exc:
+            log.warning("self-ping не удался: %s", exc)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=settings.self_ping_seconds)
+
+
+def _install_stop_handlers(stop: asyncio.Event) -> None:
+    loop = asyncio.get_running_loop()
+    for name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
 
 
 async def boot_game(bot) -> None:
@@ -68,20 +100,26 @@ async def run_webhook(bot, dispatcher) -> None:
     site = web.TCPSite(runner, "0.0.0.0", settings.port)
     await site.start()
     if settings.public_base_url:
+        # drop_pending_updates=False: накопленные за сон апдейты (голоса
+        # кнопками, оплаты Stars!) должны обработаться, а не выброситься.
         await bot.set_webhook(
             f"{settings.public_base_url}{path}",
             secret_token=secret,
-            drop_pending_updates=True,
+            drop_pending_updates=False,
         )
     boot_task = asyncio.create_task(boot_game(bot))
     stop = asyncio.Event()
+    ping_task = asyncio.create_task(_self_ping_loop(stop))
     _install_stop_handlers(stop)
     await stop.wait()
     log.info("Остановка: глушим планировщик и веб-сервер")
     scheduler.shutdown(wait=False)
+    stop.set()  # будим self-ping для корректного завершения
     boot_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await boot_task
+    ping_task.cancel()
+    for task in (boot_task, ping_task):
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     await runner.cleanup()
     await bot.session.close()
 
@@ -111,7 +149,7 @@ async def main() -> None:
         ensure_webhook_secret()
         await run_webhook(bot, dispatcher)
         return
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=False)
     await boot_game(bot)
     await dispatcher.start_polling(bot)
 

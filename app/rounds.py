@@ -34,6 +34,7 @@ from app.models import (
 )
 from app.art_director import build_image_prompt, plan_day_art, short_image_prompt
 from app.memory import recall_beats
+from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
 from app.ton_pay import pending_payout_count
 
@@ -104,6 +105,18 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
     winner = next((c for c in round_row.cards if c.position == round_row.winner_card), None)
     if winner is None:
         return ""
+    # Финальный день сезона: эпилог закрывает месяц как финальный аккорд.
+    season_note = None
+    try:
+        from app.season import is_finale_day
+
+        if is_finale_day(utc_aware(round_row.voting_ends_at)):
+            season_note = (
+                "Этот день закрыл сезон: эпилог должен прозвучать финальным "
+                "аккордом месяца — мир после Первого Лая уже другой."
+            )
+    except Exception:
+        season_note = None
     try:
         text = await generate_epilogue(
             day_index=round_row.day_index,
@@ -111,6 +124,7 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
             winner_consequence=winner.consequence,
             counts_line=counts_line,
             rule_phrase=RULE_PHRASES[round_row.win_rule],
+            season_note=season_note,
         )
     except Exception as exc:
         logger = logging.getLogger(__name__)
@@ -166,6 +180,70 @@ async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     return [f"{beat.winning_title}: {beat.winning_text}" for beat in rows]
 
 
+async def season_tag_balance(session: AsyncSession, key: str) -> dict[str, int]:
+    """Характер стаи за сезон: теги победивших путей закрытых дней."""
+    result = await session.execute(
+        select(Card.tag)
+        .join(Round, Card.round_id == Round.id)
+        .where(
+            Round.season == key,
+            Round.status == RoundStatus.CLOSED,
+            Card.position == Round.winner_card,
+        )
+    )
+    balance = {"risk": 0, "care": 0, "cunning": 0}
+    for (tag,) in result.all():
+        balance[tag if tag in balance else "care"] += 1
+    return balance
+
+
+async def previous_season_summary(session: AsyncSession, current_key: str) -> str | None:
+    """Осадок финала прошлого сезона: последний канон предыдущего месяца."""
+    year, month = (int(part) for part in current_key.split("-"))
+    prev_key = f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
+    result = await session.execute(
+        select(Round.day_index)
+        .where(Round.season == prev_key, Round.status == RoundStatus.CLOSED)
+        .order_by(Round.day_index.desc())
+        .limit(1)
+    )
+    day_index = result.scalar_one_or_none()
+    if day_index is None:
+        return None
+    beat = (
+        await session.execute(select(StoryBeat).where(StoryBeat.day_index == day_index))
+    ).scalar_one_or_none()
+    if beat is None:
+        return None
+    summary = f"{beat.winning_title}: {beat.winning_text}"
+    return summary[:180]
+
+
+async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | None:
+    """Память мест для промпта: где стая уже была и что там изменилось."""
+    result = await session.execute(
+        select(Round.place, Round.day_index)
+        .where(Round.place.is_not(None))
+        .order_by(Round.day_index.desc())
+        .limit(limit * 3)
+    )
+    seen: dict[str, int] = {}
+    for place, day_index in result.all():
+        seen.setdefault(place, day_index)
+        if len(seen) >= limit:
+            break
+    if not seen:
+        return None
+    lines: list[str] = []
+    for place, day_index in seen.items():
+        beat = (
+            await session.execute(select(StoryBeat).where(StoryBeat.day_index == day_index))
+        ).scalar_one_or_none()
+        snippet = beat.winning_text[:90] if beat else ""
+        lines.append(f"- «{place}»: {snippet}")
+    return "\n".join(lines)
+
+
 async def _load_art_anchor(session: AsyncSession) -> dict | None:
     from app.models import WatcherState
     from app.art_director import AnchorKey
@@ -197,7 +275,9 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
     await session.commit()
 
 
-async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
+async def _plan_and_render(
+    session: AsyncSession, day_index: int, opens_hint: datetime | None = None
+) -> dict:
     """Тяжёлая половина создания дня: глава, библия арта и четыре картинки.
 
     Всё сетевое и медленное — здесь. Результат — лёгкий JSON-payload,
@@ -207,6 +287,26 @@ async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
     echoes = await collect_due_echoes(session, day_index)
     rule = secrets.choice(list(WinRule))
     salt = secrets.token_hex(16)
+
+    # Сезонная рамка: акты месяца и финал Первого Лая по календарю UTC.
+    open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
+    from app.season import (
+        day_of_season,
+        season_block as build_season_block,
+        season_key,
+    )
+
+    key = season_key(open_moment)
+    balance = await season_tag_balance(session, key)
+    prev_summary = None
+    if day_of_season(open_moment) <= 2:
+        prev_summary = await previous_season_summary(session, key)
+    sblock = build_season_block(
+        open_moment=open_moment,
+        balance=balance,
+        previous_season_summary=prev_summary,
+    )
+    places_block = await places_memory_block(session)
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
@@ -220,12 +320,16 @@ async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
     query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
     distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
 
-    chapter = await generate_chapter(day_index, beats, rule, echoes, distant_echoes=distant)
+    chapter = await generate_chapter(
+        day_index, beats, rule, echoes, distant_echoes=distant,
+        season_block=sblock, places_block=places_block,
+    )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.
+    echo_motifs = sorted({_ECHO_ART_MOTIFS.get(echo.kind, "portal hum haze") for echo in echoes})
     anchor = await _load_art_anchor(session)
-    bible = await plan_day_art(chapter, beats, anchor=anchor)
+    bible = await plan_day_art(chapter, beats, anchor=anchor, extra_motifs=echo_motifs)
     await _save_art_anchor(session, bible)
 
     media_root = Path(settings.media_dir)
@@ -277,6 +381,8 @@ async def _plan_and_render(session: AsyncSession, day_index: int) -> dict:
         "chapter_title": chapter["title"],
         "chapter_text": chapter["text"],
         "lore_summary": chapter["lore_summary"],
+        "place": chapter.get("place"),
+        "season": key,
         "cover_path": str(cover_path),
         "cards": cards_payload,
     }
@@ -321,6 +427,8 @@ async def _materialize_round(
         chapter_title=payload["chapter_title"],
         chapter_text=payload["chapter_text"],
         lore_summary=payload["lore_summary"],
+        season=payload.get("season") or season_key(opens_at),
+        place=payload.get("place"),
         cover_path=payload.get("cover_path", ""),
         opens_at=opens_at,
         voting_ends_at=voting_ends_at,
@@ -334,6 +442,15 @@ async def _materialize_round(
     session.add(round_row)
     await session.flush()
     return round_row
+
+
+# Визуальная фактура типов эхов: содержание скрыто, фактура повторяется —
+# внимательный игрок учится узнавать класс следа по кадру дня.
+_ECHO_ART_MOTIFS = {
+    "угроза": "ominous burnt-wire glow in the fog",
+    "память": "a warm amber keepsake bowl catching light",
+    "обман": "a mirage-like silhouette of an unfamiliar dog",
+}
 
 
 _PREGEN_LOCK_PREFIX = "pregen_lock:"
@@ -377,7 +494,13 @@ async def prepare_next_day(session: AsyncSession, current_day_index: int) -> boo
         session.add(WatcherState(key=lock_key, value=str(now_stamp)))
     await session.commit()
     try:
-        payload = await _plan_and_render(session, day_index)
+        current = (
+            await session.execute(
+                select(Round).order_by(Round.day_index.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        opens_hint = utc_aware(current.tally_ends_at) if current and current.tally_ends_at else None
+        payload = await _plan_and_render(session, day_index, opens_hint=opens_hint)
         blob = json.dumps(payload, ensure_ascii=False)
         if prepared is None:
             session.add(PreparedDay(day_index=day_index, payload=blob))
@@ -432,7 +555,12 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
                 return materialized, True
 
     day_index = 1 if latest is None else latest.day_index + 1
-    payload = await _plan_and_render(session, day_index)
+    opens_hint = (
+        max(_now(), utc_aware(latest.tally_ends_at))
+        if latest is not None and latest.tally_ends_at is not None
+        else None
+    )
+    payload = await _plan_and_render(session, day_index, opens_hint=opens_hint)
     try:
         round_row = await _materialize_round(session, payload, latest)
     except IntegrityError:
@@ -586,6 +714,15 @@ def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) 
     return candidates[0]
 
 
+async def _echoes_already_spawned(session: AsyncSession, day_index: int) -> bool:
+    result = await session.execute(
+        select(func.count())
+        .select_from(LoreEcho)
+        .where(LoreEcho.born_day == day_index)
+    )
+    return bool(result.scalar_one())
+
+
 async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     if round_row.status != RoundStatus.OPEN:
         return round_row
@@ -597,6 +734,22 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
         .where(RevoteGrant.round_id == round_row.id, RevoteGrant.status == "granted")
         .values(status="expired")
     )
+    await session.commit()
+    # Следы дня рождаются сразу при закрытии голосования, а не в конце часа
+    # подсчёта: прегенерация завтрашней главы собирается именно в этот час,
+    # и эхо победителя (earliest_day=завтра) обязано уже существовать,
+    # иначе оно системно всплывало бы на день позже замысла. Исход дня при
+    # этом не раскрывается: ни StoryBeat, ни счётчики не публикуются.
+    counts = await count_votes_for_tally(session, round_row.id)
+    seed = f"{round_row.rule_commitment}:{round_row.day_index}"
+    round_row.winner_card = pick_winner(counts, round_row.win_rule, seed=seed)
+    if not await _echoes_already_spawned(session, round_row.day_index):
+        # Свежая копия с картами (selectinload): у переданного объекта карты
+        # могут быть не загружены — ленивый доступ вне greenlet запрещён.
+        loaded = await get_round(session, round_row.id)
+        source = loaded if loaded is not None else round_row
+        source.winner_card = round_row.winner_card
+        spawn_echoes_from_round(session, source)
     await session.commit()
     return round_row
 
@@ -662,7 +815,10 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             vote_counts=counts_json,
         )
     )
-    spawn_echoes_from_round(session, round_row)
+    # Эха обычно уже рождены в close_voting (см. комментарий там); здесь
+    # страховка для путей, миновавших закрытие голосования (/advance и legacy).
+    if not await _echoes_already_spawned(session, round_row.day_index):
+        spawn_echoes_from_round(session, round_row)
     try:
         await session.commit()
     except IntegrityError:

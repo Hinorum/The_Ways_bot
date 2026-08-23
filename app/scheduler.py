@@ -54,6 +54,108 @@ async def _prepare_job(round_id: int) -> None:
         logger.exception("Прегенерация следующего дня не удалась — откроем синхронно")
 
 
+async def _micro_event_job(round_id: int, day_index: int) -> None:
+    """Полуденный шёпот мира: 1-2 предложения посреди дня, чтобы чат жил
+    между утром и итогами. Падения полностью некритичны."""
+    try:
+        from app.db import SessionLocal
+        from app.models import Round, WatcherState
+
+        marker = f"micro_event:{round_id}"
+        async with SessionLocal() as session:
+            row = await session.get(WatcherState, marker)
+            if row is not None:
+                return
+            round_row = await session.get(Round, round_id)
+            if round_row is None or round_row.status != RoundStatus.OPEN:
+                return
+            from app.season import day_of_season, days_in_season, season_key
+
+            moment = utc_aware(round_row.voting_ends_at)
+            total = days_in_season(season_key(moment))
+            season_hint = (
+                "ДЕНЬ ПЕРВОГО ЛАЯ"
+                if day_of_season(moment) == total
+                else f"до Дня Первого Лая {total - day_of_season(moment)} дн."
+            )
+            text = await _compose_whisper(day_index, season_hint)
+            session.add(WatcherState(key=marker, value="1"))
+            await session.commit()
+        from app.broadcast import whisper_to_chats
+
+        await whisper_to_chats(_bot, text)
+    except Exception:
+        logger.exception("Полуденное микрособытие не удалось (не мешает тику)")
+
+
+async def _compose_whisper(day_index: int, season_hint: str) -> str:
+    """Шёпот: нейротекст с офлайн-фолбэком. Не раскрывает содержимое эхов —
+    только абстрактную фактуру по их типу (запах/свет/силуэт)."""
+    import random as _random
+
+    from app.story import DM_SYSTEM_PROMPT, _chat_completion, text_is_clean
+
+    hint = ""
+    try:
+        from sqlalchemy import select
+
+        from app.db import SessionLocal
+        from app.models import LoreEcho
+
+        async with SessionLocal() as session:
+            echo = (
+                await session.execute(
+                    select(LoreEcho)
+                    .where(
+                        LoreEcho.status == "dormant",
+                        LoreEcho.earliest_day <= day_index + 2,
+                    )
+                    .order_by(LoreEcho.strength.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if echo is not None:
+            texture = {
+                "угроза": "в воздухе иногда пахнет жжёной проводкой",
+                "память": "чужой тёплый свет вспоминает миски",
+                "обман": "среди теней мелькает чужой силуэт",
+            }.get(echo.kind, "портал гудит не в такт")
+            hint = f"Осторожная примета дня (без деталей и без слов «эхо»): {texture}."
+    except Exception:
+        hint = ""
+
+    messages = [
+        {"role": "system", "content": DM_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Полуденный шёпот мира, день {day_index}. Сезон: {season_hint}. "
+                f"{hint} "
+                "Одно-два коротких предложения атмосферы (до 180 знаков), без "
+                "сюжета, без выбора, без обращений к игроку — только примета, "
+                "которую стая замечает на ходу. Ответь чистым текстом, без JSON."
+            ),
+        },
+    ]
+    result = await _chat_completion(messages, timeout=45)
+    if result is not None:
+        try:
+            text = str(result[0]["choices"][0]["message"]["content"]).strip()
+            if text and text_is_clean(text):
+                return text[:400]
+        except Exception:
+            pass
+    fallback = [
+        "Порталы гудят сегодня не в такт — стая переглядывается молча.",
+        "Кто-то из Архивариусов прошёл мимо, не поднимая глаз от папок.",
+        "Ветер принёс запах чужого костра. Такого тут не жгут.",
+        "Миски звенят тише обычного, будто прислушиваются.",
+        "Тени ведут себя странно: чуть запаздывают за хозяевами.",
+    ]
+    rng = _random.Random(f"whisper:{day_index}")
+    return rng.choice(fallback)
+
+
 async def tick(bot: Bot | None = None) -> None:
     bot = bot or _bot
     from app.ops import mark_tick
@@ -74,6 +176,18 @@ async def tick(bot: Bot | None = None) -> None:
         if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
             await close_voting(session, current)
             return
+        # Полуденный шёпот: один раз за день, в середине окна голосования.
+        if (
+            current.status == RoundStatus.OPEN
+            and now.hour == (settings.day_open_hour_utc + 11) % 24
+        ):
+            from app.models import WatcherState
+
+            marker = f"micro_event:{current.id}"
+            async with SessionLocal() as session:
+                already = await session.get(WatcherState, marker)
+            if already is None:
+                asyncio.create_task(_micro_event_job(current.id, current.day_index))
         if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
             # Час подсчёта — свободное окно: готовим следующий день заранее,
             # чтобы в 11:00 UTC открыть его мгновенно из готовой заготовки.

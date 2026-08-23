@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -41,21 +42,34 @@ def text_is_clean(text: str) -> bool:
 
 
 DM_SYSTEM_PROMPT = (
-    "Ты — Ведущий (Dungeon Master) ежедневной сюжетной игры, мастер тёмной сказки "
-    "с лёгким собачьим юмором и тихой цифровой тревогой. Мир: Эхо Стаи. "
+    "Ты — Ведущий (Dungeon Master) ежедневной сюжетной игры, мастер тёмной сказки с лёгким собачьим юмором "
+    "и тихой цифровой тревогой. Мир: "
+    + settings.world_name
+    + ". "
     + settings.world_brief
-    + " Веди игрока как настоящий Ведущий: второе лицо («ты»), настоящее время, "
-    "короткие ясные сцены. Каждая развилка — трудная дилемма без очевидно правильного "
-    "ответа, и каждое решение обязательно отзовётся позже, даже если не сразу. "
-    "Пиши простым живым русским языком: короткие предложения, понятная причинность, "
-    "никакого канцелярита, ломаного синтаксиса и случайной латиницы. Не повторяй "
-    "одни и те же формулировки и названия мест из карты в карту. Никаких "
-    "метакомментариев и упоминаний нейросети: только художественный текст."
+    + " Веди игрока как настоящий Ведущий: второе лицо («ты»), настоящее время, короткие ясные сцены. "
+    "Каждая развилка — трудная дилемма без очевидно правильного ответа, и каждое решение обязательно "
+    "отзовётся позже, даже если не сразу.\n"
+    "Постоянные лица мира (вводи их в сцены по настроению дня, не чаще пары появлений в неделю каждое): "
+    "Лайнер-торговец — обменивает чужие воспоминания на проводу и помнит каждый долг стаи; "
+    "Архивариус Хранитель Спорных Версий — объявляет законы дня как настроение архива и никогда не врёт, "
+    "но говорит полуправдами; Хозяин Ошибки — антагонист без лица, который пересчитывает стаю и чинит мир "
+    "не так. У каждого своё отношение к стае, и оно меняется от её выборов: доброта запоминается, "
+    "жестокость тоже. Пять собак стаи — Гавкус, Миска, Рекс-9, Пиксель и Безымянная — остаются фоном: "
+    "именная деталь раз в несколько дней («Мискины усы в золе»), но не главные герои.\n"
+    "Закон дня подавай как известный факт мира, а не тайну: пусть он звучит решением Архивариусов "
+    "(«архив сегодня признаёт меньшинство»), а не броском кубика за кадром.\n"
+    "Пиши простым живым русским языком: короткие предложения, понятная причинность, никакого канцелярита, "
+    "ломаного синтаксиса и случайной латиницы. Не повторяй одни и те же формулировки и названия мест из "
+    "карты в карту. Никаких метакомментариев и упоминаний нейросети: только художественный текст."
 )
 
+# Хвост стиля без фиксированной палитры: цвет приходит из арт-библии дня
+# (палитра + якорь предыдущего дня), иначе ротация палитр между днями
+# перечёркивается захардкоженным «teal and violet».
 STYLE_SUFFIX = (
     ", dark fairy-tale digital painting, dramatic rim light, glow of an open portal, "
-    "teal and violet palette, volumetric fog, intricate detail, cinematic composition, "
+    "volumetric fog, intricate detail, cinematic composition, "
     "no text, no letters, no watermark"
 )
 
@@ -345,11 +359,18 @@ async def generate_chapter(
     win_rule=None,
     echoes=None,
     distant_echoes: list[str] | None = None,
+    season_block: str | None = None,
+    places_block: str | None = None,
 ) -> dict:
-    authored = compose_chapter(day_index, previous_beats, win_rule, echoes, distant_echoes)
+    authored = compose_chapter(
+        day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block
+    )
     if not settings.use_free_story_llm:
         return authored
-    neural = await _free_story_llm(day_index, previous_beats, win_rule, echoes, distant_echoes)
+    neural = await _free_story_llm(
+        day_index, previous_beats, win_rule, echoes, distant_echoes,
+        season_block=season_block, places_block=places_block,
+    )
     return neural or authored
 
 
@@ -401,6 +422,10 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     if not text_is_clean(" ".join(_chapter_text_fields(data))):
         logger.warning("Глава дня отброшена стоп-фильтром")
         return None
+    if isinstance(data.get("place"), str):
+        data["place"] = data["place"].strip()[:80] or None
+    else:
+        data["place"] = None
     data.setdefault(
         "cover_prompt",
         f"dark fairy-tale digital painting, wide shot, day {day_index} of a portal-hopping "
@@ -422,6 +447,8 @@ def _build_story_prompt(
     win_rule=None,
     echoes=None,
     distant_echoes: list[str] | None = None,
+    season_block: str | None = None,
+    places_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -431,7 +458,8 @@ def _build_story_prompt(
 
         law_line = (
             f"Закон сегодняшнего дня уже объявлен игрокам с утра: {RULE_PHRASES[win_rule]}. "
-            "Текст должен упоминать этот закон как известный факт, а не тайну.\n"
+            "Текст должен упоминать этот закон как известный факт, а не тайну — "
+            "например, решением Архивариусов («архив сегодня признаёт меньшинство»).\n"
         )
     echo_block = ""
     if echoes:
@@ -452,12 +480,24 @@ def _build_story_prompt(
             "пересказа целиком:\n"
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
+    season_text = f"{season_block}\n" if season_block else ""
+    places_text = ""
+    if places_block:
+        places_text = (
+            "Память мест (сеть помнит географию маршрута). Если стая сегодня "
+            "возвращается в одно из этих мест — покажи, что здесь изменилось с "
+            "тех пор: место до сих пор носит отпечаток того выбора. Название "
+            "вернувшегося места укажи в поле place.\n"
+            + places_block + "\n"
+        )
     return (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
+        f"{season_text}"
         f"{echo_block}"
         f"{distant_block}"
+        f"{places_text}"
         "Напиши главу дня — цельный мини-рассказ на 400-900 знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
         "героев: Гавкус, Миска, Рекс-9, Пиксель и Безымянная — только фоновый "
@@ -478,7 +518,8 @@ def _build_story_prompt(
         "русских полях. Не упоминай голосование и механику игры в тексте.\n"
         "Описание карты — до 140 знаков, последствие — одно короткое "
         "предложение, которое завтра станет каноном.\n"
-        'Формат: {"title":"День N. ...","text":"история дня, 400-900 знаков",'
+        'Формат: {"title":"День N. ...","place":"короткое название места дня",'
+        '"text":"история дня, 400-900 знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
         '"cards":[{"title":"...","description":"...","consequence":"...",'
@@ -487,23 +528,37 @@ def _build_story_prompt(
     )
 
 
+
+
 async def _free_story_llm(
     day_index: int,
     previous_beats: list[str],
     win_rule=None,
     echoes=None,
     distant_echoes: list[str] | None = None,
+    season_block: str | None = None,
+    places_block: str | None = None,
 ) -> dict | None:
-    prompt = _build_story_prompt(day_index, previous_beats, win_rule, echoes, distant_echoes)
+    prompt = _build_story_prompt(
+        day_index, previous_beats, win_rule, echoes, distant_echoes,
+        season_block=season_block, places_block=places_block,
+    )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
     # Одна повторная попытка всей цепочки: битый JSON у бесплатных моделей —
     # обычное дело, лимит это позволяет.
+    # Полный отказ сети — не приговор: повторная попытка всей цепочки после
+    # короткой паузы. Раньше код возвращал None сразу (вопреки замыслу), и
+    # краткий сетевой сбой уводил день в офлайн-лор без нужды.
     for attempt in range(1, 3):
         result = await _chat_completion(messages)
         if result is None:
+            if attempt == 1:
+                logger.warning("Все модели недоступны (сетевой сбой) — повтор через 5 с")
+                await asyncio.sleep(5)
+                continue
             return None
         payload, used_model = result
         try:
@@ -523,18 +578,19 @@ async def generate_epilogue(
     winner_consequence: str,
     counts_line: str,
     rule_phrase: str,
+    season_note: str | None = None,
 ) -> str:
-    """Финальный штрих итогов: чем отозвался победивший путь. "" — сеть молчит."""
+    """Эпилог дня: чем отозвался победивший путь. "" — если сеть молчит."""
     prompt = (
-        f"День {day_index} закрылся. Закон дня был такой: {rule_phrase}. "
-        f"Победил выбор «{winner_title}»: {winner_consequence} "
-        f"Поддержка по трём дорогам была такая: {counts_line}. "
-        "Напиши финальный штрих этого дня — одно или два предложения, до 220 знаков: "
-        "что этот выбор только что сделал с миром и со стаей. "
-        "Обращайся к игроку на «ты». Без цифр; без слов «голос», «итог», "
-        "«канон», «путь», «выбор». Простые ясные фразы, только художественный "
-        "текст на русском."
+        f"День {day_index} закрылся. Победил тот, кто собрал меньше голосов: {rule_phrase}. "
+        f"Победивший путь «{winner_title}»: {winner_consequence} "
+        f"Голосование по путям выглядело так (счёт скрыт был до этого момента): {counts_line}. "
+        "Напиши завершение истории дня от второго лица на 220 знаков: "
+        "как этот выбор меняет вечер и что стая почувствует ночью. "
+        "Без канцелярита. Не пересказывай итоги; только след, который день оставил в мире."
     )
+    if season_note:
+        prompt += f"\n{season_note}"
     result = await _chat_completion(
         [
             {"role": "system", "content": DM_SYSTEM_PROMPT},

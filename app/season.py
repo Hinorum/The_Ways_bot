@@ -1,0 +1,142 @@
+"""Сезоны мира: календарный месяц от гудка до Первого Лая.
+
+Сезон = «YYYY-MM» по UTC. Последний день месяца — День Первого Лая: стая
+доходит до источника зова, и три карты суть три его прочтения (дом / ловушка /
+стать зовом). Исход финала зависит от накопленного за сезон характера стаи —
+баланса risk/care/cunning по победившим путям. 1-го числа, после распределения
+копилки лидеров, открывается новый сезон: мир помнит прошлый (семантика
+keepstory), счёты игроков продолжаются.
+
+Акты сезона: дни 1–7 — экспозиция (тихие странности); середина — эскалация
+(Лай слышится чаще); последние 7 дней перед финалом — кризис (порталы дрожат).
+"""
+
+from __future__ import annotations
+
+import calendar
+from datetime import datetime, timezone
+
+# Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
+FINALE_CARDS = {
+    "care": "дом",
+    "risk": "ловушка",
+    "cunning": "стать зовом",
+}
+
+_ACT_TONE = {
+    1: (
+        "Сезон юн: мир только расставляет приметы. Пусть странность будет "
+        "одной и тихой — шорох, а не гром."
+    ),
+    2: (
+        "Первый Лай слышится всё явственнее: приметы множатся, порталы "
+        "путают ветки чаще обычного. Напряжение растёт медленно и неотвратимо."
+    ),
+    3: (
+        "Кризис сезона: Лай почти не смолкает, порталы дрожат на грани. "
+        "Мир сам идёт к развязке — стае остаётся решать, кем она войдёт в него."
+    ),
+}
+
+
+def season_key(moment: datetime) -> str:
+    """Ключ сезона «YYYY-MM» по UTC."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m")
+
+
+def days_in_season(key: str) -> int:
+    """Длина месяца сезона (високосный февраль учитывается)."""
+    year, month = (int(part) for part in key.split("-"))
+    return calendar.monthrange(year, month)[1]
+
+
+def day_of_season(open_moment: datetime) -> int:
+    return open_moment.day
+
+
+def is_finale_day(open_moment: datetime) -> bool:
+    return open_moment.day == days_in_season(season_key(open_moment))
+
+
+def act_number(day: int) -> int:
+    if day <= 7:
+        return 1
+    return 2
+
+
+def crisis_act(day: int, total_days: int) -> bool:
+    """Последние семь дней перед финалом — третий акт."""
+    return total_days - day < 7
+
+
+def act_line(day: int, total_days: int) -> str:
+    act = 3 if crisis_act(day, total_days) else act_number(day)
+    days_left = max(0, total_days - day)
+    tone = _ACT_TONE[act]
+    tail = (
+        "Сегодняшний день — ДЕНЬ ПЕРВОГО ЛАЯ."
+        if days_left == 0
+        else f"До Дня Первого Лая осталось {days_left} дн."
+    )
+    return f"Сезон: акт {act}. {tone} {tail}"
+
+
+def tag_balance_line(balance: dict[str, int]) -> str:
+    parts = [f"{name}: {balance.get(tag, 0)}" for tag, name in
+             (("risk", "риск"), ("care", "забота"), ("cunning", "хитрость"))]
+    return "Характер стаи за сезон — " + ", ".join(parts) + "."
+
+
+def finale_instruction(balance: dict[str, int]) -> str:
+    """Блок финала: три прочтения Лая, исход зависит от характера стаи."""
+    dominant = max(balance, key=lambda tag: balance.get(tag, 0)) if balance else "care"
+    flavour = {
+        "risk": "Стая пришла сюда с обнажёнными клыками — и мир отвечает тем же.",
+        "care": "Стая несёт тепло мисок и вылизанных ран — и Лай пахнет домом.",
+        "cunning": "Стая вынюхивала обходные тропы весь сезон — и теперь знает про Лай то, чего не знает никто.",
+    }[dominant]
+    cards_hint = ", ".join(
+        f"«{readable}» (tag {tag})" for tag, readable in FINALE_CARDS.items()
+    )
+    return (
+        "СЕГОДНЯ — ДЕНЬ ПЕРВОГО ЛАЯ, финал сезона. Стая стоит у источника зова. "
+        f"Все три карты — три прочтения Лая: {cards_hint}. Ни одно не подаётся "
+        "как правильное; каждое честно меняет мир. " + flavour + " "
+        + tag_balance_line(balance)
+        + " Эпилог дня закроет сезон одним вздохом — чем он отозвался."
+    )
+
+
+def opener_instruction(previous_finale_summary: str | None) -> str:
+    """Первый день нового сезона: мир помнит, чем закрылся прошлый."""
+    base = (
+        "НОВЫЙ СЕЗОН: прошёл сезон, и он закрылся Днём Первого Лая. Счёты "
+        "обнулены копилкой лидеров, но память сети жива — мир носит шрамы "
+        "и подарки того решения. Не пересказывай финал, покажи его осадок: "
+        "чем пахнет утро после Лая."
+    )
+    if previous_finale_summary:
+        base += f" Осадок прошлого финала: {previous_finale_summary}"
+    return base
+
+
+def season_block(
+    *,
+    open_moment: datetime,
+    balance: dict[str, int] | None = None,
+    previous_season_summary: str | None = None,
+) -> str | None:
+    """Готовый блок для промпта главы: None — вне сезонов (не должен случаться)."""
+    day = day_of_season(open_moment)
+    total = days_in_season(season_key(open_moment))
+    if is_finale_day(open_moment):
+        return finale_instruction(balance or {})
+    block = act_line(day, total)
+    if day == 1:
+        block += "\n" + opener_instruction(previous_season_summary)
+    elif day == 2 and previous_season_summary:
+        # Второй день ещё держит осадок финала, если день 1 собран до сброса.
+        block += "\n" + opener_instruction(previous_season_summary)
+    return block

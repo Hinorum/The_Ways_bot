@@ -24,14 +24,14 @@ from app.scheduler import _prepare_job, tick
 def offline_generation(monkeypatch):
     from app import rounds as rounds_mod
 
-    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None):
+    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None, **kwargs):
         return compose_chapter(day_index, beats, rule, echoes)
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
     monkeypatch.setattr(
         rounds_mod,
         "plan_day_art",
-        AsyncMock(side_effect=lambda chapter, beats=None, anchor=None: offline_bible(chapter)),
+        AsyncMock(side_effect=lambda chapter, beats=None, anchor=None, extra_motifs=None: offline_bible(chapter)),
     )
     monkeypatch.setattr(rounds_mod, "fetch_day_image", AsyncMock(return_value=True))
     monkeypatch.setattr(settings, "ton_enabled", False)

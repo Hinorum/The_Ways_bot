@@ -186,16 +186,29 @@ def _parse_bible(payload: dict) -> dict | None:
     return {"palette": palette[:200], "lighting": lighting[:200], "motifs": motifs, "shots": shots}
 
 
+def _merge_motifs(bible: dict, extra_motifs: list[str] | None) -> dict:
+    """Визуальные следы эхов: предмет из давнего дня попадает в кадр."""
+    if extra_motifs and isinstance(bible.get("motifs"), list):
+        for motif in extra_motifs:
+            if motif not in bible["motifs"]:
+                bible["motifs"].append(motif)
+    return bible
+
+
 async def plan_day_art(
-    chapter: dict, recent_beats: list[str] | None = None, anchor: dict | None = None
+    chapter: dict,
+    recent_beats: list[str] | None = None,
+    anchor: dict | None = None,
+    extra_motifs: list[str] | None = None,
 ) -> dict:
     """Библия дня: LLM-план с одной повторной попыткой, иначе офлайн-план.
 
-    anchor — якорь предыдущего дня для преемственности стиля.
+    anchor — якорь предыдущего дня для преемственности стиля; extra_motifs —
+    визуальные приметы всплывших эхов (предмет давнего дня в кадре).
     """
     beats = recent_beats or []
     if not settings.use_free_story_llm:
-        return offline_bible(chapter, anchor=anchor)
+        return _merge_motifs(offline_bible(chapter, anchor=anchor), extra_motifs)
     messages = [
         {"role": "system", "content": ART_SYSTEM_PROMPT},
         {"role": "user", "content": _build_art_prompt(chapter, beats, anchor)},
@@ -212,9 +225,10 @@ async def plan_day_art(
             continue
         if bible is not None:
             logger.info("Арт-библия дня составлена моделью %s (попытка %d)", used_model, attempt)
-            return bible
+            return _merge_motifs(bible, extra_motifs)
         logger.warning("Модель %s вернула неполную библию (попытка %d)", used_model, attempt)
-    return offline_bible(chapter)
+    # Якорь передаётся и фолбэку: палитра не должна теряться при морге сети.
+    return _merge_motifs(offline_bible(chapter, anchor=anchor), extra_motifs)
 
 
 def compact_anchor(bible: dict) -> dict:

@@ -10,6 +10,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
     ChatMemberUpdated,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -147,6 +148,18 @@ async def _score_text(user) -> str:
         player = await upsert_player(session, user)
         round_row = await get_active_round(session) or await get_latest_round(session)
         vote = await get_vote(session, round_row.id, player.id) if round_row else None
+        from sqlalchemy import func as _func
+
+        from app.models import MemoryHit
+
+        from sqlalchemy import select as _select
+
+
+        memory_hits = (
+            await session.execute(
+                _select(_func.count()).select_from(MemoryHit).where(MemoryHit.player_id == player.id)
+            )
+        ).scalar_one()
     if vote is None:
         choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал путь."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
@@ -155,7 +168,8 @@ async def _score_text(user) -> str:
         choice = f"В прошлом дне ты выбрал путь {POSITIONS[vote.card_position]}."
     return (
         f"{choice}\n{result_mark(f'score:{user.id}')} Очки: {player.score}\n"
-        f"Угаданных законов: {player.correct_picks}"
+        f"Угаданных законов: {player.correct_picks}\n"
+        f"🧠 Память сети: {memory_hits}"
     )
 
 
@@ -181,6 +195,46 @@ async def on_score_view(callback: CallbackQuery) -> None:
     # Лимит окна — 200 символов, счёт компактный и помещается.
     text = await _score_text(callback.from_user)
     await callback.answer(text[:200], show_alert=True)
+
+
+@router.callback_query(F.data.startswith("remember:"))
+async def on_remember(callback: CallbackQuery) -> None:
+    """«Я помню этот след»: отметка внимательности. Бот не подтверждает
+    догадку и не раскрывает, было ли эхо вплетено, — только копит счётчик."""
+    parts = callback.data.split(":")
+    if len(parts) != 2:
+        await callback.answer("Некорректная метка.", show_alert=True)
+        return
+    try:
+        round_id = int(parts[1])
+    except ValueError:
+        await callback.answer("Некорректная метка.", show_alert=True)
+        return
+    from sqlalchemy import select
+
+    from app.models import MemoryHit
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        existing = (
+            await session.execute(
+                select(MemoryHit).where(
+                    MemoryHit.player_id == player.id,
+                    MemoryHit.round_id == round_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(MemoryHit(player_id=player.id, round_id=round_id))
+            await session.commit()
+            await callback.answer("Сеть запомнила, что ты помнишь.")
+        else:
+            hits = (
+                await session.execute(
+                    select(MemoryHit).where(MemoryHit.player_id == player.id)
+                )
+            ).scalars().all()
+            await callback.answer(f"Этот след ты уже отметил. Память сети: {len(hits)}.")
 
 
 @router.callback_query(F.data.startswith("vote:"))
@@ -682,6 +736,56 @@ async def on_successful_payment(message: Message) -> None:
         )
 
 
+
+@router.message(F.refunded_payment)
+async def on_refunded_payment(message: Message) -> None:
+    """Возврат Stars через Telegram: грант отзывается, ledger помечается.
+
+    Если грант ещё не потрачен — он больше не даст сменить путь; если уже
+    потрачен, смена пути остаётся, а хранитель получает алерт о расхождении.
+    """
+    from datetime import datetime, timezone as _tz
+
+    from app.ops import notify_admins
+
+    payment = message.refunded_payment
+    if payment is None:
+        return
+    charge_id = payment.telegram_payment_charge_id
+    spent_at_refund = False
+    player_ref = message.from_user.id if message.from_user else 0
+    async with SessionLocal() as session:
+        grant = (
+            await session.execute(select(RevoteGrant).where(RevoteGrant.unit_ref == charge_id))
+        ).scalar_one_or_none()
+        if grant is not None:
+            if grant.status == "granted":
+                grant.status = "refunded"
+            else:
+                spent_at_refund = True
+        income = (
+            await session.execute(select(Income).where(Income.unit_ref == charge_id))
+        ).scalar_one_or_none()
+        if income is not None:
+            stamp = int(datetime.now(_tz.utc).timestamp())
+            tail = f"refunded:{stamp}"
+            income.note = (f"{income.note} | {tail}" if income.note else tail)[:200]
+        await session.commit()
+    try:
+        await message.answer(
+            "↩️ Возврат звёзд проведён. Грант смены пути отозван."
+            if not spent_at_refund
+            else "↩️ Возврат проведён, но смена пути уже была использована — напишу хранителю."
+        )
+    except Exception:
+        pass
+    bot = getattr(message, "bot", None)
+    await notify_admins(
+        bot,
+        f"↩️ Stars refund: charge `{charge_id}` от игрока {player_ref}"
+        + (" — грант был УЖЕ потрачен." if spent_at_refund else "."),
+    )
+
 @router.callback_query(F.data.startswith("payton:"))
 async def on_payton(callback: CallbackQuery) -> None:
     raw = callback.data.split(":")[1]
@@ -901,10 +1005,38 @@ async def on_private_fallback(message: Message) -> None:
 def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+    _register_error_handler(dispatcher)
     return dispatcher
+
+
+def _register_error_handler(dispatcher: Dispatcher) -> None:
+    """Глобальный обработчик сбоев: без него aiogram глотает исключение и
+    отвечает вебхуку 200 — Telegram не перезашлёт апдейт, и действие игрока
+    (голос, оплата) теряется молча. Логируем стек и говорим игроку честное
+    «не получилось»: повторный клик обычно проходит."""
+
+    @dispatcher.error()
+    async def on_error(event: ErrorEvent) -> bool:
+        logger.exception("Ошибка обработки апдейта", exc_info=event.exception)
+        chat_id = None
+        update = event.update
+        if update.message is not None:
+            chat_id = update.message.chat.id
+        elif update.callback_query is not None and update.callback_query.message is not None:
+            chat_id = update.callback_query.message.chat.id
+        if chat_id is not None:
+            try:
+                await update.bot.send_message(
+                    chat_id,
+                    "⚠️ Сеть мира дрогнула — шаг не засчитан. Повтори ещё раз; "
+                    "если повторится, напиши хранителю.",
+                )
+            except Exception:
+                pass
+        return True
 
 
 async def create_bot() -> Bot:
     if not settings.bot_token or settings.bot_token.endswith("replace-me"):
-        raise RuntimeError("Укажи BOT_TOKEN в .env — токен бесплатный у @BotFather.")
+        raise RuntimeError("Впиши BOT_TOKEN в .env или переменные окружения @BotFather.")
     return Bot(settings.bot_token)
