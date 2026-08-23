@@ -1,6 +1,8 @@
 """Исходящие выплаты победителям: расчёт в stakes.finalize_day_payouts,
-отправка здесь — через pytoniq (кошелёк казначея WalletV4R2 напрямую к
-лайтсерверам активной сети).
+отправка здесь — через pytoniq напрямую к лайтсерверам активной сети.
+Казначейский кошелёк поддерживается в двух версиях контракта — v4r2 и
+v5r1 (кошельки нового поколения): версия детектируется автоматически по
+адресу казначея либо задаётся явно переменной TREASURY_WALLET_VERSION.
 
 Жизненный цикл выплаты: pending → sending (зафиксировано ДО вещания, чтобы
 падение сервиса не привело к двойной отправке) → sent / failed. Зависшие
@@ -25,6 +27,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Payout, Round, RoundStatus
 from app.stakes import finalize_day_payouts
+from app.ton_utils import normalize_address
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,55 @@ _wallet_lock = asyncio.Lock()
 _provider = None
 _wallet = None
 _wallet_network: str | None = None
+
+# Глобальный идентификатор сети (конфиг #19 блокчейна): входит в wallet_id
+# контракта v5, поэтому с одной мнемоникой тестнет- и мейннет-v5-кошельки
+# имеют разные адреса.
+NETWORK_GLOBAL_IDS = {"mainnet": -239, "testnet": -3}
+# Поддерживаемые версии контракта казначея.
+WALLET_VERSIONS = ("v4r2", "v5r1")
+
+
+def _wallet_address(version: str, public_key: bytes, network_global_id: int, wc: int = 0) -> str:
+    """Адрес кошелька данной версии для ключа — чистая локальная математика.
+
+    Адрес = хеш StateInit(code + data), сеть не нужна. Data-ячейка v4 сеть не
+    задаёт (адрес одинаков в обеих сетях), у v5 network_global_id входит в
+    wallet_id внутри data.
+    """
+    from pytoniq.contract.wallets.wallet import WALLET_V4_R2_CODE, WalletV4R2
+    from pytoniq.contract.wallets.wallet_v5 import WALLET_V5_R1_CODE, WalletV5R1
+    from pytoniq_core.tlb.account import StateInit
+
+    if version == "v4r2":
+        data = WalletV4R2.create_data_cell(public_key=public_key, wc=wc)
+        code = WALLET_V4_R2_CODE
+    elif version == "v5r1":
+        data = WalletV5R1.create_data_cell(public_key=public_key, wc=wc, network_global_id=network_global_id)
+        code = WALLET_V5_R1_CODE
+    else:
+        raise ValueError(f"Неизвестная версия кошелька казначея: {version}")
+    state_init = StateInit(code=code, data=data)
+    return f"{wc}:{state_init.serialize().hash.hex()}"
+
+
+def _detect_wallet_version(
+    public_key: bytes, treasury_address: str, network_global_id: int
+) -> tuple[str | None, dict[str, str]]:
+    """Версия кошелька, чей производный адрес совпал с настроенным.
+
+    Возвращает (версия | None, {версия: адрес-кандидат}) — кандидаты идут в
+    текст ошибки, чтобы расхождение мнемоники и адреса было видно сразу.
+    """
+    target = normalize_address(treasury_address)
+    candidates = {
+        version: _wallet_address(version, public_key, network_global_id)
+        for version in WALLET_VERSIONS
+    }
+    for version, address in candidates.items():
+        if normalize_address(address) == target:
+            return version, candidates
+    return None, candidates
 
 
 async def pending_payout_count(session) -> int:
@@ -48,12 +100,56 @@ async def pending_payout_count(session) -> int:
 
 
 async def _get_wallet():
-    """Ленивая инициализация WalletV4R2 казначея для активной сети."""
+    """Ленивая инициализация кошелька казначея для активной сети.
+
+    Версия контракта — из TREASURY_WALLET_VERSION («auto» = детект по адресу).
+    Проверка пары мнемоника/адрес выполняется ДО подключения к сети: если
+    производный адрес не совпал, отправлять нельзя в принципе — падаем с
+    внятной ошибкой, а не молчаливыми неудачными выплатами.
+    """
     global _provider, _wallet, _wallet_network
     network = "testnet" if settings.is_testnet else "mainnet"
     async with _wallet_lock:
         if _wallet is not None and _wallet_network == network:
             return _wallet
+        if not settings.active_treasury_mnemonic:
+            raise ValueError("Нет мнемоники казначея для активной сети")
+        if not settings.active_treasury_address:
+            raise ValueError("Нет адреса казначея для активной сети")
+        words = settings.active_treasury_mnemonic.replace("\n", " ").split()
+        if len(words) < 12:
+            raise ValueError("Мнемоника казначея неполная (нужно 24 слова)")
+
+        from pytoniq import LiteBalancer
+        from pytoniq.contract.wallets.wallet import WalletV4R2
+        from pytoniq.contract.wallets.wallet_v5 import WalletV5R1
+        from pytoniq_core.crypto.keys import mnemonic_to_private_key, private_key_to_public_key
+
+        _, private_key = mnemonic_to_private_key(words)
+        public_key = private_key_to_public_key(private_key)
+        network_global_id = NETWORK_GLOBAL_IDS[network]
+
+        requested = settings.treasury_wallet_version.strip().lower()
+        if requested in WALLET_VERSIONS:
+            derived = _wallet_address(requested, public_key, network_global_id)
+            if normalize_address(derived) != normalize_address(settings.active_treasury_address):
+                raise ValueError(
+                    f"Адрес казначея не совпадает с производным от мнемоники "
+                    f"(TREASURY_WALLET_VERSION={requested}): {derived}. "
+                    "Проверь пару мнемоника/адрес или верни auto."
+                )
+            version = requested
+        else:
+            version, candidates = _detect_wallet_version(
+                public_key, settings.active_treasury_address, network_global_id
+            )
+            if version is None:
+                raise ValueError(
+                    "Адрес казначея не совпадает ни с одной поддерживаемой версией "
+                    f"кошелька для этой мнемоники: {candidates}. Проверь адрес и "
+                    "мнемонику, либо задай TREASURY_WALLET_VERSION=v4r2|v5r1 явно."
+                )
+
         if _provider is not None:
             try:
                 await _provider.close_all()
@@ -61,19 +157,19 @@ async def _get_wallet():
                 pass
             _provider = None
             _wallet = None
-        from pytoniq import LiteBalancer, WalletV4R2
-
         if network == "testnet":
             _provider = LiteBalancer.from_testnet_config()
         else:
             _provider = LiteBalancer.from_mainnet_config()
         await _provider.start_up()
-        words = settings.active_treasury_mnemonic.replace("\n", " ").split()
-        if len(words) < 12:
-            raise ValueError("Мнемоника казначея неполная (нужно 24 слова)")
-        _wallet = await WalletV4R2.from_mnemonic(_provider, words)
+        if version == "v5r1":
+            _wallet = await WalletV5R1.from_private_key(
+                _provider, private_key=private_key, wc=0, network_global_id=network_global_id
+            )
+        else:
+            _wallet = await WalletV4R2.from_private_key(_provider, private_key, wc=0)
         _wallet_network = network
-        logger.info("Кошелёк казначея готов (%s)", network)
+        logger.info("Кошелёк казначея готов (%s, контракт %s)", network, version)
         return _wallet
 
 

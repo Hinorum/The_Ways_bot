@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +34,10 @@ CURSOR_KEY = "ton_watch_cursor_utime"
 # переводов). Курсор для этого не годится: он двигается только переводами,
 # и на тихой цепочке честно «стареет», хотя watcher здоров.
 BEAT_KEY = "ton_watch_beat_iso"
+# Источник данных последнего успешного цикла («tonapi» / «toncenter»):
+# видно в /health как watcher_source — устойчивый фолбэк сигнализирует
+# о деградации основного индексатора.
+SOURCE_KEY = "ton_watch_last_source"
 # Одноразовая миграция старых привязок из UQ/EQ-формы в канонический raw-hex.
 WALLET_NORM_KEY = "wallet_norm_v1"
 # Стартовый откат для первого запуска: не глубже полусуток.
@@ -51,6 +56,13 @@ class Transfer:
     value_nanotons: int
     comment: str
     utime: int
+    # Пагинационный ключ провайдера (Toncenter v3 требует lt, TonAPI — хеш);
+    # для TonAPI-переводов остаётся пустым.
+    provider_ref: str = ""
+
+
+def _api_headers(api_key: str) -> dict:
+    return {"X-API-Key": api_key} if api_key else {}
 
 
 async def fetch_recent_transfers(since_utime: int, before_hash: str | None = None) -> tuple[list[Transfer], bool]:
@@ -59,11 +71,18 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
     Ошибки сети не поднимают исключение: возвращается (пусто, False), чтобы
     цикл знал, что проверка не состоялась, и не ставил сердцебиение.
     before_hash — пагинация вглубь.
+
+    Честная работа с 404: раньше «нет истории» считалось здоровьем, и падение
+    индексатора TonAPI маскировалось под тихую цепочку (реальный инцидент:
+    ставки не находятся, а /health зелёный). Теперь 404 перепроверяется по
+    /v2/accounts/{адрес}: если аккаунт активен и у него есть активность после
+    курсора — история TonAPI врёт, цикл считается несостоявшимся (False),
+    и _collect_transfers переключается на фолбэк Toncenter v3.
     """
     if not settings.ton_enabled or not settings.active_treasury_address:
         return [], True
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
-    headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
+    headers = _api_headers(settings.ton_api_key)
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(
@@ -72,9 +91,9 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
                 headers=headers,
             )
             if response.status_code == 404:
-                # Свежий казначей без единой транзакции: TonAPI отдаёт 404.
-                # Это здоровье, а не сбой — цикл успешный, сердцебиение ставим.
-                return [], True
+                # Пустая история бывает у двух причин: кошелёк правда молчал
+                # или индексатор потерял историю. Различаем честно.
+                return await _resolve_tonapi_empty_history(since_utime)
             response.raise_for_status()
             items = response.json().get("transactions", [])
     except Exception as exc:
@@ -86,6 +105,54 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
         if transfer is not None:
             transfers.append(transfer)
     return transfers, True
+
+
+async def _resolve_tonapi_empty_history(since_utime: int) -> tuple[list[Transfer], bool]:
+    """404 истории транзакций: «правда пусто» или «индекс сломан»?
+
+    Сверяемся с карточкой аккаунта: активный кошелёк с активностью после
+    курсора при пустой истории — деградация индексатора. Не сумели проверить
+    (сеть/не-200) — тоже считаем цикл несостоявшимся: лучше лишний проход
+    через фолбэк, чем пропущенная ставка.
+    """
+    info = await _tonapi_account_info()
+    if not isinstance(info, dict):
+        logger.warning(
+            "TonAPI отдал 404 истории транзакций, но карточка аккаунта недоступна — "
+            "цикл не признаётся успешным, переводы пойдут через фолбэк"
+        )
+        return [], False
+    status = str(info.get("status") or "").strip().lower()
+    try:
+        last_activity = int(info.get("last_activity") or 0)
+    except (TypeError, ValueError):
+        last_activity = 0
+    if status == "active" and last_activity > since_utime:
+        logger.warning(
+            "TonAPI отдал 404 истории транзакций при активном казначее с активностью %s "
+            "(курсор %s) — индекс истории деградировал",
+            last_activity,
+            since_utime,
+        )
+        return [], False
+    return [], True
+
+
+async def _tonapi_account_info() -> dict | None:
+    """Карточка казначея в TonAPI (/v2/accounts/{адрес}) или None при сбое."""
+    url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, headers=_api_headers(settings.ton_api_key))
+    except Exception as exc:
+        logger.warning("TonAPI не ответил на запрос карточки аккаунта: %s", exc)
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return None
 
 
 # Jetton::transfer_notification — входящий токен (USDt, NOT, …), а не TON.
@@ -136,7 +203,7 @@ def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
         if value <= 0 or not source:
             return None
         return Transfer(
-            tx_hash=item.get("hash", ""),
+            tx_hash=_norm_tx_hash(str(item.get("hash") or "")),
             source=source,
             value_nanotons=value,
             comment=_decode_comment(in_msg),
@@ -145,6 +212,107 @@ def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
     except Exception as exc:
         logger.warning("Странная транзакция пропущена: %s", exc)
         return None
+
+
+def _norm_tx_hash(raw: str) -> str:
+    """Единая форма хеша транзакции для всех провайдеров — hex lowercase.
+
+    TonAPI отдаёт base64url, Toncenter v3 — стандартный base64 с паддингом.
+    Идемпотентность ставок/возвратов строится на tx_hash, поэтому одна и та же
+    транзакция, увиденная разными источниками, обязана дать одну строку.
+    Разобрать не удалось — возвращаем как есть (в нижнем регистре).
+    """
+    candidate = raw.strip()
+    # Только правдоподобные длины хеша транзакции: hex-64 либо base64
+    # тридцати двух байт (43 без паддинга / 44 с ним). Прочие строки —
+    # служебные метки тестов и логов — проходят насквозь нетронутыми.
+    if len(candidate) == 64:
+        try:
+            int(candidate, 16)
+            return candidate.lower()
+        except ValueError:
+            pass
+    if len(candidate) not in (43, 44):
+        return candidate.lower()
+    b64 = candidate.replace("-", "+").replace("_", "/")
+    try:
+        padded = b64 + "=" * (-len(b64) % 4)
+        return base64.b64decode(padded, validate=True).hex()
+    except Exception:
+        return candidate.lower()
+
+
+def _parse_toncenter_item(item: dict, since_utime: int) -> Transfer | None:
+    """Транзакция Toncenter v3 -> Transfer либо None (старая/пустая).
+
+    Джеттон-уведомления в выборку по аккаунту казначея не попадают вовсе
+    (они садятся на jetton-кошелёк отправителя), поэтому отдельного фильтра,
+    как у TonAPI, здесь не нужно. Комментарий приходит декодированным в
+    message_content.decoded с типом «comment».
+    """
+    try:
+        in_msg = item.get("in_msg") or {}
+        utime = int(item.get("now") or 0)
+        if utime <= since_utime:
+            return None
+        source = in_msg.get("source") or ""
+        if isinstance(source, dict):
+            source = source.get("address") or ""
+        value = int(str(in_msg.get("value") or 0))
+        if value <= 0 or not source:
+            return None
+        decoded = (in_msg.get("message_content") or {}).get("decoded") or {}
+        comment = ""
+        if isinstance(decoded, dict) and decoded.get("@type") == "comment":
+            comment = str(decoded.get("comment") or "")
+        return Transfer(
+            tx_hash=_norm_tx_hash(str(item.get("hash") or "")),
+            source=str(source),
+            value_nanotons=value,
+            comment=comment,
+            utime=utime,
+            provider_ref=str(item.get("lt") or ""),
+        )
+    except Exception as exc:
+        logger.warning("Странная транзакция Toncenter пропущена: %s", exc)
+        return None
+
+
+# Toncenter v3 не отдаёт страницы больше этого размера.
+_TONCENTER_MAX_LIMIT = 256
+
+
+async def _toncenter_page(since_utime: int, before_lt: str | None = None) -> tuple[list[Transfer], str]:
+    """Страница переводов казначея через Toncenter API v3 (фолбэк TonAPI).
+
+    Контракт как у fetch_recent_transfers, но вместо булева — состояние
+    страницы (_PAGE_OK/_PAGE_DEGRADED): фолбэк вызывается, только когда
+    основной источник деградировал. Пагинация вглубь по before_lt.
+    """
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        return [], _PAGE_OK
+    url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/transactions"
+    params: dict = {
+        "account": settings.active_treasury_address,
+        "limit": min(_PAGE_LIMIT, _TONCENTER_MAX_LIMIT),
+        "sort": "desc",
+    }
+    if before_lt:
+        params["before_lt"] = before_lt
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, params=params, headers=_api_headers(settings.toncenter_api_key))
+            response.raise_for_status()
+            items = response.json().get("transactions") or []
+    except Exception as exc:
+        logger.warning("Toncenter v3 недоступен: %s", exc)
+        return [], _PAGE_DEGRADED
+    transfers: list[Transfer] = []
+    for item in items:
+        transfer = _parse_toncenter_item(item, since_utime)
+        if transfer is not None:
+            transfers.append(transfer)
+    return transfers, _PAGE_OK
 
 
 def _decode_comment(in_msg: dict) -> str:
@@ -358,45 +526,116 @@ async def _write_beat(session) -> None:
     await session.commit()
 
 
-async def _collect_transfers(since: int) -> tuple[list[Transfer], bool]:
-    """Все переводы после курсора: уходим вглубь пагинацией по before-хешу.
+async def _write_source(session, source: str) -> None:
+    """Источник данных последнего успешного цикла (для /health)."""
+    row = await session.get(WatcherState, SOURCE_KEY)
+    if row is None:
+        session.add(WatcherState(key=SOURCE_KEY, value=source))
+    else:
+        row.value = source
+    await session.commit()
 
-    За цикл покрывается до _MAX_PAGES × _PAGE_LIMIT переводов (по умолчанию
-    50 × 100 = 5000). Курсор хранится в БД, поэтому покрытие кумулятивно:
-    после простоя накопившийся хвост догоняется за несколько минут. Пустое
-    место (история короче страницы или две страницы подряд без новых
-    переводов) завершает проход досрочно — без лишних запросов вглубь.
-    Второе значение — прошла ли хотя бы одна страница успешно: если TonAPI
-    лежал весь цикл, сердцебиение ставить нельзя (проверки не было).
+
+# Состояние страницы провайдера: доверенная или нет.
+_PAGE_OK = "ok"
+_PAGE_DEGRADED = "degraded"
+
+# Предупреждение о деградации TonAPI — не чаще раза в 10 минут, чтобы
+# минутный цикл наблюдателя не заваливал лог одним и тем же сообщением.
+_FALLBACK_WARN_EVERY_SECONDS = 600.0
+_last_fallback_warning_at = 0.0
+
+
+def _warn_degraded_primary() -> None:
+    global _last_fallback_warning_at
+    now = time.monotonic()
+    if now - _last_fallback_warning_at < _FALLBACK_WARN_EVERY_SECONDS:
+        return
+    _last_fallback_warning_at = now
+    logger.warning(
+        "TonAPI деградировал (ошибка сети или 404 истории при живом казначее) — "
+        "переводы читаются через фолбэк Toncenter v3"
+    )
+
+
+async def _tonapi_page(since_utime: int, before_hash: str | None) -> tuple[list[Transfer], str]:
+    """Адаптер основного источника под единый контракт (список, состояние)."""
+    transfers, ok = await fetch_recent_transfers(since_utime, before_hash=before_hash)
+    return transfers, (_PAGE_OK if ok else _PAGE_DEGRADED)
+
+
+async def _deep_collect(fetch_page, cursor_of, since: int) -> tuple[list[Transfer], bool]:
+    """Глубокий проход по страницам одного провайдера.
+
+    Возвращает (переводы, прошёл_ли_проход_полностью). Ненадёжная страница
+    обрывает проход: частичный результат сохраняется, но вызывающий обязан
+    не считать такой цикл успешным. Уходим вглубь до _MAX_PAGES × _PAGE_LIMIT
+    переводов; пустое место (история короче страницы или две страницы подряд
+    без новых переводов) завершает проход досрочно. Курсор хранится в БД,
+    поэтому покрытие кумулятивно: после простоя накопившийся хвост
+    догоняется за несколько минут.
     """
     transfers: list[Transfer] = []
     seen: set[str] = set()
     before: str | None = None
     empty_pages = 0
-    api_ok = False
     for _page in range(_MAX_PAGES):
-        page, page_ok = await fetch_recent_transfers(since, before_hash=before)
-        if not page_ok:
-            return transfers, api_ok
-        api_ok = True
+        page, state = await fetch_page(since, before)
+        if state != _PAGE_OK:
+            return transfers, False
         fresh = [t for t in page if t.tx_hash and t.tx_hash not in seen]
         for item in fresh:
             seen.add(item.tx_hash)
         transfers.extend(fresh)
         if not page or len(page) < _PAGE_LIMIT:
-            break  # история кончилась — глубже пусто
+            return transfers, True  # история кончилась — глубже пусто
         oldest = page[-1]
         if oldest.utime <= since:
-            break  # страница дотянулась до курсора — глубже искать нечего
+            return transfers, True  # страница дотянулась до курсора
         if not fresh:
             empty_pages += 1
             if empty_pages >= _EMPTY_STOP:
-                break  # подряд идущие страницы без новых переводов
+                return transfers, True  # подряд страницы без новых переводов
         else:
             empty_pages = 0
-        before = oldest.tx_hash
-        await asyncio.sleep(0.12)  # бережём лимиты TonAPI на глубоком проходе
-    return sorted(transfers, key=lambda item: item.utime), api_ok
+        before = cursor_of(page)
+        await asyncio.sleep(0.12)  # бережём лимиты API на глубоком проходе
+    return transfers, True
+
+
+def _merge_unique(batches: list[list[Transfer]]) -> list[Transfer]:
+    """Слияние результатов источников без дублей, по возрастанию utime."""
+    seen: set[str] = set()
+    merged: list[Transfer] = []
+    for batch in batches:
+        for transfer in batch:
+            if transfer.tx_hash and transfer.tx_hash not in seen:
+                seen.add(transfer.tx_hash)
+                merged.append(transfer)
+    return sorted(merged, key=lambda item: item.utime)
+
+
+async def _collect_transfers(since: int) -> tuple[list[Transfer], bool, str]:
+    """Все переводы после курсора: основной источник + фолбэк Toncenter.
+
+    Основной проход TonAPI'ем; если он не завершился полностью (сеть легла
+    или индекс отдаёт 404 истории при живом кошельке) — тот же проход
+    повторяется по Toncenter v3, результаты сливаются без дублей. Источник
+    успешного прохода возвращается третьим значением для /health.
+    """
+    primary, primary_complete = await _deep_collect(
+        _tonapi_page, lambda page: page[-1].tx_hash, since
+    )
+    if primary_complete:
+        return primary, True, "tonapi"
+    _warn_degraded_primary()
+    fallback, fallback_complete = await _deep_collect(
+        _toncenter_page, lambda page: page[-1].provider_ref or page[-1].tx_hash, since
+    )
+    merged = _merge_unique([primary, fallback])
+    if fallback_complete:
+        return merged, True, "toncenter"
+    return merged, False, "none"
 
 
 async def _migrate_wallet_formats(session) -> None:
@@ -425,7 +664,7 @@ async def watch_once(bot: Bot | None = None) -> None:
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
-    transfers, api_ok = await _collect_transfers(since)
+    transfers, api_ok, source = await _collect_transfers(since)
     processed_through = since
     for transfer in transfers:  # по возрастанию utime — старые раньше новых
         try:
@@ -449,3 +688,4 @@ async def watch_once(bot: Bot | None = None) -> None:
                 # Сердцебиение ставится каждым успешным циклом — даже без
                 # переводов: тишина в цепочке это здоровье, а не простой.
                 await _write_beat(session)
+                await _write_source(session, source)

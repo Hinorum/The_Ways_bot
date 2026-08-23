@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     ton_api_base: str = "https://tonapi.io"
     ton_api_base_testnet: str = "https://testnet.tonapi.io"
     ton_api_key: str = ""
+    # Версия контракта казначея: auto (детект по адресу), v4r2 или v5r1.
+    treasury_wallet_version: str = "auto"
+    # Резервный источник истории переводов (Toncenter API v3): включается
+    # автоматически, когда TonAPI лжёт (404 истории при живом кошельке) или лежит.
+    toncenter_api_base: str = "https://toncenter.com"
+    toncenter_api_base_testnet: str = "https://testnet.toncenter.com"
+    toncenter_api_key: str = ""
     # Нижняя граница ставки; верхней нет — «кит» ограничен только своим кошельком.
     stake_min_ton: float = 0.1
     # Распределение фонда дня (в сумме со ставками победителей — 100%):
@@ -163,6 +170,10 @@ class Settings(BaseSettings):
     @property
     def active_ton_api_base(self) -> str:
         return self.ton_api_base_testnet if self.is_testnet else self.ton_api_base
+
+    @property
+    def active_toncenter_api_base(self) -> str:
+        return self.toncenter_api_base_testnet if self.is_testnet else self.toncenter_api_base
 
 
 settings = Settings()

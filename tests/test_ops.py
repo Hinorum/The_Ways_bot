@@ -258,7 +258,7 @@ async def test_watch_beats_on_quiet_chain(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_api_outage_does_not_beat_and_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TonAPI лежит весь цикл — сердцебиения нет, админ узнает об этом."""
+    """TonAPI и Toncenter лежат вместе — сердцебиения нет, админ узнает об этом."""
     from app import ops
     from app import ton_watch
 
@@ -267,6 +267,12 @@ async def test_api_outage_does_not_beat_and_alerts(monkeypatch: pytest.MonkeyPat
     bot = SimpleNamespace(send_message=AsyncMock())
     monkeypatch.setattr(
         ton_watch, "fetch_recent_transfers", AsyncMock(return_value=([], False))
+    )
+    # Фолбэк-источник тоже недоступен: успешного цикла нет ни у одного провайдера.
+    monkeypatch.setattr(
+        ton_watch,
+        "_toncenter_page",
+        AsyncMock(return_value=([], ton_watch._PAGE_DEGRADED)),
     )
     try:
         await ton_watch.watch_once()

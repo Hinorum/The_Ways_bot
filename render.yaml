@@ -54,6 +54,14 @@ services:
         value: https://testnet.tonapi.io
       - key: TON_API_KEY
         sync: false
+      - key: TREASURY_WALLET_VERSION
+        value: "auto"
+      - key: TONCENTER_API_BASE
+        value: https://toncenter.com
+      - key: TONCENTER_API_BASE_TESTNET
+        value: https://testnet.toncenter.com
+      - key: TONCENTER_API_KEY
+        sync: false
       - key: STAKE_MIN_TON
         value: "0.1"
       - key: OWNER_RAKE_PCT

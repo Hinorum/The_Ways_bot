@@ -104,6 +104,7 @@ async def snapshot() -> dict:
             "oldest_payout_age": None,
             "dead_letter_payouts": int(dead_count),
             "watcher_beat_age": None,
+            "watcher_source": None,
             # Диагностика окружения: видно, что реально дошло до процесса.
             "ton_enabled": bool(settings.ton_enabled),
             "ton_network": "testnet" if settings.is_testnet else "mainnet",
@@ -115,6 +116,11 @@ async def snapshot() -> dict:
             payload["oldest_payout_age"] = max(0.0, (_now() - moment).total_seconds())
         if settings.ton_enabled:
             payload["watcher_beat_age"] = _age_seconds(cursor_iso)
+            # Локальный импорт: ton_watch тянет ставки/выплаты, ops должен
+            # оставаться лёгким для /health при любых состояниях модулей.
+            from app.ton_watch import SOURCE_KEY
+
+            payload["watcher_source"] = await _get_state(session, SOURCE_KEY)
         if latest is not None:
             payload["round"] = {
                 "day_index": latest.day_index,
