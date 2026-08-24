@@ -33,7 +33,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Payout, Round, RoundStatus
 from app.stakes import finalize_day_payouts
-from app.ton_utils import normalize_address
+from app.ton_utils import friendly_address, from_nano, normalize_address
 
 logger = logging.getLogger(__name__)
 
@@ -506,3 +506,114 @@ async def settle_closed_rounds(bot: Bot | None = None) -> int:
                 created += await finalize_day_payouts(session, round_row)
     await dispatch_pending_payouts(bot=bot)
     return created
+
+
+# ---------- Диагностика казначея для хранителя (/treasury) ----------
+
+
+async def _tonapi_account_raw(address: str) -> dict:
+    url = f"{settings.active_ton_api_base}/v2/accounts/{address}"
+    headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def _toncenter_account(address: str) -> dict:
+    url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/accountInformation"
+    headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(url, params={"address": address}, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def fetch_account_state() -> tuple[int | None, str | None, str]:
+    """(баланс в нанотонах | None, статус аккаунта | None, источник данных).
+
+    TonAPI → фолбэк Toncenter v3; оба молчат — (None, None, "none").
+    """
+    address = settings.active_treasury_address
+    try:
+        data = await _tonapi_account_raw(address)
+        balance = int(str(data.get("balance") or 0))
+        status = str(data.get("status") or "")
+        return balance, (status or None), "tonapi"
+    except Exception as exc:
+        logger.warning("Баланс казначея через TonAPI недоступен: %s", exc)
+    try:
+        data = await _toncenter_account(address)
+        return int(str(data.get("balance") or 0)), None, "toncenter"
+    except Exception as exc:
+        logger.warning("Баланс казначея через Toncenter недоступен: %s", exc)
+    return None, None, "none"
+
+
+def treasury_pair_check_text() -> str:
+    """Сверка пары мнемоника/адрес без выхода в сеть: v4r2/v5r1 → адрес."""
+    from pytoniq_core.crypto.keys import mnemonic_to_private_key, private_key_to_public_key
+
+    words = settings.active_treasury_mnemonic.replace("\n", " ").split()
+    if len(words) < 12:
+        return f"мнемоника неполная ({len(words)} слов вместо 24) ⚠️"
+    try:
+        _, private_key = mnemonic_to_private_key(words)
+    except Exception:
+        return "мнемоника невалидна ⚠️"
+    public_key = private_key_to_public_key(private_key)
+    network = "testnet" if settings.is_testnet else "mainnet"
+    version, _candidates = _detect_wallet_version(
+        public_key, settings.active_treasury_address, NETWORK_GLOBAL_IDS[network]
+    )
+    if version is not None:
+        return f"{version} ✓ (детект по адресу)"
+    return (
+        "ни v4r2, ни v5r1 не дают настроенный адрес ⚠️ — "
+        "проверь пару мнемоника/адрес или задай TREASURY_WALLET_VERSION явно"
+    )
+
+
+async def treasury_diagnostics() -> str:
+    """Полный отчёт по казначею одной строкой-текстом для /treasury."""
+    network = "testnet" if settings.is_testnet else "mainnet"
+    lines = [f"🏛 Казначей ({network})"]
+    if not settings.ton_enabled:
+        lines.append("TON выключен (TON_ENABLED=false): ставки и выплаты не работают.")
+        return "\n".join(lines)
+    if settings.active_treasury_address:
+        shown = friendly_address(settings.active_treasury_address, testnet=settings.is_testnet)
+        lines.append(f"Адрес: <code>{shown}</code>")
+    else:
+        lines.append("Адрес не задан ⚠️")
+    lines.append("Мнемоника: " + ("задана ✓" if settings.active_treasury_mnemonic else "НЕ задана ⚠️"))
+    lines.append(
+        "OWNER_WALLET_ADDRESS: "
+        + ("задан ✓" if settings.owner_wallet_address else "не задан — доли казны (рейк/копилка) уйти не могут ⚠️")
+    )
+    if settings.active_treasury_address and settings.active_treasury_mnemonic:
+        try:
+            lines.append(f"Пара мнемоника/адрес: {treasury_pair_check_text()}")
+        except Exception as exc:
+            lines.append(f"Пара мнемоника/адрес: не проверена ({exc})")
+        balance, status, source = await fetch_account_state()
+        if balance is None:
+            lines.append("Баланс: недоступен (оба индексатора молчат) ⚠️")
+        else:
+            note = f", статус {status}" if status else ""
+            lines.append(f"Баланс: {from_nano(balance):.4f} Gram{note} · источник {source}")
+            if balance <= 0:
+                lines.append("Баланс пуст: пополнить через @testgiver_ton_bot (testnet).")
+    async with SessionLocal() as session:
+        waiting = (
+            await session.execute(
+                select(func.count()).select_from(Payout).where(Payout.status.notin_(["sent", "dismissed"]))
+            )
+        ).scalar_one()
+        dead = (
+            await session.execute(select(func.count()).select_from(Payout).where(Payout.status == "failed"))
+        ).scalar_one()
+    lines.append(f"Очередь выплат: ожидает {waiting} · failed {dead}")
+    if waiting or dead:
+        lines.append("Разбор: /payouts — причина видна у каждой строки.")
+    return "\n".join(lines)

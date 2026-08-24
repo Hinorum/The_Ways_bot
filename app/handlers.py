@@ -1144,6 +1144,22 @@ async def cmd_payout(message: Message) -> None:
         await message.answer(f"{warn_mark('nopay')} Выплата #{payout_id} не найдена или уже отправлена.")
 
 
+@router.message(Command("treasury"))
+async def cmd_treasury(message: Message) -> None:
+    """Здоровье казначея одним сообщением: адрес, мнемоника, баланс,
+    сверка пары мнемоника/адрес, очередь выплат. Только для хранителя."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    from app.ton_pay import treasury_diagnostics
+
+    try:
+        await message.answer(await treasury_diagnostics(), parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        logger.exception("Отчёт /treasury не собран")
+        await message.answer(f"Отчёт не собрался: {exc}")
+
+
 @router.message(Command("revenue"))
 async def cmd_revenue(message: Message) -> None:
     """Касса игры для хранителя: ledger доходов из Income.
