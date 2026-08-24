@@ -132,13 +132,23 @@ async def resolve_dead_payout(session, payout_id: int, action: str) -> str | Non
     return payout.status
 
 
+async def _fetch_remote_json(url: str) -> dict:
+    """Скачивает JSON (конфиг лайтсерверов) с редиректами."""
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+
 async def _get_wallet():
     """Ленивая инициализация кошелька казначея для активной сети.
 
     Версия контракта — из TREASURY_WALLET_VERSION («auto» = детект по адресу).
     Проверка пары мнемоника/адрес выполняется ДО подключения к сети: если
     производный адрес не совпал, отправлять нельзя в принципе — падаем с
-    внятной ошибкой, а не молчаливыми неудачными выплатами.
+    внятной ошибкой, а не молчаливыми неудачными выплатами. Источник
+    лайтсерверов: LITESERVER_CONFIG_URL (свежий JSON), иначе встроенный
+    конфиг pytoniq для сети.
     """
     global _provider, _wallet, _wallet_network
     network = "testnet" if settings.is_testnet else "mainnet"
@@ -190,7 +200,11 @@ async def _get_wallet():
                 pass
             _provider = None
             _wallet = None
-        if network == "testnet":
+        if settings.liteserver_config_url:
+            config = await _fetch_remote_json(settings.liteserver_config_url)
+            _provider = LiteBalancer.from_config(config)
+            logger.info("Лайтсерверы: конфиг из LITESERVER_CONFIG_URL")
+        elif network == "testnet":
             _provider = LiteBalancer.from_testnet_config()
         else:
             _provider = LiteBalancer.from_mainnet_config()
@@ -459,8 +473,20 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                     comment=comment,
                 )
             except Exception as exc:
-                logger.warning("Выплата %s не ушла: %s", payout.id, exc)
-                payout.last_error = str(exc)[:200]
+                reason = str(exc)
+                if "no alive peers" in reason.lower():
+                    # Типовой тестнет-случай: встроенный конфиг pytoniq мёртв
+                    # или UDP закрыт окружением. Причина должна звать к решению.
+                    logger.warning("Выплата %s: нет живых лайтсерверов", payout.id)
+                    reason = (
+                        "have no alive peers: лайтсерверы недоступны — задай "
+                        "LITESERVER_CONFIG_URL с живым конфигом тестнета "
+                        "(https://ton.org/testnet-global.config.json) или разошли "
+                        "очередь локально на той же БД"
+                    )
+                else:
+                    logger.warning("Выплата %s не ушла: %s", payout.id, exc)
+                payout.last_error = reason[:200]
                 tx_hash = None
             if tx_hash is None and payout.last_error is None:
                 # Единственный путь сюда — guard выключенного TON/мнемоники.

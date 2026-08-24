@@ -117,6 +117,11 @@ async def init_db() -> None:
             await conn.execute(text(
                 "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)"
             ))
+            # План Хозяина Ошибки не влезал в VARCHAR(255): ронял тик до
+            # создания следующего дня. Расширяем до TEXT (идемпотентно).
+            await conn.execute(text(
+                "ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT"
+            ))
             # Доли казны (рейк/копилка месяца) уходят без игрока.
             await conn.execute(text("ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL"))
             # Авто-возвраты «ничейных» переводов не привязаны к раунду.

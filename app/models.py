@@ -242,14 +242,16 @@ class Payout(Base):
 class WatcherState(Base):
     """Служебные метки фоновых задач: ключ → значение.
 
-    Здесь живут курсор наблюдателя TON (последний обработанный utime) и метка
-    «месяц лидерборда выплачен» — переживают рестарт сервиса.
+    Здесь живут курсор наблюдателя TON, сердцебиения, план Хозяина Ошибки
+    (список канонических событий сезона — длинные строки) и якорь арта.
+    Value — Text без лимита: план злодея на 2-й ступени сезона переставал
+    влезать в VARCHAR(255), роняя тик до создания следующего дня.
     """
 
     __tablename__ = "watcher_state"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[str] = mapped_column(String(255))
+    value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

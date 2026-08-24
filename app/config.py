@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     ton_api_key: str = ""
     # Версия контракта казначея: auto (детект по адресу), v4r2 или v5r1.
     treasury_wallet_version: str = "auto"
+    # Свежий JSON-конфиг лайтсерверов для pytoniq (ADNL/UDP). Встроенный
+    # конфиг тестнета периодически мёртв («have no alive peers»): сюда
+    # подставляется рабочий URL, например официальный
+    # https://ton.org/testnet-global.config.json
+    liteserver_config_url: str = ""
     # Резервный источник истории переводов (Toncenter API v3): включается
     # автоматически, когда TonAPI лжёт (404 истории при живом кошельке) или лежит.
     toncenter_api_base: str = "https://toncenter.com"

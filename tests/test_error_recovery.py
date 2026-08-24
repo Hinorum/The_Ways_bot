@@ -36,6 +36,13 @@ def _message_event(chat_id: int = 555_002) -> SimpleNamespace:
 
 async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -> None:
     monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    # Алерт хранителю идёт отдельным каналом: не мешаем счётчикам игрока.
+    sent_admin: list[str] = []
+
+    async def fake_notify(bot, text) -> None:
+        sent_admin.append(text)
+
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify)
     event = _callback_event()
     await handle_update_error(event.bot, event)
     # Кнопке сняли спиннер, игроку ушло человеческое «не получилось».
@@ -43,10 +50,16 @@ async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -
     assert "Сеть мира дрогнула" in event.update.callback_query.answer.call_args.args[0]
     event.bot.send_message.assert_awaited_once()
     assert event.bot.send_message.call_args.args[0] == 555_001
+    assert len(sent_admin) == 1
+    assert "ValueError" in sent_admin[0]
 
 
 async def test_message_error_skips_callback_answer(monkeypatch) -> None:
     monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    async def fake_notify(bot, text) -> None:
+        pass
+
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify)
     event = _message_event()
     await handle_update_error(event.bot, event)
     event.bot.send_message.assert_awaited_once()

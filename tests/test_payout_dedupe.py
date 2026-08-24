@@ -267,6 +267,85 @@ async def test_payouts_listing_shows_reason(monkeypatch) -> None:
             await session.commit()
 
 
+async def test_peer_failure_hint_points_to_liteserver_config(monkeypatch) -> None:
+    """«have no alive peers» — причина-действие: конфиг лайтсерверов или локальный разгон."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(["слово"] * 24))
+    payout_id = await _seed_payout(attempts=settings.payout_max_attempts - 1)
+
+    async def no_peers():
+        raise RuntimeError("LiteServerError: have no alive peers")
+
+    async def empty_markers() -> set[str]:
+        return set()
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", no_peers)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", empty_markers)
+
+    try:
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "failed"
+        assert "LITESERVER_CONFIG_URL" in row.last_error
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+def test_watcher_state_value_is_unlimited_text() -> None:
+    """Регрессия: план Хозяина Ошибки рвал тик о VARCHAR(255)."""
+    from sqlalchemy import Text as SAText
+
+    from app.models import WatcherState
+
+    column_type = WatcherState.__table__.c.value.type
+    assert isinstance(column_type, SAText)
+    assert column_type.length is None
+
+
+async def test_wallet_uses_remote_liteserver_config(monkeypatch) -> None:
+    """LITESERVER_CONFIG_URL доходит до конструктора провайдера."""
+    import pytest
+    from pytoniq_core.crypto.keys import mnemonic_new, mnemonic_to_private_key, private_key_to_public_key
+
+    monkeypatch.setattr(ton_pay, "_provider", None)
+    monkeypatch.setattr(ton_pay, "_wallet", None)
+    monkeypatch.setattr(ton_pay, "_wallet_network", None)
+    words = mnemonic_new(24)
+    _, private_key = mnemonic_to_private_key(words)
+    public_key = private_key_to_public_key(private_key)
+    address = ton_pay._wallet_address("v4r2", public_key, -239)
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "ton_network", "mainnet")
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(words))
+    monkeypatch.setattr(settings, "treasury_address", address)
+    monkeypatch.setattr(settings, "treasury_wallet_version", "auto")
+
+    fetched: dict = {}
+
+    async def fake_fetch(url: str) -> dict:
+        fetched["url"] = url
+        return {"liteservers": []}
+
+    class Boom(Exception):
+        pass
+
+    def fake_from_config(config):
+        fake_from_config.config = config
+        raise Boom("доходим до построения провайдера")
+
+    monkeypatch.setattr(ton_pay, "_fetch_remote_json", fake_fetch)
+    monkeypatch.setattr("pytoniq.LiteBalancer.from_config", staticmethod(fake_from_config))
+    monkeypatch.setattr(settings, "liteserver_config_url", "https://example.test/config.json")
+
+    with pytest.raises(Boom):
+        await ton_pay._get_wallet()
+    assert fetched["url"] == "https://example.test/config.json"
+    assert fake_from_config.config == {"liteservers": []}
+
+
 async def test_dead_letter_alert_carries_reason(monkeypatch) -> None:
     """Алерт админу называет причину, а не только id."""
     monkeypatch.setattr(settings, "admin_ids", "4242")
