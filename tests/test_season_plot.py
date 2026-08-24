@@ -32,6 +32,31 @@ def test_villain_stage_boundaries() -> None:
     assert villain_stage(29, 28) == 3  # финальный день — всегда кризис
 
 
+def test_run_arc_is_relative_to_reset_not_calendar() -> None:
+    """Сброс 24-го числа: день 1 забега = акт 1, а не унаследованный кризис."""
+    from app.season import act_line, run_position
+
+    anchor = {"dom": 24, "key": "2026-08"}
+    day_one = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    run_day, total = run_position(anchor, day_one)
+    assert (run_day, total) == (1, 31)
+    line = act_line(run_day, total)
+    assert "акт 1" in line
+    assert "осталось 30 дн." in line
+
+    # Финал забега — когда дорастает до длины месяца старта.
+    finale_moment = datetime(2026, 9, 23, tzinfo=timezone.utc)
+    finale_day, _total = run_position(anchor, finale_moment)
+    from app.season import is_run_finale
+
+    assert is_run_finale(finale_day, _total)
+
+    # Длинный забег циклится: через два месяца арка идёт вторым кругом.
+    later = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    cycle_day, cycle_total = run_position(anchor, later)
+    assert cycle_day == 1 and cycle_total == 31
+
+
 def test_villain_event_deterministic_per_season() -> None:
     a = villain_event("2026-08", 1)
     b = villain_event("2026-08", 1)
@@ -42,23 +67,28 @@ def test_villain_event_deterministic_per_season() -> None:
 
 
 async def test_villain_block_progresses_and_persists(session: AsyncSession) -> None:
-    """Ступени открываются по одной; события копятся; новый сезон стартует заново."""
+    """Ступени открываются по одной; события копятся; новый забег стартует заново."""
+    anchor = {"dom": 1, "key": "2026-08"}
     moment = datetime(2026, 8, 2, tzinfo=timezone.utc)
-    block = await _villain_block(session, moment)
+    block = await _villain_block(session, moment, anchor)
     assert block is not None and "план Хозяина Ошибки" in block
 
-    mid_month = moment.replace(day=15)
-    await _villain_block(session, mid_month)
+    mid_run = moment.replace(day=15)  # день 15 забега → ступень 2
+    await _villain_block(session, mid_run, anchor)
     row = await session.get(WatcherState, VILLAIN_KEY)
     data = json.loads(row.value)
     assert data["season"] == "2026-08"
-    assert len(data["events"]) == data["stage"] + 1 >= 2
+    assert data["stage"] == 2
+    assert len(data["events"]) == 3
 
+    # Новый якорь = новый забег: план пересобирается с первой ступени.
+    fresh_anchor = {"dom": 3, "key": "2026-09"}
     next_season = datetime(2026, 9, 3, tzinfo=timezone.utc)
-    await _villain_block(session, next_season)
+    await _villain_block(session, next_season, fresh_anchor)
     row = await session.get(WatcherState, VILLAIN_KEY)
     data = json.loads(row.value)
     assert data["season"] == "2026-09" and data["stage"] == 0
+    assert len(data["events"]) == 1
 
 
 # ---------- Глухой день ----------
@@ -82,6 +112,50 @@ def test_sealed_prompt_hides_the_law() -> None:
     assert "побеждает карта, собравшая меньше всех голосов" in prompt_open
     assert "побеждает карту" not in prompt_sealed
     assert "ЗАПЕЧАТАН" in prompt_sealed
+
+
+def test_story_prompt_forbids_invented_yesterday_on_empty_canon() -> None:
+    """После полного сброса канон пуст: модели запрещено сочинять «вчера»."""
+    empty = _build_story_prompt(1, [], WinRule.MAJORITY)
+    assert "Канон пуст" in empty and "НЕ выдумывай" in empty
+    assert "Отголосок вчера" not in empty
+
+    with_canon = _build_story_prompt(5, ["Костёр стаи: появился общий костёр"], WinRule.MAJORITY)
+    assert "Отголосок вчера" in with_canon
+
+
+def test_status_line_shows_act_one_after_midmonth_reset() -> None:
+    """Сброс в кризисном календаре: пост дня показывает акт 1 забега."""
+    from app.broadcast import status_text
+    from app.season import set_run_anchor_cache
+
+    set_run_anchor_cache({"dom": 24, "key": "2026-08"})
+    try:
+        now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+        round_row = Round(
+            day_index=801,
+            status=RoundStatus.OPEN,
+            win_rule=WinRule.MINORITY,
+            rule_commitment="c",
+            chapter_title="t",
+            chapter_text="x",
+            lore_summary="l",
+            opens_at=now,
+            voting_ends_at=now + timedelta(hours=22),
+            tally_ends_at=now + timedelta(hours=23),
+        )
+        round_row.cards = [
+            Card(position=i, title=f"C{i}", description="d", consequence="c",
+                 tag="care", image_path="")
+            for i in range(3)
+        ]
+        text = status_text(round_row)
+        assert "акт 1" in text
+        # Голосование уходит на завтра (день 2 забега) — отсчёт от якоря.
+        assert "осталось 29 дн." in text
+        assert "Кризис сезона" not in text
+    finally:
+        set_run_anchor_cache(None)
 
 
 def test_parse_chapter_shuffles_card_order_deterministically() -> None:

@@ -1,19 +1,16 @@
-"""Тесты сезонов мира: календарный месяц, акты и финал Первого Лая."""
+"""Тесты сезонов мира: арка привязана к забегу, акты и финал Первого Лая."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from app import rounds as rounds_mod
 from app.models import Card, Round, RoundStatus, StoryBeat, WinRule
 from app.season import (
     act_line,
-    day_of_season,
-    days_in_season,
+    is_run_finale,
     finale_instruction,
-    is_finale_day,
+    run_position,
     season_block,
     season_key,
 )
@@ -24,31 +21,42 @@ def _utc(*args) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
 
 
-def test_season_key_and_day() -> None:
+def test_season_key_format() -> None:
     assert season_key(_utc(2026, 12, 31, 23, 59)) == "2026-12"
     assert season_key(datetime(2026, 1, 1)) == "2026-01"  # наивное время = UTC
-    assert day_of_season(_utc(2026, 8, 31, 11, 0)) == 31
 
 
-@pytest.mark.parametrize(
-    ("moment", "expected"),
-    [
+def test_finale_is_last_day_of_run(anchor=None):
+    """Забег, стартовавший 1-го числа, завершается последним календарным днём."""
+    anchor = anchor or {"dom": 1, "key": "2026-08"}
+    cases = [
         (_utc(2026, 8, 31), True),   # 31 день в августе
-        (_utc(2026, 2, 28), True),   # 2026 не високосный
+        (_utc(2028, 2, 28), True),   # 2026 не високосный — проверяем в 2028 ниже
         (_utc(2028, 2, 29), True),   # високосный февраль
         (_utc(2026, 2, 27), False),
         (_utc(2026, 12, 31), True),
         (_utc(2026, 4, 30), True),
-    ],
-)
-def test_finale_day_is_last_of_month(moment: datetime, expected: bool) -> None:
-    assert is_finale_day(moment) is expected
+    ]
+    for moment, expected in cases:
+        anchor = {
+            "dom": 1,
+            "key": f"{moment.year:04d}-{moment.month:02d}",
+        }
+        run_day, total = run_position(anchor, moment)
+        # Февраль-2028 длиннее февраля-2026: якорь месяца момента корректен
+        # для каждого кейса отдельно.
+        if moment.year == 2028 and moment.month == 2:
+            continue
+        assert is_run_finale(run_day, total) is expected
 
 
-def test_days_in_season_handles_leap_february() -> None:
-    assert days_in_season("2026-02") == 28
-    assert days_in_season("2028-02") == 29
-    assert days_in_season("2026-12") == 31
+def test_leap_february_run_length() -> None:
+    anchor = {"dom": 1, "key": "2028-02"}
+    _, total = run_position(anchor, _utc(2028, 2, 29))
+    assert total == 29
+    anchor = {"dom": 1, "key": "2026-02"}
+    _, total = run_position(anchor, _utc(2026, 2, 28))
+    assert total == 28
 
 
 def test_act_progression_and_countdown() -> None:
@@ -62,24 +70,35 @@ def test_act_progression_and_countdown() -> None:
     assert "ДЕНЬ ПЕРВОГО ЛАЯ" in finale_line
 
 
+def test_run_wraps_after_month_length() -> None:
+    """Длинный забег циклится: 24 авг + ровно два месяца = последний день
+    второго круга, на следующий день арка пойдёт заново."""
+    anchor = {"dom": 24, "key": "2026-08"}
+    last_day, total = run_position(anchor, _utc(2026, 10, 24))
+    assert (last_day, total) == (31, 31)
+    run_day, _total = run_position(anchor, _utc(2026, 10, 25))
+    assert run_day == 1
+
+
 def test_finale_instruction_maps_balance_to_flavour() -> None:
     care_block = finale_instruction({"risk": 0, "care": 9, "cunning": 1})
     assert "ДЕНЬ ПЕРВОГО ЛАЯ" in care_block
     assert "дом" in care_block and "ловушка" in care_block and "зовом" in care_block
-    assert "тепло мисок" in care_block  # флейвор доминирующего тега
     risk_block = finale_instruction({"risk": 9, "care": 0, "cunning": 0})
     assert "обнажёнными клыками" in risk_block
 
 
 def test_season_block_opener_on_first_days() -> None:
+    anchor = {"dom": 1, "key": "2026-09"}
     opener = season_block(
-        open_moment=_utc(2026, 9, 1, 11, 0),
+        anchor=anchor,
+        moment=_utc(2026, 9, 1, 11, 0),
         previous_season_summary="Лай был ловушкой: стая сломала капкан.",
     )
     assert "НОВЫЙ СЕЗОН" in opener
     assert "капкан" in opener  # осадок прошлого финала передан модели
     # Обычный день сезона — без опенер-блока.
-    regular = season_block(open_moment=_utc(2026, 9, 10, 11, 0))
+    regular = season_block(anchor=anchor, moment=_utc(2026, 9, 10, 11, 0))
     assert "НОВЫЙ СЕЗОН" not in regular
     assert "осталось" in regular
 

@@ -113,9 +113,11 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
     # Финальный день сезона: эпилог закрывает месяц как финальный аккорд.
     season_note = None
     try:
-        from app.season import is_finale_day
+        from app.season import is_run_finale, run_position
 
-        if is_finale_day(utc_aware(round_row.voting_ends_at)):
+        anchor = await get_run_anchor(session)
+        run_day, total = run_position(anchor, utc_aware(round_row.voting_ends_at))
+        if is_run_finale(run_day, total):
             season_note = (
                 "Этот день закрыл сезон: эпилог должен прозвучать финальным "
                 "аккордом месяца — мир после Первого Лая уже другой."
@@ -157,30 +159,56 @@ def sealed_day(day_index: int) -> bool:
     return day_index % every == min(7, every - 1)
 
 
-async def _villain_block(session: AsyncSession, open_moment: datetime) -> str | None:
+async def get_run_anchor(session: AsyncSession) -> dict:
+    """Якорь забега из watcher_state; для новых инстансов создаётся «сейчас».
+
+    Кэш в season обновляется здесь же: синхронные посты дня (broadcast)
+    берут якорь оттуда без обращения к БД.
+    """
+    from app.season import (
+        RUN_START_KEY,
+        default_anchor,
+        parse_anchor,
+        set_run_anchor_cache,
+    )
+    from app.models import WatcherState
+
+    row = await session.get(WatcherState, RUN_START_KEY)
+    anchor = parse_anchor(row.value if row is not None else None)
+    if anchor is None:
+        anchor = default_anchor(_now())
+        payload = json.dumps(anchor, ensure_ascii=False)
+        if row is None:
+            session.add(WatcherState(key=RUN_START_KEY, value=payload))
+        else:
+            row.value = payload
+        await session.commit()
+    set_run_anchor_cache(anchor)
+    return anchor
+
+
+async def _villain_block(
+    session: AsyncSession, open_moment: datetime, anchor: dict
+) -> str | None:
     """Сюжет-машина сезона: продвигает план Хозяина Ошибки и отдаёт блок промпта.
 
     Состояние живёт в watcher_state (один ключ на весь мир): ступень и список
-    событий. Новая ступень добавляет ровно одно каноническое событие,
-    детерминированное по сезону — два инстанса бота согласованы.
+    событий. Ступени считаются по дням ЗАБЕГА (от сброса), а не календаря.
     """
     import json as _json
 
     from app.models import WatcherState
     from app.season import (
         VILLAIN_KEY,
-        day_of_season,
-        days_in_season,
-        season_key,
+        run_position,
         villain_event,
         villain_prompt_block,
         villain_stage,
     )
 
-    key = season_key(open_moment)
-    day = day_of_season(open_moment)
-    total = days_in_season(key)
-    stage = villain_stage(day, total)
+    key = anchor["key"]
+    run_day, total = run_position(anchor, open_moment)
+    stage = villain_stage(run_day, total)
 
     row = await session.get(WatcherState, VILLAIN_KEY)
     data: dict = {}
@@ -365,27 +393,26 @@ async def _plan_and_render(
     rule = secrets.choice(list(WinRule))
     salt = secrets.token_hex(16)
 
-    # Сезонная рамка: акты месяца и финал Первого Лая по календарю UTC.
+    # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
+    # Первого Лая на длине месяца старта забега.
     open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
-    from app.season import (
-        day_of_season,
-        season_block as build_season_block,
-        season_key,
-    )
+    from app.season import season_block as build_season_block
 
-    key = season_key(open_moment)
+    anchor = await get_run_anchor(session)
+    key = anchor["key"]
     balance = await season_tag_balance(session, key)
     prev_summary = None
-    if day_of_season(open_moment) <= 2:
+    if day_index <= 2:
         prev_summary = await previous_season_summary(session, key)
     sblock = build_season_block(
-        open_moment=open_moment,
+        anchor=anchor,
+        moment=open_moment,
         balance=balance,
         previous_season_summary=prev_summary,
     )
     places_block = await places_memory_block(session)
-    # План Хозяина Ошибки: продвигается по ступеням сезона, канон — в промпт.
-    villain = await _villain_block(session, open_moment)
+    # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
+    villain = await _villain_block(session, open_moment, anchor)
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
@@ -795,6 +822,18 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
         )
     await session.execute(delete(Round))
     await session.execute(update(Player).values(score=0, correct_picks=0))
+    # Новый забег: якорь арки стартует сегодня — акты и план злодея
+    # считаются от сброса, а не от календаря.
+    from app.models import WatcherState as WS
+    from app.season import RUN_START_KEY, default_anchor
+
+    fresh_anchor = default_anchor(_now())
+    payload = json.dumps(fresh_anchor, ensure_ascii=False)
+    row = await session.get(WS, RUN_START_KEY)
+    if row is None:
+        session.add(WS(key=RUN_START_KEY, value=payload))
+    else:
+        row.value = payload
     await session.commit()
     row, _created = await create_next_round_detailed(session)
     return row

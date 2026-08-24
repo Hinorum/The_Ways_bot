@@ -91,19 +91,28 @@ def status_text(round_row: Round) -> str:
 
 
 def _season_status_line(round_row: Round) -> str | None:
-    """Строка сезона в статусе дня: акты месяца и дистанция до Первого Лая."""
+    """Строка сезона в статусе дня: акты забега и дистанция до Первого Лая.
+
+    Якорь забега берётся из кэша season (обновляется при каждой генерации
+    дня и тике), поэтому синхронный код обходится без БД.
+    """
     try:
-        from app.season import act_line, day_of_season, days_in_season, season_key
+        from app.season import (
+            act_line,
+            get_cached_anchor,
+            is_run_finale,
+            run_position,
+        )
 
         moment = round_row.voting_ends_at
         if getattr(moment, "tzinfo", None) is None:
             from datetime import timezone as _tz
 
             moment = moment.replace(tzinfo=_tz.utc)
-        total = days_in_season(season_key(moment))
-        if day_of_season(moment) == total:
+        run_day, total = run_position(get_cached_anchor(moment), moment)
+        if is_run_finale(run_day, total):
             return "🐺 Сегодня — День Первого Лая. Финал сезона."
-        return f"🌙 {act_line(day_of_season(moment), total)}"
+        return f"🌙 {act_line(run_day, total)}"
     except Exception:
         return None
 

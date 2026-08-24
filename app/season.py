@@ -1,27 +1,21 @@
-"""Сезоны мира: календарный месяц от гудка до Первого Лая.
+"""Сезоны мира: арка привязана к ЗАБЕГУ, а не к календарю.
 
-Сезон = «YYYY-MM» по UTC. Последний день месяца — День Первого Лая: стая
-доходит до источника зова, и три карты суть три его прочтения (дом / ловушка /
-стать зовом). Исход финала зависит от накопленного за сезон характера стаи —
-баланса risk/care/cunning по победившим путям. 1-го числа, после распределения
-копилки лидеров, открывается новый сезон: мир помнит прошлый (семантика
-keepstory), счёты игроков продолжаются.
+Забег = период от полного сброса игры до следующего сброса. Якорь забега
+(день месяца старта + месяц) живёт в watcher_state и переживает рестарты;
+арка всегда имеет полную длину месяца старта, даже если сброс случился
+24-го числа: акт 1 начинается со дня 1 забега, а День Первого Лая наступает,
+когда забег дорастает до своей длины (длинные забеги циклятся каждые ~месяц).
 
-Акты сезона: дни 1–7 — экспозиция (тихие странности); середина — эскалация
-(Лай слышится чаще); последние 7 дней перед финалом — кризис (порталы дрожат).
-
-Сюжет-машина сезона: у Хозяина Ошибки есть план из четырёх ступеней,
-привязанных к актам. Каждая ступень при наступлении оставляет одно каноническое
-событие (детерминированный выбор из пула по ключу сезона) — события живут в
-watcher_state и подаются в промпт главы как свершившееся.
+Копилки недели/месяца остаются календарными — это экономика, не нарратив.
 """
 
 from __future__ import annotations
 
 import calendar
 import hashlib
+import json
 import random
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 # Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
 FINALE_CARDS = {
@@ -53,39 +47,100 @@ def season_key(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m")
 
 
-def days_in_season(key: str) -> int:
-    """Длина месяца сезона (високосный февраль учитывается)."""
-    year, month = (int(part) for part in key.split("-"))
-    return calendar.monthrange(year, month)[1]
+# ---------- Якорь забега ----------
 
 
-def day_of_season(open_moment: datetime) -> int:
-    return open_moment.day
+def default_anchor(moment: datetime) -> dict:
+    """Якорь «первый день прямо сейчас»: для новых инстансов до первого сброса."""
+    return {"dom": day_of_month_of(moment), "key": season_key(moment)}
 
 
-def is_finale_day(open_moment: datetime) -> bool:
-    return open_moment.day == days_in_season(season_key(open_moment))
+def day_of_month_of(moment: datetime) -> int:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).day
 
 
-def act_number(day: int) -> int:
-    if day <= 7:
-        return 1
-    return 2
+def parse_anchor(raw: str | None) -> dict | None:
+    """{"dom": 24, "key": "2026-08"} из watcher_state либо None."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        dom = int(data["dom"])
+        key = str(data["key"])
+        year, month = (int(part) for part in key.split("-"))
+        if not 1 <= dom <= 31 or not 1 <= month <= 12:
+            return None
+        return {"dom": dom, "key": f"{year:04d}-{month:02d}"}
+    except Exception:
+        return None
 
 
-def crisis_act(day: int, total_days: int) -> bool:
-    """Последние семь дней перед финалом — третий акт."""
-    return total_days - day < 7
+_RUN_CACHE: dict | None = None
 
 
-def act_line(day: int, total_days: int) -> str:
-    act = 3 if crisis_act(day, total_days) else act_number(day)
-    days_left = max(0, total_days - day)
+def set_run_anchor_cache(anchor: dict | None) -> None:
+    global _RUN_CACHE
+    _RUN_CACHE = anchor
+
+
+def get_cached_anchor(moment: datetime | None = None) -> dict:
+    """Кэшированный якорь для синхронного кода (посты дня); без него — «сейчас»."""
+    if _RUN_CACHE is not None:
+        return _RUN_CACHE
+    return default_anchor(moment or datetime.now(timezone.utc))
+
+
+def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
+    """(день забега, длина забега).
+
+    Забег длится месяц месяца-старта; длиннее месяца — цикл повторяется
+    (нарративная арка перезапускается, счёты и экономика не трогаются).
+    """
+    year, month = (int(part) for part in anchor["key"].split("-"))
+    dom = max(1, min(int(anchor["dom"]), 31))
+    start = date(year, month, dom)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    today = moment.astimezone(timezone.utc).date()
+    raw = (today - start).days + 1
+    total = calendar.monthrange(year, month)[1]
+    if raw < 1:
+        # Часовой пояс/гонка часов: считаем первым днём.
+        raw = 1
+    run_day = ((raw - 1) % total) + 1
+    return run_day, total
+
+
+def run_days_left(run_day: int, total: int) -> int:
+    return max(0, total - run_day)
+
+
+def is_run_finale(run_day: int, total: int) -> bool:
+    return run_day >= total
+
+
+# ---------- Акты ----------
+
+
+def act_number(run_day: int) -> int:
+    return 1 if run_day <= 7 else 2
+
+
+def crisis_act(run_day: int, total: int) -> bool:
+    """Последние семь дней забега — третий акт."""
+    return total - run_day < 7
+
+
+def act_line(run_day: int, total: int) -> str:
+    act = 3 if crisis_act(run_day, total) else act_number(run_day)
     tone = _ACT_TONE[act]
+    left = run_days_left(run_day, total)
     tail = (
         "Сегодняшний день — ДЕНЬ ПЕРВОГО ЛАЯ."
-        if days_left == 0
-        else f"До Дня Первого Лая осталось {days_left} дн."
+        if left == 0
+        else f"До Дня Первого Лая осталось {left} дн."
     )
     return f"Сезон: акт {act}. {tone} {tail}"
 
@@ -131,19 +186,19 @@ def opener_instruction(previous_finale_summary: str | None) -> str:
 
 def season_block(
     *,
-    open_moment: datetime,
+    anchor: dict,
+    moment: datetime,
     balance: dict[str, int] | None = None,
     previous_season_summary: str | None = None,
-) -> str | None:
-    """Готовый блок для промпта главы: None — вне сезонов (не должен случаться)."""
-    day = day_of_season(open_moment)
-    total = days_in_season(season_key(open_moment))
-    if is_finale_day(open_moment):
+) -> str:
+    """Готовый блок для промпта главы по якорю забега."""
+    run_day, total = run_position(anchor, moment)
+    if is_run_finale(run_day, total):
         return finale_instruction(balance or {})
-    block = act_line(day, total)
-    if day == 1:
+    block = act_line(run_day, total)
+    if run_day == 1:
         block += "\n" + opener_instruction(previous_season_summary)
-    elif day == 2 and previous_season_summary:
+    elif run_day == 2 and previous_season_summary:
         # Второй день ещё держит осадок финала, если день 1 собран до сброса.
         block += "\n" + opener_instruction(previous_season_summary)
     return block
@@ -152,6 +207,8 @@ def season_block(
 # ---------- План Хозяина Ошибки: сюжет-машина сезона ----------
 
 VILLAIN_KEY = "villain_plot"
+# Якорь забега: {"dom": день-месяца старта, "key": "YYYY-MM"} в watcher_state.
+RUN_START_KEY = "run_season_anchor"
 
 _VILLAIN_EVENTS: dict[int, tuple[str, ...]] = {
     0: (
@@ -198,13 +255,13 @@ _VILLAIN_STAGE_TONE = {
 }
 
 
-def villain_stage(day: int, total: int) -> int:
-    """Ступень плана Хозяина Ошибки для дня сезона (0..3)."""
-    if total - day < 7:
+def villain_stage(run_day: int, total: int) -> int:
+    """Ступень плана Хозяина Ошибки для дня забега (0..3)."""
+    if total - run_day < 7:
         return 3
-    if day >= max(8, total // 2):
+    if run_day >= max(8, total // 2):
         return 2
-    if day >= 7:
+    if run_day >= 7:
         return 1
     return 0
 
