@@ -201,6 +201,12 @@ def season_block(
     elif run_day == 2 and previous_season_summary:
         # Второй день ещё держит осадок финала, если день 1 собран до сброса.
         block += "\n" + opener_instruction(previous_season_summary)
+    # Пролог забега: первые семь дней знакомят стаю с миром и лицами.
+    from app.prologue import prologue_block
+
+    pblock = prologue_block(run_day)
+    if pblock:
+        block += "\n" + pblock
     return block
 
 

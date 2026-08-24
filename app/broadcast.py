@@ -112,7 +112,13 @@ def _season_status_line(round_row: Round) -> str | None:
         run_day, total = run_position(get_cached_anchor(moment), moment)
         if is_run_finale(run_day, total):
             return "🐺 Сегодня — День Первого Лая. Финал сезона."
-        return f"🌙 {act_line(run_day, total)}"
+        line = f"🌙 {act_line(run_day, total)}"
+        from app.prologue import prologue_title
+
+        title = prologue_title(run_day)
+        if title:
+            line += f" Пролог дня: «{title}»."
+        return line
     except Exception:
         return None
 
@@ -427,6 +433,19 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
                 select(Vote.player_id, Vote.card_position).where(Vote.round_id == finished.id)
             )
         ).all()
+        # Окраска эха призванием: один запрос на всех проигравших.
+        from app.callings import echo_tail
+        from app.models import Player as _Player
+
+        loser_ids = [pid for pid, pos in rows if pos != winner_pos]
+        calling_map: dict[int, str | None] = {}
+        if loser_ids:
+            calling_rows = (
+                await session.execute(
+                    select(_Player.id, _Player.calling).where(_Player.id.in_(loser_ids))
+                )
+            ).all()
+            calling_map = {pid: calling for pid, calling in calling_rows}
     losers = [(pid, pos) for pid, pos in rows if pos != winner_pos]
     semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 
@@ -437,6 +456,9 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
         text = personal_echo_text(
             f"{finished.id}:{player_id}", card.title, card.consequence, winner.title
         )
+        tail = echo_tail(calling_map.get(player_id))
+        if tail:
+            text += f"\n\n{tail}"
         async with semaphore:
             try:
                 await bot.send_message(player_id, text)

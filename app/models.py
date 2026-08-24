@@ -40,6 +40,15 @@ RULE_PHRASES = {
     WinRule.MEDIAN: "побеждает карта со средним числом голосов",
 }
 
+# Маски дня: существа бестиария, в чью ночь выпадает закон. Механику не
+# меняют — это нарративная линза для тизера и бестиария.
+RULE_MASKS = {
+    WinRule.MAJORITY: ("Голос Стаи", "ночь, когда мир слушает хор"),
+    WinRule.MINORITY: ("Одинокий Волк", "ночь, когда право пути у отставшего"),
+    WinRule.MEDIAN: ("Середняк", "ночь существа, живущего между крайностями"),
+}
+SEALED_MASK = ("Слепая Яма", "день, где закон запечатан до темноты")
+
 
 class Player(Base):
     __tablename__ = "players"
@@ -51,6 +60,12 @@ class Player(Base):
     correct_picks: Mapped[int] = mapped_column(Integer, default=0)
     wallet_address: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     wallet_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Призвание собаки (ключ из app.callings): косметика нарратива — титулы,
+    # окраска личного эха и касания в главах. На деньги и вес голоса не влияет.
+    calling: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Жетоны «Второго нюха»: за находки памяти и верные серии. Тратятся на
+    # личную микросцену дня; информации о законе не дают.
+    inspiration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -372,3 +387,25 @@ class MemoryHit(Base):
     player_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     round_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BestiarySighting(Base):
+    """Встреча Стаи с существом Сети: запись бестиария /best.
+
+    Уникальность (сезон, ключ) делает запись идемпотентной: сколько бы раз
+    ни выпала маска дня, существо попадает в бестиарий один раз за сезон.
+    """
+
+    __tablename__ = "bestiary_sightings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(16), nullable=False)
+    beast_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    day_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("season", "beast_key", name="uq_bestiary_season_beast"),
+    )

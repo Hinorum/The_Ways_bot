@@ -73,14 +73,16 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
             round_row = await session.get(Round, round_id)
             if round_row is None or round_row.status != RoundStatus.OPEN:
                 return
-            from app.season import day_of_season, days_in_season, season_key
+            from app.rounds import get_run_anchor
+            from app.season import run_position
 
+            anchor = await get_run_anchor(session)
             moment = utc_aware(round_row.voting_ends_at)
-            total = days_in_season(season_key(moment))
+            run_day, total = run_position(anchor, moment)
             season_hint = (
                 "ДЕНЬ ПЕРВОГО ЛАЯ"
-                if day_of_season(moment) == total
-                else f"до Дня Первого Лая {total - day_of_season(moment)} дн."
+                if run_day >= total
+                else f"до Дня Первого Лая {total - run_day} дн."
             )
             chapter_excerpt = (round_row.chapter_text or "")[:700]
             text = await _compose_whisper(day_index, season_hint, chapter_excerpt)
@@ -142,7 +144,8 @@ async def _compose_whisper(day_index: int, season_hint: str, chapter_excerpt: st
                     else ""
                 )
                 + "Напиши микросцену вечера: 2-4 предложения (до 450 знаков). "
-                "Стая у карт, та же сцена дотянулась до заката; одна прямая "
+                "Это короткий отдых стаи: собаки лежат у карт, лижут раны, "
+                "переговариваются вполголоса; одна прямая "
                 "реплика персонажа в его характерной манере речи; финал — "
                 "недоговорённость перед закрытием развилки. Без цифр голосов и "
                 "без намёков, какой путь ведёт. Ответь чистым текстом, без JSON."
@@ -190,9 +193,10 @@ async def _teaser_job(round_id: int) -> None:
             round_row = await session.get(Round, round_id)
             if round_row is None or round_row.status != RoundStatus.TALLYING:
                 return
-            from app.models import RULE_PHRASES
+            from app.models import RULE_MASKS, RULE_PHRASES
 
             rule_phrase = RULE_PHRASES[round_row.win_rule]
+            mask_title, mask_mood = RULE_MASKS[round_row.win_rule]
             sealed = bool(getattr(round_row, "sealed", False))
         from app.story import generate_teaser
 
@@ -201,6 +205,7 @@ async def _teaser_job(round_id: int) -> None:
             import random as _random
 
             text = _random.Random(f"teaser:{round_id}").choice(list(_TEASER_FALLBACKS))
+        text = f"Маска дня — «{mask_title}»: {mask_mood}. {text}"
         if sealed:
             text += " И это ещё не всё: закон дня вскроется вместе с итогами."
         async with SessionLocal() as session2:

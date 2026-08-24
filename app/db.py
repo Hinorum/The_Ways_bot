@@ -35,6 +35,8 @@ _SQLITE_COLUMN_DDL = {
     "players": {
         "wallet_address": "ALTER TABLE players ADD COLUMN wallet_address VARCHAR(80)",
         "wallet_linked_at": "ALTER TABLE players ADD COLUMN wallet_linked_at DATETIME",
+        "calling": "ALTER TABLE players ADD COLUMN calling VARCHAR(32)",
+        "inspiration": "ALTER TABLE players ADD COLUMN inspiration INTEGER NOT NULL DEFAULT 0",
     },
     "stakes": {
         "network": "ALTER TABLE stakes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
@@ -99,6 +101,11 @@ async def init_db() -> None:
             ))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
+            # Призвание собаки и жетоны «Второго нюха» (Правила Стаи).
+            await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)"))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0"
+            ))
             await conn.execute(text(
                 "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
             ))

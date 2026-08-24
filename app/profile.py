@@ -38,6 +38,8 @@ PRIVATE_COMMANDS = [
     BotCommand(command="today", description="Карты дня"),
     BotCommand(command="lore", description="Канон прошлых дней"),
     BotCommand(command="score", description="Твои Следы"),
+    BotCommand(command="calling", description="Призвание твоей собаки"),
+    BotCommand(command="best", description="Бестиарий Сети"),
     BotCommand(command="stake", description="Как поставить Gram на путь"),
     BotCommand(command="wallet", description="Привязать кошелёк Gram"),
     BotCommand(command="top", description="Копилка месяца и лидеры"),

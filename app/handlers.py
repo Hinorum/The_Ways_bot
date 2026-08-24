@@ -33,6 +33,7 @@ from app.models import (
     Chat,
     Income,
     LeaderboardPot,
+    MemoryHit,
     Payout,
     Player,
     RevoteGrant,
@@ -183,13 +184,20 @@ async def _score_text(user) -> str:
 
         from sqlalchemy import select as _select
 
-
         memory_hits = (
             await session.execute(
                 _select(_func.count()).select_from(MemoryHit).where(MemoryHit.player_id == player.id)
             )
         ).scalar_one()
         chronicle = await _chronicle(session, player.id)
+        from app.callings import calling_by_key
+        from app.trail import trail_line, trail_stats
+
+        calling = calling_by_key(player.calling)
+        try:
+            stats = await trail_stats(session, player.id)
+        except Exception:
+            stats = None
     if vote is None:
         choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал путь."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
@@ -199,18 +207,36 @@ async def _score_text(user) -> str:
     text = (
         f"{choice}\n{result_mark(f'score:{user.id}')} Очки: {player.score}\n"
         f"Угаданных законов: {player.correct_picks}\n"
-        f"🧠 Память сети: {memory_hits}"
+        f"🧠 Память сети: {memory_hits}\n"
+        f"✨ Второй нюх: {player.inspiration}"
     )
+    if calling is not None:
+        text += f"\n{calling.emoji} Призвание: {calling.title}."
+    else:
+        text += "\nПризвание ещё не выбрано — /calling"
+    if stats is not None:
+        text += f"\n{trail_line(stats)}"
     if chronicle:
         text += "\n\n📜 Твоя хроника:\n" + "\n".join(chronicle)
     return text
+
+
+def _sniff_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✨ Потратить нюх", callback_data="sniff:use")]]
+    )
 
 
 @router.message(Command("score"))
 async def cmd_score(message: Message) -> None:
     text = await _score_text(message.from_user)
     if message.chat.type == ChatType.PRIVATE:
-        await message.answer(text)
+        keyboard = None
+        async with SessionLocal() as session:
+            player = await upsert_player(session, message.from_user)
+            if player.inspiration > 0:
+                keyboard = _sniff_keyboard()
+        await message.answer(text, reply_markup=keyboard)
         return
     # В группе личные цифры не показываем: только кнопка с приватным окном.
     await message.answer(
@@ -230,6 +256,162 @@ async def on_score_view(callback: CallbackQuery) -> None:
     await callback.answer(text[:200], show_alert=True)
 
 
+def _calling_list_text(current, available) -> str:
+    from app.callings import CALLINGS
+
+    lines = ["🎭 Призвания Стаи: косметика мира — титул, эхо и касание в главах."]
+    for calling in CALLINGS:
+        unlocked = any(c.key == calling.key for c in available)
+        marker = "✅" if current and current.key == calling.key else ("▫️" if unlocked else "🔒")
+        suffix = ""
+        if not unlocked:
+            field, minimum = calling.requirement
+            names = {
+                "correct_picks": ("верных путей", minimum),
+                "heart_lead": ("заботливых путей вперёд", minimum),
+                "minority_correct": ("верных в ночь Одинокого Волка", minimum),
+                "memory_hits": ("находок памяти", minimum),
+                "votes": ("дней у карт", minimum),
+                "sealed_correct": ("верный в Слепой Яме", minimum),
+            }
+            label = names.get(field, (field, minimum))
+            suffix = f" (нужно {label[1]} {label[0]})"
+        lines.append(f"{marker} {calling.emoji} {calling.title}{suffix}\n   {calling.description}")
+    return "\n".join(lines)
+
+
+def _calling_keyboard(available, current_key: str | None) -> InlineKeyboardMarkup:
+    rows = []
+    for calling in available:
+        if calling.key == current_key:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{calling.emoji} Стать: {calling.title}",
+                    callback_data=f"calling:pick:{calling.key}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Пока так", callback_data="noop")]])
+
+
+@router.message(Command("calling"))
+async def cmd_calling(message: Message) -> None:
+    from app.callings import available_callings, calling_by_key
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, message.from_user)
+        available = await available_callings(session, player.id)
+        current = calling_by_key(player.calling)
+    head = (
+        f"{current.emoji} Сейчас ты — {current.title}."
+        if current is not None
+        else "Призвание пока не выбрано. Мир уже смотрит, кем ты станешь."
+    )
+    await message.answer(
+        f"{head}\n\n{_calling_list_text(current, available)}",
+        reply_markup=_calling_keyboard(available, player.calling),
+    )
+
+
+@router.callback_query(F.data.startswith("calling:pick:"))
+async def on_calling_pick(callback: CallbackQuery) -> None:
+    key = callback.data.rsplit(":", 1)[-1]
+    from app.callings import available_callings, calling_by_key
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        available = await available_callings(session, player.id)
+        target = calling_by_key(key)
+        if target is None or all(c.key != key for c in available):
+            await callback.answer("Это призвание ещё закрыто.", show_alert=True)
+            return
+        player.calling = key
+        await session.commit()
+    await callback.answer(f"Линька прошла. Теперь ты — {target.title}.")
+    if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
+        await callback.message.answer(
+            f"{target.emoji} Линька прошла: теперь ты — {target.title}. {target.description}"
+        )
+
+
+_SNIFF_SCENES = (
+    "Ты лежишь у карт в «{place}» и вдруг чуешь тропу, которой ещё нет на столе. "
+    "{calling_title} умеет ждать: нюх говорит «не сегодня» — но говорит точно.",
+    "Вечер в «{place}». Ты поднимаешь морду: где-то за порталами кто-то пересчитывает "
+    "стаю заново. {calling_title} не считает — он слышит, когда счёт сбивается.",
+    "Короткий отдых в «{place}»: миски остывают, а твой нюх греется о чужое воспоминание. "
+    "{calling_title} знает: память — тоже провизия.",
+    "Ночь у карт в «{place}». Ты перебираешь запахи дня, как папки Архивариуса. "
+    "{calling_title} откладывает один запах на завтра: пригодится.",
+    "Во сне в «{place}» ты видишь тропу без карт. {calling_title} просыпается раньше всех "
+    "и молчит об этом до итогов.",
+)
+
+
+def compose_sniff_scene(seed_key: str, calling, place: str | None) -> str:
+    """Личная микросцена за жетон: детерминированная, офлайн, без информации о законе."""
+    import random as _random
+
+    rng = _random.Random(f"sniff:{seed_key}")
+    template = rng.choice(_SNIFF_SCENES)
+    return template.format(
+        place=place or "кружке порталов",
+        calling_title=f"«{calling.title}»" if calling is not None else "Собака стаи",
+    )
+
+
+@router.callback_query(F.data == "sniff:use")
+async def on_sniff_use(callback: CallbackQuery) -> None:
+    """Трата жетона: личная микросцена дня. Один раз в день, только в личке."""
+    from app.models import WatcherState
+
+    if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Нюх тратят из личного чата.", show_alert=True)
+        return
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        round_row = await get_active_round(session)
+        if round_row is None:
+            await callback.answer("Сейчас нет открытого дня для нюха.", show_alert=True)
+            return
+        if player.inspiration <= 0:
+            await callback.answer("Жетонов нет: ищи следы памяти и верные серии.", show_alert=True)
+            return
+        marker = f"sniff:{player.id}:{round_row.id}"
+        if await session.get(WatcherState, marker) is not None:
+            await callback.answer("Сегодня нюх уже потрачен.", show_alert=True)
+            return
+        player.inspiration -= 1
+        session.add(WatcherState(key=marker, value="1"))
+        await session.commit()
+        from app.callings import calling_by_key
+
+        calling = calling_by_key(player.calling)
+        place = getattr(round_row, "place", None) if round_row is not None else None
+        scene = compose_sniff_scene(str(marker), calling, place)
+    await callback.answer()
+    try:
+        await callback.message.answer(scene)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "noop")
+async def on_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.message(Command("best"))
+async def cmd_best(message: Message) -> None:
+    from app.bestiary import bestiary_text
+
+    async with SessionLocal() as session:
+        text = await bestiary_text(session)
+    await message.answer(text)
+
+
 @router.callback_query(F.data.startswith("remember:"))
 async def on_remember(callback: CallbackQuery) -> None:
     """«Я помню этот след»: отметка внимательности. Бот не подтверждает
@@ -243,31 +425,20 @@ async def on_remember(callback: CallbackQuery) -> None:
     except ValueError:
         await callback.answer("Некорректная метка.", show_alert=True)
         return
-    from sqlalchemy import select
-
-    from app.models import MemoryHit
+    from app.tally import register_memory_hit
 
     async with SessionLocal() as session:
         player = await upsert_player(session, callback.from_user)
-        existing = (
-            await session.execute(
-                select(MemoryHit).where(
-                    MemoryHit.player_id == player.id,
-                    MemoryHit.round_id == round_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            session.add(MemoryHit(player_id=player.id, round_id=round_id))
-            await session.commit()
-            await callback.answer("Сеть запомнила, что ты помнишь.")
+        created = await register_memory_hit(session, player.id, round_id)
+        if created:
+            await callback.answer("Сеть запомнила, что ты помнишь. ✨ +1 нюх.")
         else:
             hits = (
                 await session.execute(
-                    select(MemoryHit).where(MemoryHit.player_id == player.id)
+                    select(func.count()).select_from(MemoryHit).where(MemoryHit.player_id == player.id)
                 )
-            ).scalars().all()
-            await callback.answer(f"Этот след ты уже отметил. Память сети: {len(hits)}.")
+            ).scalar_one()
+            await callback.answer(f"Этот след ты уже отметил. Память сети: {hits}.")
 
 
 @router.callback_query(F.data.startswith("vote:"))

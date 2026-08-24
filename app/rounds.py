@@ -411,6 +411,16 @@ async def _plan_and_render(
         previous_season_summary=prev_summary,
     )
     places_block = await places_memory_block(session)
+    # Призвания стаи: Ведущий может показать их одним касанием в сцене.
+    from app.callings import callings_prompt_block
+
+    callings_block = None
+    try:
+        callings_block = await callings_prompt_block(session)
+    except Exception:
+        pass
+    if callings_block:
+        sblock = f"{sblock}\n{callings_block}"
     # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
     villain = await _villain_block(session, open_moment, anchor)
 
@@ -578,6 +588,14 @@ async def _materialize_round(
         round_row.cards.append(Card(**card))
     session.add(round_row)
     await session.flush()
+    # Бестиарий: маска закона дня и (со 2-й ступени) Хозяин Ошибки —
+    # по записи за сезон, идемпотентно.
+    from app.bestiary import note_round as bestiary_note_round
+
+    try:
+        await bestiary_note_round(session, round_row, season_key_value=payload.get("season"))
+    except Exception:
+        logger.warning("Запись бестиария дня %s не удалась", day_index, exc_info=True)
     return round_row
 
 
@@ -588,6 +606,13 @@ _ECHO_ART_MOTIFS = {
     "память": "a warm amber keepsake bowl catching light",
     "обман": "a mirage-like silhouette of an unfamiliar dog",
 }
+
+# Театр жребия: реплики к честному броску при ничьей (детерминированы сидом).
+_TIE_THEATER = (
+    "Кость архива стукнула о дно урны: путь {chosen}.",
+    "Жребий запечатанного счёта лёг на {paths} — и указал {chosen}.",
+    "Архивариус дважды встряхнул урну; выпало {chosen}.",
+)
 
 
 _PREGEN_LOCK_PREFIX = "pregen_lock:"
@@ -1124,10 +1149,14 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     tied = tied_positions(counts, round_row.win_rule)
     tie_note: str | None = None
     if len(tied) > 1:
+        # Театр жребия: детерминированная реплика к честному броску.
+        theater = _TIE_THEATER[
+            int(seed[-1], 16) % len(_TIE_THEATER)
+        ].format(paths=" и ".join(_ROMAN[p] for p in tied), chosen=_ROMAN[winner])
         tie_note = (
             f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
-            f"жребий закона по обязательству дня выбрал путь {_ROMAN[winner]}."
-        )
+            f"жребий закона по обязательству дня выбрал путь {_ROMAN[winner]}. {theater}"
+        )[:200]
     if not round_row.cards:
         loaded = await get_round(session, round_row.id)
         if loaded is not None:
