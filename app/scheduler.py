@@ -5,8 +5,10 @@ import logging
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from app.broadcast import announce_new_day
+from app.broadcast import announce_new_day, send_personal_echoes
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Round, RoundStatus, WatcherState
@@ -18,10 +20,12 @@ from app.rounds import (
     ensure_current_round,
     finish_tally,
     get_latest_round,
+    patch_prepared_day,
     prepare_next_day,
     utc_aware,
     write_epilogue,
 )
+from app.story import _TEASER_FALLBACKS
 from app.tally import award_points
 
 
@@ -55,8 +59,8 @@ async def _prepare_job(round_id: int) -> None:
 
 
 async def _micro_event_job(round_id: int, day_index: int) -> None:
-    """Полуденный шёпот мира: 1-2 предложения посреди дня, чтобы чат жил
-    между утром и итогами. Падения полностью некритичны."""
+    """Вечерний привал: микросцена-продолжение утренней главы в прайм-тайм,
+    чтобы вечер жил между утром и итогами. Падения полностью некритичны."""
     try:
         from app.db import SessionLocal
         from app.models import Round, WatcherState
@@ -78,19 +82,20 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
                 if day_of_season(moment) == total
                 else f"до Дня Первого Лая {total - day_of_season(moment)} дн."
             )
-            text = await _compose_whisper(day_index, season_hint)
+            chapter_excerpt = (round_row.chapter_text or "")[:700]
+            text = await _compose_whisper(day_index, season_hint, chapter_excerpt)
             session.add(WatcherState(key=marker, value="1"))
             await session.commit()
         from app.broadcast import whisper_to_chats
 
         await whisper_to_chats(_bot, text)
     except Exception:
-        logger.exception("Полуденное микрособытие не удалось (не мешает тику)")
+        logger.exception("Вечерняя микросцена не удалась (не мешает тику)")
 
 
-async def _compose_whisper(day_index: int, season_hint: str) -> str:
-    """Шёпот: нейротекст с офлайн-фолбэком. Не раскрывает содержимое эхов —
-    только абстрактную фактуру по их типу (запах/свет/силуэт)."""
+async def _compose_whisper(day_index: int, season_hint: str, chapter_excerpt: str = "") -> str:
+    """Микросцена вечера: нейротекст с офлайн-фолбэком. Не раскрывает ни эхи,
+    ни расклад голосов — только продолжает утреннюю сцену одной репликой."""
     import random as _random
 
     from app.story import DM_SYSTEM_PROMPT, _chat_completion, text_is_clean
@@ -129,11 +134,18 @@ async def _compose_whisper(day_index: int, season_hint: str) -> str:
         {
             "role": "user",
             "content": (
-                f"Полуденный шёпот мира, день {day_index}. Сезон: {season_hint}. "
+                f"Вечерний привал, день {day_index}. Сезон: {season_hint}. "
                 f"{hint} "
-                "Одно-два коротких предложения атмосферы (до 180 знаков), без "
-                "сюжета, без выбора, без обращений к игроку — только примета, "
-                "которую стая замечает на ходу. Ответь чистым текстом, без JSON."
+                + (
+                    f"Утренняя глава дня начиналась так:\n«{chapter_excerpt}»\n"
+                    if chapter_excerpt
+                    else ""
+                )
+                + "Напиши микросцену вечера: 2-4 предложения (до 450 знаков). "
+                "Стая у карт, та же сцена дотянулась до заката; одна прямая "
+                "реплика персонажа в его характерной манере речи; финал — "
+                "недоговорённость перед закрытием развилки. Без цифр голосов и "
+                "без намёков, какой путь ведёт. Ответь чистым текстом, без JSON."
             ),
         },
     ]
@@ -142,15 +154,22 @@ async def _compose_whisper(day_index: int, season_hint: str) -> str:
         try:
             text = str(result[0]["choices"][0]["message"]["content"]).strip()
             if text and text_is_clean(text):
-                return text[:400]
+                return text[:600]
         except Exception:
             pass
     fallback = [
-        "Порталы гудят сегодня не в такт — стая переглядывается молча.",
-        "Кто-то из Архивариусов прошёл мимо, не поднимая глаз от папок.",
-        "Ветер принёс запах чужого костра. Такого тут не жгут.",
-        "Миски звенят тише обычного, будто прислушиваются.",
-        "Тени ведут себя странно: чуть запаздывают за хозяевами.",
+        "Вечер стянул туман к самой земле. Стая легла вокруг карт, и никто не притронулся к ним первым.",
+        "Лайнер прошёл мимо, позвякивая склянками с чужими снами: «Решайте, решайте… я только послушать».",
+        "Архивариус захлопнул папку дня ровно на середине. «До утра всё может стать иначе», — шепнул он.",
+        "Миски остыли, не тронутые. Гавкус смотрел то на одну карту, то на другую, будто ждал подсказки.",
+        "Безымянная встала мордой к порталу и не двинулась до темноты. Собаки чувствуют развилки кожей.",
+        "Порталы загудели ниже обычного — почти шёпотом. Так сеть прислушивается к ещё не принятым решениям.",
+        "Рекс-9 обошёл карты по кругу трижды и лёг спиной к развилке. Упрямство тоже способ ждать.",
+        "Где-то за холмом щёлкнул счётчик архива и замолчал на середине цифры. Никто не спросил, какой.",
+        "Ветер принёс запах страницы, которую ещё не написали. Пиксель заворчал на пустоту.",
+        "Хозяин Ошибки сегодня не считал вслух. Тишина от него страшнее любого счёта.",
+        "Тени легли к картам, хотя света уже не было. Вечер здесь не спрашивает разрешения у физики.",
+        "Стая переглянулась: до закрытия развилки оставалась ночь, а решение всё ещё было только одно — на всех.",
     ]
     rng = _random.Random(f"whisper:{day_index}")
     return rng.choice(fallback)
@@ -181,18 +200,7 @@ async def _teaser_job(round_id: int) -> None:
         if not text:
             import random as _random
 
-            text = _random.Random(f"teaser:{round_id}").choice(
-                [
-                    "Урна вскрыта. Архивариус пересчитал голоса, молча завёл папку дня "
-                    "и почему-то дважды перепроверил счёт.",
-                    "Счёт известен только архиву. Стая чувствует это шерстью: сегодня мир "
-                    "повернётся не туда, куда все смотрели.",
-                    "Голоса сложились. Хранитель Спорных Версий запечатывает папку — "
-                    "и ухмыляется краем морды.",
-                    "Всё уже решено, но не названо. Порталы гудят чуть громче обычного: "
-                    "им первым докладывают о переменах.",
-                ]
-            )
+            text = _random.Random(f"teaser:{round_id}").choice(list(_TEASER_FALLBACKS))
         if sealed:
             text += " И это ещё не всё: закон дня вскроется вместе с итогами."
         async with SessionLocal() as session2:
@@ -204,6 +212,35 @@ async def _teaser_job(round_id: int) -> None:
         logger.info("Тизер подсчёта дня %s разослан в %d чат(ов)", round_id, delivered)
     except Exception:
         logger.exception("Тизер подсчёта не удался (не мешает тику)")
+
+
+async def _personal_echo_job(round_id: int) -> None:
+    """Личное эхо проигравшим голосующим: чем пахла бы их тропа.
+
+    At-most-once: маркер ставится до отправок, чтобы сбой рассылки не
+    превращался в повторные сообщения тем же игрокам. Падения некритичны.
+    """
+    try:
+        marker = f"pecho:{round_id}"
+        async with SessionLocal() as session:
+            already = await session.get(WatcherState, marker)
+            if already is not None:
+                return
+            session.add(WatcherState(key=marker, value="1"))
+            await session.commit()
+        async with SessionLocal() as session:
+            round_row = (
+                await session.execute(
+                    select(Round)
+                    .options(selectinload(Round.cards))
+                    .where(Round.id == round_id, Round.status == RoundStatus.CLOSED)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        delivered = await send_personal_echoes(_bot, round_row)
+        logger.info("Личное эхо дня %s доставлено %d игроку(ам)", round_id, delivered)
+    except Exception:
+        logger.exception("Личные эха дня %s не разосланы (не мешает тику)", round_id)
 
 
 async def tick(bot: Bot | None = None) -> None:
@@ -226,10 +263,10 @@ async def tick(bot: Bot | None = None) -> None:
         if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
             await close_voting(session, current)
             return
-        # Полуденный шёпот: один раз за день, в середине окна голосования.
+        # Вечерний привал: один раз за день, в настраиваемый час (прайм-тайм).
         if (
             current.status == RoundStatus.OPEN
-            and now.hour == (settings.day_open_hour_utc + 11) % 24
+            and now.hour == settings.whisper_hour_utc % 24
         ):
             from app.models import WatcherState
 
@@ -255,6 +292,12 @@ async def tick(bot: Bot | None = None) -> None:
             if closed_here:
                 await award_points(session, finished)
                 await write_epilogue(session, finished)
+                # Фаза 2 прегенерации: заготовка завтра собрана до вскрытия
+                # итогов — теперь итог дня известен и вплетается в её начало.
+                try:
+                    await patch_prepared_day(session, finished)
+                except Exception:
+                    logger.exception("Патч заготовки итогом дня не удался — день откроется как есть")
                 # Финализируем всегда, а не только при включённом TON:
                 # если флаг погасили посреди дня со ставками, долг игрокам
                 # должен остаться видимым (очередь+алерты), а не исчезнуть.
@@ -264,6 +307,8 @@ async def tick(bot: Bot | None = None) -> None:
             nxt, created = await create_next_round_detailed(session)
             if created:
                 await announce_new_day(bot, nxt, finished if closed_here else None)
+            if closed_here and settings.personal_echo:
+                asyncio.create_task(_personal_echo_job(finished.id))
 
 
 async def _watch_job() -> None:

@@ -24,8 +24,23 @@ from app.scheduler import _prepare_job, tick
 def offline_generation(monkeypatch):
     from app import rounds as rounds_mod
 
-    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None, **kwargs):
-        return compose_chapter(day_index, beats, rule, echoes)
+    async def instant_chapter(
+        day_index,
+        beats,
+        rule=None,
+        echoes=None,
+        distant_echoes=None,
+        season_block=None,
+        villain_block=None,
+        sealed=False,
+        pending_outcome=False,
+        **kwargs,
+    ):
+        return compose_chapter(
+            day_index, beats, rule, echoes, distant_echoes,
+            season_block=season_block, villain_line=villain_block,
+            sealed=sealed, pending_outcome=pending_outcome,
+        )
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
     monkeypatch.setattr(
