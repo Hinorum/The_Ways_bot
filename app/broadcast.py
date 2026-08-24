@@ -57,18 +57,26 @@ def status_text(round_row: Round) -> str:
     from app.models import RULE_PHRASES
 
     mark = day_mark(str(round_row.id))
+    sealed = bool(getattr(round_row, "sealed", False))
     if round_row.status.value == "open":
-        phase = f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
+        if sealed:
+            commitment = round_row.rule_commitment.split(":")[0][:12]
+            phase = (
+                "🗝 Закон дня: ЗАПЕЧАТАН архивом до итогов. "
+                f"Обязательство: {commitment}…"
+            )
+        else:
+            phase = f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
     elif round_row.status.value == "tallying":
         phase = "⏳ Голосование закрыто. Идёт час подсчёта."
     else:
         phase = "🌙 День закрыт."
     cards = "\n\n".join(
-        f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}\n{_clamp(card.description, 280)}"
+        f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}\n{_clamp(card.description, 240)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 1200)}\n\n"
+        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2350)}\n\n"
         f"{cards}\n\n{phase}\n"
         f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
         f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"

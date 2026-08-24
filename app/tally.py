@@ -100,9 +100,12 @@ def format_results(round_row: Round) -> str:
     lines = [
         f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
         f"🕯 Архивариус вскрывает урну: {reveal}.",
-        f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}",
-        "",
     ]
+    if getattr(round_row, "sealed", False):
+        lines.append(f"🗝 Запечатанный с утра закон оказался: {RULE_PHRASES[round_row.win_rule]}")
+    else:
+        lines.append(f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}")
+    lines.append("")
     for position in range(3):
         mark = " ← 🏆 След" if position == round_row.winner_card else ""
         lines.append(f"{names[position]}: {counts.get(position, 0)}{mark}")

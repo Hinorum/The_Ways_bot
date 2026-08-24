@@ -174,6 +174,7 @@ async def _teaser_job(round_id: int) -> None:
             from app.models import RULE_PHRASES
 
             rule_phrase = RULE_PHRASES[round_row.win_rule]
+            sealed = bool(getattr(round_row, "sealed", False))
         from app.story import generate_teaser
 
         text = await generate_teaser(round_row.day_index, rule_phrase)
@@ -192,6 +193,8 @@ async def _teaser_job(round_id: int) -> None:
                     "им первым докладывают о переменах.",
                 ]
             )
+        if sealed:
+            text += " И это ещё не всё: закон дня вскроется вместе с итогами."
         async with SessionLocal() as session2:
             session2.add(WatcherState(key=marker, value="1"))
             await session2.commit()

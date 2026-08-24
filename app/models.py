@@ -83,6 +83,8 @@ class Round(Base):
         Enum(WinRule, native_enum=False, values_callable=_enum_values)
     )
     rule_commitment: Mapped[str] = mapped_column(String(128))
+    # Глухой день: закон запечатан до итогов, игрокам показан только хеш.
+    sealed: Mapped[bool] = mapped_column(Boolean, default=False)
     chapter_title: Mapped[str] = mapped_column(String(300))
     chapter_text: Mapped[str] = mapped_column(Text)
     lore_summary: Mapped[str] = mapped_column(Text)

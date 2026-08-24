@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     revote_enabled: bool = True
     revote_stars: int = 25
     revote_ton: float = 0.1
+    # Глухой день: раз в N дней закон не объявляется утром — публикуется только
+    # хеш-обязательство, а сам закон вскрывается в итогах. 0 — выключить.
+    sealed_day_every: int = 10
     # Период само-пинга /health: держит free plan Render от засыпания, чтобы
     # день открывался по UTC-сетке. 0 — выключить.
     self_ping_seconds: int = 600

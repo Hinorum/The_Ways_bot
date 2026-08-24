@@ -362,15 +362,19 @@ async def generate_chapter(
     distant_echoes: list[str] | None = None,
     season_block: str | None = None,
     places_block: str | None = None,
+    villain_block: str | None = None,
+    sealed: bool = False,
 ) -> dict:
     authored = compose_chapter(
-        day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block
+        day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
+        villain_line=villain_block, sealed=sealed,
     )
     if not settings.use_free_story_llm:
         return authored
     neural = await _free_story_llm(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
+        villain_block=villain_block, sealed=sealed,
     )
     return neural or authored
 
@@ -439,6 +443,10 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
             "image_prompt",
             f"dark fairy-tale tarot, {card.get('title', '')}, stray dog before a glitching portal, no text",
         )
+    # Порядок карт перемешивается детерминированно: иначе модели почти всегда
+    # возвращают риск/забота/хитрость по порядку, и Путь I становится предсказуемым.
+    order_rng = random.Random(f"cardorder:{day_index}:{data.get('title', '')}")
+    order_rng.shuffle(cards)
     return data
 
 
@@ -450,6 +458,8 @@ def _build_story_prompt(
     distant_echoes: list[str] | None = None,
     season_block: str | None = None,
     places_block: str | None = None,
+    villain_block: str | None = None,
+    sealed: bool = False,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -457,11 +467,24 @@ def _build_story_prompt(
     if win_rule is not None:
         from app.models import RULE_PHRASES
 
-        law_line = (
-            f"Закон сегодняшнего дня уже объявлен игрокам с утра: {RULE_PHRASES[win_rule]}. "
-            "В главе он должен прозвучать голосом Архивариуса как реплика в сцене "
-            "(канцелярский шёпот, полуправда), а не сухой справкой за кадром.\n"
-        )
+        if sealed:
+            law_line = (
+                "ЗАКОН ДНЯ ЗАПЕЧАТАН: игроки его не знают до итогов, им показан "
+                "только хеш-обязательство. Ни в главе, ни в картах нельзя называть, "
+                "какой сегодня закон (большинство/меньшинство/среднее). Вместо этого "
+                "обыграй тайну: Архивариус запечатал урну и ухмыляется, персонажи "
+                "спорят и гадают вслух, куда сегодня пойдёт архив. Сцена должна "
+                "нагнетать двойную интригу: неясно и куда пойдёт стая, и что решит архив.\n"
+            )
+        else:
+            law_line = (
+                f"Закон сегодняшнего дня уже объявлен игрокам с утра: {RULE_PHRASES[win_rule]}. "
+                "В главе он должен прозвучать голосом Архивариуса как реплика в сцене "
+                "(канцелярский шёпот, полуправда), а не сухой справкой за кадром.\n"
+            )
+    villain_text = ""
+    if villain_block:
+        villain_text = f"{villain_block}\n"
     echo_block = ""
     if echoes:
         echo_block = (
@@ -482,6 +505,7 @@ def _build_story_prompt(
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
     season_text = f"{season_block}\n" if season_block else ""
+    villain_text = villain_text if villain_block else ""
     places_text = ""
     if places_block:
         places_text = (
@@ -496,6 +520,7 @@ def _build_story_prompt(
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
         f"{season_text}"
+        f"{villain_text}"
         f"{echo_block}"
         f"{distant_block}"
         f"{places_text}"
@@ -550,10 +575,13 @@ async def _free_story_llm(
     distant_echoes: list[str] | None = None,
     season_block: str | None = None,
     places_block: str | None = None,
+    villain_block: str | None = None,
+    sealed: bool = False,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
+        villain_block=villain_block, sealed=sealed,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},

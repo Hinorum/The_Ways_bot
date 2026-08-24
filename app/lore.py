@@ -225,6 +225,8 @@ def compose_chapter(
     echoes=None,
     distant_echoes: list[str] | None = None,
     season_block: str | None = None,
+    villain_line: str | None = None,
+    sealed: bool = False,
 ) -> dict:
     rng = _rng(day_index, "|".join(previous_beats[-5:]))
     history_tags = tags_from_beats(previous_beats)
@@ -271,7 +273,14 @@ def compose_chapter(
         title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
         cards = _cards(rng, day_index)
         active_echoes = list(echoes or [])
-        text = _chapter_text(day_index, echo, place, history_tags, last, win_rule)
+        text = _chapter_text(day_index, echo, place, history_tags, last, win_rule, sealed=sealed)
+        if villain_line:
+            # План Хозяина Ошибки: берём последнее событие одной строкой-касанием.
+            last_event = villain_line.rstrip().splitlines()[-1].lstrip("- ").strip()
+            if last_event and last_event not in text:
+                if last_event[-1] not in ".!?…":
+                    last_event += "."
+                text += f" {last_event}"
         if active_echoes:
             touches = (
                 "На обочине примостилось «{name}».",
@@ -413,6 +422,13 @@ def _law_voice(win_rule) -> str:
     return f"{voice} Закон дня: {RULE_PHRASES[win_rule]}. "
 
 
+_SEAL_VOICE = (
+    "«Сегодня архив запечатал урну до вечера», — говорит Хранитель Спорных Версий, "
+    "и в его шёпоте слышна улыбка. «Какой сегодня закон — узнаете вместе с итогами. "
+    "Если доживёте до итогов». Закон дня скрыт: стая гадает, спорит и принюхивается. "
+)
+
+
 def _chapter_text(
     day_index: int,
     echo: str,
@@ -420,9 +436,13 @@ def _chapter_text(
     tags: list[str],
     last: str | None,
     win_rule=None,
+    sealed: bool = False,
 ) -> str:
     rng = _rng(day_index, "closing:" + "|".join(tags))
-    law_line = _law_voice(win_rule) if win_rule is not None else ""
+    if sealed:
+        law_line = _SEAL_VOICE
+    else:
+        law_line = _law_voice(win_rule) if win_rule is not None else ""
 
     if day_index == 1:
         text = (

@@ -144,6 +144,29 @@ def _personal_keyboard(action: str, label: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=action)]])
 
 
+async def _chronicle(session, player_id: int, limit: int = 7) -> list[str]:
+    """Личная хроника сезона: последние дни игрока — путь и его исход.
+
+    Голоса и итоги уже лежат в базе; хроника просто собирает их в биографию.
+    """
+    from app.models import Card
+
+    rows = (
+        await session.execute(
+            select(Round.day_index, Card.title, Vote.card_position == Round.winner_card)
+            .join(Vote, Vote.round_id == Round.id)
+            .join(Card, (Card.round_id == Round.id) & (Card.position == Vote.card_position))
+            .where(Vote.player_id == player_id, Round.status == RoundStatus.CLOSED)
+            .order_by(Round.day_index.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        f"Д{day} · {title} {'🏆' if won else '·'}"
+        for day, title, won in rows
+    ]
+
+
 async def _score_text(user) -> str:
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
@@ -161,17 +184,21 @@ async def _score_text(user) -> str:
                 _select(_func.count()).select_from(MemoryHit).where(MemoryHit.player_id == player.id)
             )
         ).scalar_one()
+        chronicle = await _chronicle(session, player.id)
     if vote is None:
         choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал путь."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
         choice = f"{path_mark('care', str(user.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}."
     else:
         choice = f"В прошлом дне ты выбрал путь {POSITIONS[vote.card_position]}."
-    return (
+    text = (
         f"{choice}\n{result_mark(f'score:{user.id}')} Очки: {player.score}\n"
         f"Угаданных законов: {player.correct_picks}\n"
         f"🧠 Память сети: {memory_hits}"
     )
+    if chronicle:
+        text += "\n\n📜 Твоя хроника:\n" + "\n".join(chronicle)
+    return text
 
 
 @router.message(Command("score"))

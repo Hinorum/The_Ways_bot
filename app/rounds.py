@@ -140,6 +140,68 @@ def commit_rule(rule: WinRule, salt: str) -> str:
     return hashlib.sha256(f"{rule.value}:{salt}".encode()).hexdigest()
 
 
+def sealed_day(day_index: int) -> bool:
+    """Глухой день: закон не объявляется утром — только хеш-обязательство.
+
+    Расписание детерминированное (каждый N-й день), чтобы игроки могли
+    положиться на ритм; день 1 никогда не глухой.
+    """
+    every = max(0, settings.sealed_day_every)
+    if every <= 0:
+        return False
+    return day_index % every == min(7, every - 1)
+
+
+async def _villain_block(session: AsyncSession, open_moment: datetime) -> str | None:
+    """Сюжет-машина сезона: продвигает план Хозяина Ошибки и отдаёт блок промпта.
+
+    Состояние живёт в watcher_state (один ключ на весь мир): ступень и список
+    событий. Новая ступень добавляет ровно одно каноническое событие,
+    детерминированное по сезону — два инстанса бота согласованы.
+    """
+    import json as _json
+
+    from app.models import WatcherState
+    from app.season import (
+        VILLAIN_KEY,
+        day_of_season,
+        days_in_season,
+        season_key,
+        villain_event,
+        villain_prompt_block,
+        villain_stage,
+    )
+
+    key = season_key(open_moment)
+    day = day_of_season(open_moment)
+    total = days_in_season(key)
+    stage = villain_stage(day, total)
+
+    row = await session.get(WatcherState, VILLAIN_KEY)
+    data: dict = {}
+    if row is not None and row.value:
+        try:
+            data = json.loads(row.value)
+        except ValueError:
+            data = {}
+    if data.get("season") != key or not isinstance(data, dict):
+        data = {"season": key, "stage": -1, "events": []}
+
+    changed = False
+    while data["stage"] < stage:
+        data["stage"] += 1
+        data.setdefault("events", []).append(villain_event(key, data["stage"]))
+        changed = True
+    if changed or row is None:
+        payload = _json.dumps(data, ensure_ascii=False)
+        if row is None:
+            session.add(WatcherState(key=VILLAIN_KEY, value=payload))
+        else:
+            row.value = payload
+        await session.commit()
+    return villain_prompt_block(list(data.get("events") or [])[-3:], stage)
+
+
 async def get_active_round(session: AsyncSession) -> Round | None:
     result = await session.execute(
         select(Round)
@@ -307,6 +369,8 @@ async def _plan_and_render(
         previous_season_summary=prev_summary,
     )
     places_block = await places_memory_block(session)
+    # План Хозяина Ошибки: продвигается по ступеням сезона, канон — в промпт.
+    villain = await _villain_block(session, open_moment)
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
@@ -323,6 +387,7 @@ async def _plan_and_render(
     chapter = await generate_chapter(
         day_index, beats, rule, echoes, distant_echoes=distant,
         season_block=sblock, places_block=places_block,
+        villain_block=villain, sealed=sealed_day(day_index),
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -378,6 +443,7 @@ async def _plan_and_render(
         "day_index": day_index,
         "rule": rule.value,
         "commitment": commit_rule(rule, salt) + ":" + salt,
+        "sealed": sealed_day(day_index),
         "chapter_title": chapter["title"],
         "chapter_text": chapter["text"],
         "lore_summary": chapter["lore_summary"],
@@ -424,6 +490,7 @@ async def _materialize_round(
         status=RoundStatus.OPEN,
         win_rule=WinRule(payload["rule"]),
         rule_commitment=payload["commitment"],
+        sealed=bool(payload.get("sealed", False)),
         chapter_title=payload["chapter_title"],
         chapter_text=payload["chapter_text"],
         lore_summary=payload["lore_summary"],
@@ -616,6 +683,13 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     if not keep_story:
         await session.execute(delete(StoryBeat))
         await session.execute(delete(LoreEcho))
+        # Полный сброс стирает и план Хозяина Ошибки: новый мир — новый план.
+        from app.models import WatcherState
+        from app.season import VILLAIN_KEY
+
+        await session.execute(
+            delete(WatcherState).where(WatcherState.key == VILLAIN_KEY)
+        )
     await session.execute(delete(Round))
     await session.execute(update(Player).values(score=0, correct_picks=0))
     await session.commit()
@@ -651,13 +725,18 @@ async def ensure_current_round(session: AsyncSession) -> Round:
 
 
 def public_round_view(round_row: Round) -> dict:
-    """Counts stay secret while the round is open; the law is public from the start."""
+    """Counts stay secret while the round is open; the law is public from the start.
+
+    В глухой день закон скрыт даже из view: наружу уходит только флаг sealed.
+    """
+    sealed = bool(getattr(round_row, "sealed", False))
     view = {
         "day_index": round_row.day_index,
         "status": round_row.status.value,
         "title": round_row.chapter_title,
         "text": round_row.chapter_text,
-        "win_rule": round_row.win_rule.value,
+        "win_rule": None if sealed else round_row.win_rule.value,
+        "sealed": sealed,
         "voting_ends_at": round_row.voting_ends_at,
         "tally_ends_at": round_row.tally_ends_at,
         "cards": [

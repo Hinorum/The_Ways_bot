@@ -92,3 +92,5 @@ services:
         value: "25"
       - key: REVOTE_TON
         value: "0.1"
+      - key: SEALED_DAY_EVERY
+        value: "10"
