@@ -4,14 +4,14 @@
 остаются честными), а участвует в фонде дня. После подсчёта фонд делится так:
 
 - 97% — поставившим на верный путь, пропорционально ставкам;
-- 2% — угадавшим верный путь без ставки, поровну (только с привязанным
-  кошельком; если получателей нет — доля уходит в призовой фонд);
+- 2% — копилка недели: каждый день капает сюда, в понедельник сумму делят
+  топ-3 недели по числу верных ответов (см. app/leaderboard.py);
 - 0,5% — хранителю игры;
 - 0,5% — в копилку месяца: в конце месяца её забирает игрок (игроки)
   с максимумом верных ответов (/top).
 
-Если на победивший путь не поставлено ни одной подтверждённой ставки —
-все ставки возвращаются полностью, без рейка и копилки. Отклонённые
+Если на победивший путь не поставлено ни одной подтвержденной ставки —
+все ставки возвращаются полностью, без рейка и копилок. Отклонённые
 лимитами и неподтверждённые ставки возвращаются всегда.
 
 Сети изолированы: каждая ставка и выплата помечена network (mainnet/testnet),
@@ -27,8 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote
+from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote, WeeklyPot
 from app.ton_utils import to_nano
+from app.weeks import iso_week_key
 
 
 def current_network() -> str:
@@ -195,7 +196,6 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             )
         )
         winner_ids = {row[0] for row in winners_result.all()}
-        staked_ids = {stake.player_id for stake in confirmed}
         winning_stakes = [stake for stake in confirmed if stake.player_id in winner_ids]
 
         if not winning_stakes:
@@ -206,23 +206,11 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         else:
             owner_bp = round(settings.owner_rake_pct * 100)
             board_bp = round(settings.leaderboard_rake_pct * 100)
-            free_bp = round(settings.free_winners_pct * 100)
+            weekly_bp = round(settings.weekly_pot_pct * 100)
             house_cut = pot * owner_bp // 10_000
             board_cut = pot * board_bp // 10_000
-            free_pool = pot * free_bp // 10_000
-            prize_pool = pot - house_cut - board_cut - free_pool
-
-            # Угадавшие без ставки: поровну и только с привязанным кошельком —
-            # без получателей доля уходит в призовой фонд.
-            free_ids = sorted(winner_ids - staked_ids)
-            wallets: dict[int, str] = {}
-            for pid in free_ids:
-                wallet = await _wallet_of(session, pid)
-                if wallet:
-                    wallets[pid] = wallet
-            free_shares = split_equal(free_pool, list(wallets))
-            if not free_shares:
-                prize_pool += free_pool
+            weekly_cut = pot * weekly_bp // 10_000
+            prize_pool = pot - house_cut - board_cut - weekly_cut
 
             shares = split_pot(prize_pool, [(s.player_id, s.amount_nanotons) for s in winning_stakes])
             share_by_player = dict(shares)
@@ -230,18 +218,6 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                 if stake.player_id in share_by_player:
                     created += await add_payout(stake, "prize", share_by_player[stake.player_id])
                 # Проигравший не получает ничего: ставка сгорает в фонд.
-            for pid, amount in free_shares.items():
-                session.add(
-                    Payout(
-                        round_id=round_row.id,
-                        player_id=pid,
-                        kind="bonus",
-                        amount_nanotons=amount,
-                        dest_address=wallets[pid],
-                        network=network,
-                    )
-                )
-                created += 1
             if house_cut > 0:
                 created += await add_treasury_payout("rake", house_cut)
             if board_cut > 0:
@@ -254,6 +230,16 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                     session.add(LeaderboardPot(month=month, nanotons=board_cut))
                 else:
                     pot_row.nanotons += board_cut
+            if weekly_cut > 0:
+                week = iso_week_key(round_row.opens_at)
+                week_row = (await session.execute(
+                    select(WeeklyPot).where(WeeklyPot.week == week)
+                )).scalar_one_or_none()
+                if week_row is None:
+                    session.add(WeeklyPot(week=week, nanotons=weekly_cut))
+                else:
+                    week_row.nanotons += weekly_cut
+                round_row.weekly_nanotons = weekly_cut
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = house_cut + board_cut
 

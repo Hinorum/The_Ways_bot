@@ -68,8 +68,12 @@ services:
         value: "0.5"
       - key: LEADERBOARD_RAKE_PCT
         value: "0.5"
-      - key: FREE_WINNERS_PCT
+      - key: WEEKLY_POT_PCT
         value: "2"
+      - key: WEEKLY_MIN_DAYS
+        value: "4"
+      - key: WEEKLY_PRIZE_PCTS
+        value: "20,30,50"
       - key: OWNER_WALLET_ADDRESS
         sync: false
       - key: STAKE_CONFIRM_SECONDS

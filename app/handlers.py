@@ -89,7 +89,7 @@ async def cmd_start(message: Message) -> None:
         lines.append("/top — копилка месяца и лидеры")
         lines.append(
             "\nФонд дня: 97% — поставившим на верный путь пропорционально, "
-            "2% — угадавшим без ставки поровну, 0,5% — копилка месяца (/top), "
+            "2% — копилка недели (/top), 0,5% — копилка месяца (/top), "
             "0,5% — на поддержку Стаи."
         )
     lines.append(
@@ -297,7 +297,8 @@ async def on_vote(callback: CallbackQuery) -> None:
 _ECONOMY_TEXT = (
     "\n\nРаспределение фонда дня:\n"
     "• 97% — поставившим на верный путь, пропорционально ставкам\n"
-    "• 2% — угадавшим путь без ставки, поровну (нужен привязанный кошелёк)\n"
+    "• 2% — копилка недели: в понедельник её делят топ-3 по верным путям "
+    "(нужен кошелёк и 4+ дня голосования за неделю)\n"
     "• 0,5% — копилка месяца: в конце месяца её забирают лидеры /top\n"
     "• 0,5% — на поддержку Стаи\n"
     "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
@@ -325,7 +326,7 @@ async def _wallet_view_text(user) -> str:
     return (
         f"{money_mark('none')} Кошелёк не привязан.\n"
         "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
-        "Он нужен для ставок на путь, бонуса угадавшим и выигрышей.\n"
+        "Он нужен для ставок на путь и призовых выплат (включая топ недели).\n"
         f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
     )
 
@@ -559,24 +560,82 @@ async def on_stake_view(callback: CallbackQuery) -> None:
     await callback.answer(hint[:200], show_alert=True)
 
 
-def _format_top(rows: list[tuple[str, int]], pot_nanotons: float) -> str:
+def _format_top(
+    week_rows: list[tuple[str, int, bool]],
+    week_pot_nanotons: float,
+    month_rows: list[tuple[str, int]],
+    month_pot_nanotons: float,
+) -> str:
     from app.style import money_mark
 
-    lines = [f"{money_mark('top')} Копилка месяца: {pot_nanotons:g} Gram"]
-    if not rows:
-        lines.append("Верных путей в этом месяце ещё нет — всё впереди.")
+    pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
+    lines = [f"{money_mark('week')} Копилка недели: {week_pot_nanotons:g} Gram · места: {pcts}%"]
+    if not week_rows:
+        lines.append("Верных путей на этой неделе ещё нет — всё впереди.")
+    else:
+        lines.append("Лидеры недели:")
+        for place, (name, count, eligible) in enumerate(week_rows, 1):
+            medal = ("🥇", "🥈", "🥉")[place - 1] if place <= 3 else f"{place}."
+            ticket = "🎟" if eligible else "🔒"
+            lines.append(f"{medal} {ticket} {name} — {count}")
+        lines.append("🎟 призовое место · 🔒 не хватает кошелька или дней голосования")
+        lines.append("Выплата — в понедельник. Приз: кошелёк + 4 дня голосования за неделю.")
+    lines.append("")
+    lines.append(f"{money_mark('top')} Копилка месяца: {month_pot_nanotons:g} Gram")
+    if not month_rows:
+        lines.append("Верных путей в этом месяце ещё нет.")
     else:
         lines.append("Лидеры месяца по верным путям:")
-        for place, (name, count) in enumerate(rows, 1):
+        for place, (name, count) in enumerate(month_rows, 1):
             lines.append(f"{place}. {name} — {count}")
     return "\n".join(lines)
 
 
 @router.message(Command("top"))
 async def cmd_top(message: Message) -> None:
+    from app.leaderboard import weekly_top
+    from app.models import WeeklyPot
+    from app.weeks import iso_week_key, week_bounds
+
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    week_start, week_end = week_bounds(iso_week_key(now))
     async with SessionLocal() as session:
+        async def named(rows: list[tuple[int, ...]]) -> dict[int, str]:
+            names: dict[int, str] = {}
+            if rows:
+                pids = [row[0] for row in rows]
+                players = (
+                    await session.execute(select(Player).where(Player.id.in_(pids)))
+                ).scalars().all()
+                names = {
+                    player.id: player.username or player.first_name or f"игрок {player.id}"
+                    for player in players
+                }
+            return names
+
+        week_raw = await weekly_top(session, week_start, week_end)
+        week_names = await named(week_raw)
+        wallets: set[int] = set()
+        if week_raw:
+            wallet_rows = (
+                await session.execute(
+                    select(Player.id).where(
+                        Player.id.in_([pid for pid, _c, _d in week_raw]),
+                        Player.wallet_address.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            wallets = set(wallet_rows)
+        week_rows = [
+            (
+                week_names.get(pid, f"игрок {pid}"),
+                correct,
+                pid in wallets and days >= max(1, settings.weekly_min_days),
+            )
+            for pid, correct, days in week_raw
+        ]
+
         result = await session.execute(
             select(Vote.player_id, func.count())
             .join(Round, Round.id == Vote.round_id)
@@ -589,24 +648,20 @@ async def cmd_top(message: Message) -> None:
             .order_by(func.count().desc(), Vote.player_id.asc())
             .limit(10)
         )
-        rows_raw = [(pid, count) for pid, count in result.all()]
-        names: dict[int, str] = {}
-        if rows_raw:
-            pids = [pid for pid, _ in rows_raw]
-            players = (
-                await session.execute(select(Player).where(Player.id.in_(pids)))
-            ).scalars().all()
-            names = {
-                player.id: player.username or player.first_name or f"игрок {player.id}"
-                for player in players
-            }
+        month_raw = [(pid, count) for pid, count in result.all()]
+        month_names = await named(month_raw)
+        month_rows = [(month_names.get(pid, f"игрок {pid}"), count) for pid, count in month_raw]
+
         month = now.strftime("%Y-%m")
         pot_row = (
             await session.execute(select(LeaderboardPot).where(LeaderboardPot.month == month))
         ).scalar_one_or_none()
-    rows = [(names.get(pid, f"игрок {pid}"), count) for pid, count in rows_raw]
-    pot_ton = from_nano(pot_row.nanotons) if pot_row is not None else 0.0
-    await message.answer(_format_top(rows, pot_ton))
+        week_pot_row = (
+            await session.execute(select(WeeklyPot).where(WeeklyPot.week == iso_week_key(now)))
+        ).scalar_one_or_none()
+    month_pot_ton = from_nano(pot_row.nanotons) if pot_row is not None else 0.0
+    week_pot_ton = from_nano(week_pot_row.nanotons) if week_pot_row is not None else 0.0
+    await message.answer(_format_top(week_rows, week_pot_ton, month_rows, month_pot_ton))
 
 
 def _revote_keyboard(round_id: int) -> InlineKeyboardMarkup:

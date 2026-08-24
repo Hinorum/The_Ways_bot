@@ -72,14 +72,16 @@ def test_format_top_lists_leaders_and_pot() -> None:
     from app.handlers import _format_top
     from app.style import money_mark
 
-    empty = _format_top([], 0.0)
+    empty = _format_top([], 0.0, [], 0.0)
     assert "ещё нет" in empty and "0 Gram" in empty
 
-    filled = _format_top([("Пёс", 7), ("Кот", 3)], 1.25)
+    filled = _format_top([("Пёс", 7, True), ("Кот", 3, False)], 1.25, [("Барс", 9)], 2.5)
     lines = filled.splitlines()
-    assert lines[0] == f"{money_mark('top')} Копилка месяца: 1.25 Gram"
-    assert lines[1] == "Лидеры месяца по верным путям:"
-    assert "1. Пёс — 7" in filled and "2. Кот — 3" in filled
+    assert lines[0].startswith(f"{money_mark('week')} Копилка недели: 1.25 Gram")
+    assert "Лидеры недели:" in filled
+    assert "🥇 🎟 Пёс — 7" in filled and "🥈 🔒 Кот — 3" in filled
+    assert f"{money_mark('top')} Копилка месяца: 2.5 Gram" in filled
+    assert "1. Барс — 9" in filled
 
 
 async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> None:

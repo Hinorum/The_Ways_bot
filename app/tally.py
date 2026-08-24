@@ -5,8 +5,9 @@ import json
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, RULE_PHRASES
+from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, RULE_PHRASES
 from app.ton_utils import from_nano
+from app.weeks import iso_week_key
 
 
 _CHUNK = 500  # лимит параметров IN(...): большие дни чанкуются
@@ -82,7 +83,8 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         "counts": counts,
         "pot": round_row.pot_nanotons or 0,
         "multiplier": None,
-        "bonus": 0,
+        "week_today": round_row.weekly_nanotons or 0,
+        "week_total": 0,
         "board_today": 0,
         "bank_total": 0,
         "refunded": False,
@@ -99,11 +101,16 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         )
         return int(row.scalar_one())
 
-    stats["bonus"] = await kind_sum("bonus")
     board_today = await kind_sum("leaderboard")
     prize_sum = await kind_sum("prize")
     bank_row = await session.execute(select(func.coalesce(func.sum(LeaderboardPot.nanotons), 0)))
     stats["bank_total"] = int(bank_row.scalar_one())
+    week_row = await session.execute(
+        select(func.coalesce(func.sum(WeeklyPot.nanotons), 0)).where(
+            WeeklyPot.week == iso_week_key(round_row.opens_at)
+        )
+    )
+    stats["week_total"] = int(week_row.scalar_one())
     if board_today or stats["bank_total"]:
         stats["board_today"] = board_today
 
@@ -150,8 +157,11 @@ def format_economics(stats: dict) -> str:
         lines.append("🎯 Коэффициент недоступен: все ставки возвращены игрокам")
     elif stats["multiplier"] is not None:
         lines.append(f"🎯 Коэффициент верного пути: ×{stats['multiplier']:.2f}")
-    if stats["bonus"] > 0:
-        lines.append(f"🎁 Угадавшим без ставки роздано: {ton(stats['bonus']):.2f} Gram")
+    if stats["week_today"] > 0 or stats["week_total"] > 0:
+        lines.append(
+            f"🗓 В копилку недели ушло: {ton(stats['week_today']):.2f} Gram"
+            f" · всего в банке недели: {ton(stats['week_total']):.2f} Gram"
+        )
     if stats["board_today"] > 0 or stats["bank_total"] > 0:
         lines.append(
             f"🏆 В копилку месяца ушло: {ton(stats['board_today']):.2f} Gram"

@@ -216,12 +216,13 @@ async def _watch_job() -> None:
 
 
 async def _ton_maintenance() -> None:
-    """Финализация дней, очередь выплат, ретраи — и копилка месяца 1-го числа."""
-    from app.leaderboard import settle_month_if_due
+    """Финализация дней, очередь выплат, ретраи, копилки недели и месяца."""
+    from app.leaderboard import settle_month_if_due, settle_week_if_due
     from app.ops import check_anomalies
     from app.ton_pay import settle_closed_rounds
 
     await settle_closed_rounds(bot=_bot)
+    await settle_week_if_due(bot=_bot)
     await settle_month_if_due(bot=_bot)
     try:
         problems = await check_anomalies(_bot)

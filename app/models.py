@@ -107,6 +107,8 @@ class Round(Base):
     place: Mapped[str | None] = mapped_column(String(80), nullable=True)
     pot_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     rake_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Доля дня, ушедшая в копилку недели (2% фонда) — для поста итогов.
+    weekly_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
     # Эпилог дня от нейросети: чем отозвался победивший путь (пусто — не написан).
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
@@ -257,6 +259,24 @@ class LeaderboardPot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     month: Mapped[str] = mapped_column(String(7), unique=True)
+    nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WeeklyPot(Base):
+    """Копилка недели: 2% фонда каждого дня капает сюда.
+
+    В понедельник сумма уходит топ-3 недели по числу верных ответов
+    (места делят приз по WEEKLY_PRIZE_PCTS, по умолчанию 20/30/50%);
+    неделя — ISO-ключ «YYYY-Www» по UTC-времени открытия дня.
+    Доле места без подходящего игрока (нет кошелька или мало дней
+    голосования) ждать нечего — она переносится в копилку новой недели.
+    """
+
+    __tablename__ = "weekly_pots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    week: Mapped[str] = mapped_column(String(16), unique=True)
     nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -489,8 +489,6 @@ async def test_results_message_shows_day_economics(session) -> None:
                   tx_hash="eco-tx-2", status="confirmed", network=net),
             Payout(round_id=rnd.id, player_id=winner.id, kind="prize",
                    amount_nanotons=5_800_000_000, dest_address="EQ" + "a" * 46, network=net),
-            Payout(round_id=rnd.id, kind="bonus", amount_nanotons=60_000_000,
-                   dest_address="", network=net),
             Payout(round_id=rnd.id, kind="leaderboard", amount_nanotons=20_000_000,
                    dest_address="", network=net),
             LeaderboardPot(month=rnd.tally_ends_at.strftime("%Y-%m"), nanotons=1_340_000_000),
@@ -502,7 +500,6 @@ async def test_results_message_shows_day_economics(session) -> None:
     assert "Банк дня: 3.00 Gram · Играло: 15" in text
     assert "I 13% · II 60% · III 27%" in text
     assert "×2.90" in text
-    assert "Угадавшим без ставки роздано: 0.06 Gram" in text
     assert "В копилку месяца ушло: 0.02 Gram" in text
     assert "всего в банке месяца: 1.34 Gram" in text
 
