@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.broadcast import announce_new_day
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Round, RoundStatus
+from app.models import Round, RoundStatus, WatcherState
 from app.rounds import (
     _now,
     claim_announcement,
@@ -156,6 +156,53 @@ async def _compose_whisper(day_index: int, season_hint: str) -> str:
     return rng.choice(fallback)
 
 
+async def _teaser_job(round_id: int) -> None:
+    """Тизер в час подсчёта: выбор сделан, победитель не называется.
+
+    Драматургическая пауза между «стая проголосовала» и «итоги»: одна-две
+    строки недосказанности во все чаты. Падения полностью некритичны.
+    """
+    try:
+        marker = f"teaser:{round_id}"
+        async with SessionLocal() as session:
+            row = await session.get(WatcherState, marker)
+            if row is not None:
+                return
+            round_row = await session.get(Round, round_id)
+            if round_row is None or round_row.status != RoundStatus.TALLYING:
+                return
+            from app.models import RULE_PHRASES
+
+            rule_phrase = RULE_PHRASES[round_row.win_rule]
+        from app.story import generate_teaser
+
+        text = await generate_teaser(round_row.day_index, rule_phrase)
+        if not text:
+            import random as _random
+
+            text = _random.Random(f"teaser:{round_id}").choice(
+                [
+                    "Урна вскрыта. Архивариус пересчитал голоса, молча завёл папку дня "
+                    "и почему-то дважды перепроверил счёт.",
+                    "Счёт известен только архиву. Стая чувствует это шерстью: сегодня мир "
+                    "повернётся не туда, куда все смотрели.",
+                    "Голоса сложились. Хранитель Спорных Версий запечатывает папку — "
+                    "и ухмыляется краем морды.",
+                    "Всё уже решено, но не названо. Порталы гудят чуть громче обычного: "
+                    "им первым докладывают о переменах.",
+                ]
+            )
+        async with SessionLocal() as session2:
+            session2.add(WatcherState(key=marker, value="1"))
+            await session2.commit()
+        from app.broadcast import whisper_to_chats
+
+        delivered = await whisper_to_chats(_bot, f"🕯 {text}")
+        logger.info("Тизер подсчёта дня %s разослан в %d чат(ов)", round_id, delivered)
+    except Exception:
+        logger.exception("Тизер подсчёта не удался (не мешает тику)")
+
+
 async def tick(bot: Bot | None = None) -> None:
     bot = bot or _bot
     from app.ops import mark_tick
@@ -192,6 +239,14 @@ async def tick(bot: Bot | None = None) -> None:
             # Час подсчёта — свободное окно: готовим следующий день заранее,
             # чтобы в 11:00 UTC открыть его мгновенно из готовой заготовки.
             asyncio.create_task(_prepare_job(current.id))
+            # Тизер ожидания: раз за день, сразу после закрытия голосования.
+            from app.models import WatcherState
+
+            marker = f"teaser:{current.id}"
+            async with SessionLocal() as session:
+                already = await session.get(WatcherState, marker)
+            if already is None:
+                asyncio.create_task(_teaser_job(current.id))
         if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
             finished, closed_here = await finish_tally(session, current)
             if closed_here:

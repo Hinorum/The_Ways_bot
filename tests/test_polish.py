@@ -117,10 +117,13 @@ def test_story_prompt_demands_full_narrative() -> None:
         ["Костёр стаи: появился общий костёр"],
         WinRule.MAJORITY,
     )
-    assert "400-900" in prompt
+    assert "1200-2200" in prompt
     assert "новых главных персонажей не вводи" in prompt
-    assert "предыстория" in prompt and "сцена сейчас" in prompt
-    assert "до 140 знаков" in prompt  # лимит остаётся только для карт
+    assert "реплика" in prompt and "сенсорная деталь" in prompt
+    assert "крючок" in prompt  # финальная строка главы обрывает сцену
+    assert "голосом Архивариуса" in prompt  # закон звучит репликой в сцене
+    assert "обещание + угроза" in prompt or "обещание +" in prompt
+    assert "до 600 знаков" in prompt  # лимит описания карты (подпись ≤1024)
     # Закон дня объявлен как известный факт.
     assert RULE_PHRASES[WinRule.MAJORITY] in prompt
 

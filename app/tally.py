@@ -5,7 +5,7 @@ import json
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, RULE_PHRASES
+from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, WinRule, RULE_PHRASES
 from app.ton_utils import from_nano
 from app.weeks import iso_week_key
 
@@ -44,6 +44,51 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
     return len(winner_ids)
 
 
+def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) -> str:
+    """Реплика вскрытия урны: как закон дня сыграл против голосов стаи.
+
+    Детерминированная драматургия без нейросети: сам момент раскрытия цифр —
+    главный твист суток, подавать его протоколом расточительно.
+    """
+    import random as _random
+
+    if not counts or winner_card is None or win_rule is None:
+        return "Урна пуста — стая сегодня промолчала."
+    values = sorted(counts.values())
+    w = counts.get(winner_card, 0)
+    max_v, min_v = values[-1], values[0]
+    rng = _random.Random(f"reveal:{winner_card}:{max_v}:{min_v}:{values}")
+    if win_rule == WinRule.MAJORITY:
+        phrases = (
+            f"большинство ({w} голосов) само провело этот путь",
+            f"стая кричала за этот путь чаще всех — {w} голосов",
+            f"{w} хвостов решили всё: закон и толпа совпали",
+        )
+    elif win_rule == WinRule.MINORITY:
+        if w >= max_v > min_v:
+            phrases = (
+                "парадокс: громче всего лаяли за другой путь — архив записал бунт",
+                "стая проголосовала против закона и проиграла сама себе",
+                "закон был против толпы, и толпа этого не заметила",
+            )
+        else:
+            phrases = (
+                f"тихие голоса ({w}) оказались точнее всех",
+                f"всего {w} хвостов пошло сюда — и именно они выбрали канон",
+                "меньшинство взяло своё: тихие оказались дальновиднее",
+            )
+    else:  # MEDIAN
+        median_v = values[len(values) // 2] if len(values) >= 3 else values[0]
+        if w == median_v:
+            phrases = (
+                f"середина ({w} голосов) взяла своё: крайности остались ни с чем",
+                f"закон выбрал меру — {w} голосов ровно посередине",
+            )
+        else:
+            phrases = ("счёт разошёлся с законом так, что Архивариус пожал плечами",)
+    return phrases[rng.randrange(len(phrases))]
+
+
 def format_results(round_row: Round) -> str:
     from app.style import result_mark
 
@@ -51,8 +96,10 @@ def format_results(round_row: Round) -> str:
     counts = {int(key): int(value) for key, value in raw.items()}
     names = {card.position: card.title for card in round_row.cards}
     mark_key = str(getattr(round_row, "id", round_row.day_index))
+    reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     lines = [
         f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
+        f"🕯 Архивариус вскрывает урну: {reveal}.",
         f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}",
         "",
     ]
