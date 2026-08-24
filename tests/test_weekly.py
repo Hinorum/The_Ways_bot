@@ -82,7 +82,7 @@ async def _seed_closed_round(session: AsyncSession, day_index: int, opens_at: da
 
 
 async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Топ-3 недели получают 20%/30%/50%; без кошелька или дней — мимо, доля переносится."""
+    """Ступени счёта получают 20%/30%/50%; без кошелька или дней — мимо, доля переносится."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "weekly_min_days", 4)
     monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
@@ -156,6 +156,147 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
                 await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in (pid_best, pid_second, pid_nowallet, pid_lazy):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Места — три верхние ступени счёта, а не три игрока: 7-5-3 без шестёрок.
+
+    Двое с семью верными делят долю первой ступени поровну (пыль — первому),
+    одиночки со счётом 5 и 3 забирают вторую и третью ступени. Игрок с
+    шестью верными, но без кошелька, ступень 6 не открывает.
+    """
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 4)
+    monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
+    base = 940_000
+    pid_a7, pid_b7, pid_c5, pid_d3, pid_e6_lazy = (base + i for i in range(5))
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_a7, pid_b7, pid_c5, pid_d3)}
+    prev_start, _prev_end = week_bounds(previous_week_key())
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_a7, username="alpha", wallet_address=wallets[pid_a7]),
+                Player(id=pid_b7, username="beta", wallet_address=wallets[pid_b7]),
+                Player(id=pid_c5, username="gamma", wallet_address=wallets[pid_c5]),
+                Player(id=pid_d3, username="delta", wallet_address=wallets[pid_d3]),
+                # Шесть верных есть только у ленивого: меньше 4 дней — ступень 6 не открывается.
+                Player(id=pid_e6_lazy, username="lazy"),
+            ]
+        )
+        rounds: list[Round] = []
+        plan = {pid_a7: 7, pid_b7: 7, pid_c5: 5, pid_d3: 3, pid_e6_lazy: 6}
+        day = 880_000
+        for offset in range(7):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid, count in plan.items():
+                if offset < count:
+                    session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            # delta: 4 дня участия при трёх верных — четвёртый день промахом.
+            if offset == 3:
+                session.add(Vote(round_id=round_row.id, player_id=pid_d3, card_position=1))
+        pot_total = to_nano(10)
+        week_key = previous_week_key()
+        session.add(WeeklyPot(week=week_key, nanotons=pot_total))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            rows = (
+                (
+                    await session.execute(
+                        select(Payout).where(Payout.kind == "weekly").order_by(Payout.player_id.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            first = pot_total * 20 // 100
+            second = pot_total * 30 // 100
+            third = pot_total * 50 // 100
+            amounts = {(p.player_id): p.amount_nanotons for p in rows}
+            # Ступень 7: двое делят 20% пополам.
+            assert amounts[pid_a7] == first // 2 + first % 2
+            assert amounts[pid_b7] == first // 2
+            # Ступени 5 и 3 — целиком своим одиночкам: 30% и 50%.
+            assert amounts[pid_c5] == second
+            assert amounts[pid_d3] == third
+            assert len(rows) == 4
+            assert all(p.dest_address == wallets[p.player_id] for p in rows)
+            # Копилка недели выплачена до нанотона: пыль дележа осела в ступени 7.
+            assert sum(amounts.values()) == pot_total
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY))
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_a7, pid_b7, pid_c5, pid_d3, pid_e6_lazy):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_single_tier_rolls_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Одна ступень на всю неделю: её доля платится, остальное — в перенос."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 4)
+    monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
+    base = 950_000
+    pids = [base, base + 1]
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in pids}
+    prev_start, _prev_end = week_bounds(previous_week_key())
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pids[0], username="one", wallet_address=wallets[pids[0]]),
+                Player(id=pids[1], username="two", wallet_address=wallets[pids[1]]),
+            ]
+        )
+        rounds: list[Round] = []
+        day = 890_000
+        for offset in range(4):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid in pids:
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+        pot_total = to_nano(10)
+        week_key = previous_week_key()
+        session.add(WeeklyPot(week=week_key, nanotons=pot_total))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            rows = (
+                (await session.execute(select(Payout).where(Payout.kind == "weekly")))
+                .scalars()
+                .all()
+            )
+            first = pot_total * 20 // 100
+            amounts = sorted(p.amount_nanotons for p in rows)
+            assert amounts == [first // 2, first - first // 2]
+            current_pot = (
+                await session.execute(select(WeeklyPot).where(WeeklyPot.week != week_key))
+            ).scalar_one()
+            assert current_pot.nanotons == pot_total - first
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY))
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in pids:
                 player = await session.get(Player, pid)
                 if player is not None:
                     await session.delete(player)

@@ -1,12 +1,15 @@
 """Автоматические выплаты копилок лидерборда: недели и месяца.
 
 **Неделя.** Каждый день 2% фонда капает в копилку недели (WeeklyPot). В
-понедельник сумма уходит топ-3 прошедшей недели по числу верных ответов:
-места делят приз по WEEKLY_PRIZE_PCTS (по умолчанию 20/30/50%). Претендент
-обязан иметь привязанный кошелёк и минимум WEEKLY_MIN_DAYS дней голосования
-за неделю — иначе фермы мультиаккаунтов собирают приз дешёвыми голосами.
-Ничьи разбиваются детерминированно: верные пути ↓, дни участия ↓, id ↑.
-Доля места без достойного игрока переносится в копилку новой недели.
+понедельник приз уходит трём верхним СТУПЕНЯМ счёта прошедшей недели —
+уровням верных ответов (7-6-5; без шестёрок — 7-5-4 и т.п.). Долю ступени
+делят между собой все её члены поровну: ступень с тремя игроками платит
+каждому треть суммы. Ступени платят по WEEKLY_PRIZE_PCTS (по умолчанию
+20/30/50%): нижняя ступень пьедестала забирает половину копилки — так стая
+платит больше тем, кто держался сзади. Претендент обязан иметь привязанный
+кошелёк и минимум WEEKLY_MIN_DAYS дней голосования за неделю — иначе фермы
+мультиаккаунтов собирают приз дешёвыми голосами. Пустая ступень (некому
+платить) не открывается, её доля переносится в копилку новой недели.
 
 **Месяц.** 1-го числа сумма всех накопленных месяцев до текущего уходит
 игроку или игрокам с максимумом верных ответов за тот период. Ничья —
@@ -266,17 +269,26 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
 
         min_days = max(1, settings.weekly_min_days)
         rows = await weekly_top(session, period_start, period_end, limit=50)
-        eligible: list[tuple[int, int, str]] = []
+        # Места недели — три верхних УРОВНЯ верных ответов, а не три игрока:
+        # ступень 7-6-5 может сжаться до 7-5-3, если шестёрок и четвёрок нет.
+        # Внутри ступени приз делится между всеми её членами поровну.
+        candidates: list[tuple[int, int, str]] = []
         for pid, correct, days in rows:
             if correct <= 0 or days < min_days:
                 continue
             player = await session.get(Player, pid)
-            if player is not None and player.wallet_address:
-                eligible.append((pid, correct, player.wallet_address))
-            if len(eligible) >= 3:
+            if player is None or not player.wallet_address:
+                continue
+            candidates.append((pid, correct, player.wallet_address))
+        tiers: list[tuple[int, list[tuple[int, str]]]] = []
+        for pid, correct, wallet in candidates:
+            if len(tiers) >= 3 and correct != tiers[-1][0]:
                 break
+            if not tiers or correct != tiers[-1][0]:
+                tiers.append((correct, []))
+            tiers[-1][1].append((pid, wallet))
 
-        if not eligible:
+        if not tiers:
             # Достойных нет: метку НЕ двигаем, копилка ждёт следующей недели.
             logger.warning(
                 "Копилка недели %d нанотонов ждёт: нет игроков с кошельком и %d+ днями голосования",
@@ -285,27 +297,33 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
             )
             return False
 
-        amounts, rolled = _week_prize_amounts(total, len(eligible))
+        amounts, rolled = _week_prize_amounts(total, len(tiers))
         network = "testnet" if settings.is_testnet else "mainnet"
         paid: list[tuple[str, str, int]] = []
-        for place, ((pid, _correct, wallet), amount) in enumerate(zip(eligible, amounts), 1):
-            session.add(
-                Payout(
-                    round_id=None,
-                    player_id=pid,
-                    kind="weekly",
-                    amount_nanotons=amount,
-                    dest_address=wallet,
-                    network=network,
+        for place, ((correct, members), amount) in enumerate(zip(tiers, amounts), 1):
+            # Долю ступени делим между всеми её членами; нанотонная пыль —
+            # первым членам ступени, чтобы сумма сходилась до нанотона.
+            share = amount // len(members)
+            remainder = amount - share * len(members)
+            names: list[str] = []
+            for index, (pid, wallet) in enumerate(members):
+                session.add(
+                    Payout(
+                        round_id=None,
+                        player_id=pid,
+                        kind="weekly",
+                        amount_nanotons=share + (1 if index < remainder else 0),
+                        dest_address=wallet,
+                        network=network,
+                    )
                 )
-            )
-            name_row = await session.get(Player, pid)
-            name = (
-                (name_row.username if name_row and name_row.username else None)
-                or (name_row.first_name if name_row else None)
-                or f"игрок {pid}"
-            )
-            paid.append((_MEDALS[place - 1], name, amount))
+                name_row = await session.get(Player, pid)
+                names.append(
+                    (name_row.username if name_row and name_row.username else None)
+                    or (name_row.first_name if name_row else None)
+                    or f"игрок {pid}"
+                )
+            paid.append((_MEDALS[place - 1], ", ".join(names) + f" — {correct} верн.", amount))
 
         # Места без достойного игрока переносятся в копилку новой недели.
         if rolled > 0:
@@ -334,6 +352,7 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
     lines = ["🏆 Итоги недели Стаи:"]
     for medal, name, amount in paid:
         lines.append(f"{medal} {name} — {amount / 1e9:.4f} Gram")
+    lines.append("Стая платит больше тем, кто держался сзади: чем ниже ступень — тем больше её доля.")
     if rolled > 0:
         lines.append("Незаполненные места недели перешли в копилку новой.")
     lines.append("Неделя началась заново — копилка копится с нуля. Удачи!")
