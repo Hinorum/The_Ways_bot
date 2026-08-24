@@ -7,7 +7,11 @@ v5r1 (кошельки нового поколения): версия детек
 Жизненный цикл выплаты: pending → sending (зафиксировано ДО вещания, чтобы
 падение сервиса не привело к двойной отправке) → sent / failed. Зависшие
 sending и неуспешные failed с attempts < PAYOUT_MAX_ATTEMPTS оживают каждый
-цикл автоматически; при исчерпании лимита админ получает алерт.
+цикл автоматически; при исчерпании лимита админ получает алерт. Перед
+ПОВТОРНОЙ отправкой (attempts > 1) очередь сверяется с memo недавних
+исходящих казначея: если перевод уже ушёл в цепочку в прошлый раз, он
+помечается sent без повтора — краш между вещанием и коммитом не задваивает
+платёж.
 
 tx_hash после отправки — метка вещания «bcast:<unix>»: лайтсервер не
 возвращает хеш транзакции. Фактический перевод ищется в эксплорере по адресу
@@ -17,9 +21,11 @@ tx_hash после отправки — метка вещания «bcast:<unix>
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from datetime import datetime, timezone
 
+import httpx
 from aiogram import Bot
 from sqlalchemy import func, select, update
 
@@ -206,6 +212,95 @@ def _comment_cell(text: str):
     return begin_cell().store_uint(0, 32).store_string(text[:120]).end_cell()
 
 
+# ---------- Анти-дубль: сверка memo с историей казначея ----------
+
+
+def _out_comments_tonapi(item: dict) -> list[str]:
+    """Комментарии исходящих сообщений одной транзакции (формат TonAPI v2)."""
+    comments: list[str] = []
+    for msg in item.get("out_msgs") or []:
+        if not isinstance(msg, dict):
+            continue
+        text = str(msg.get("raw_message") or "")
+        if not text:
+            msg_data = msg.get("msg_data") or {}
+            if isinstance(msg_data, dict):
+                text = str(msg_data.get("decoded_comment") or "")
+                if not text:
+                    b64 = msg_data.get("text")
+                    if b64:
+                        try:
+                            text = base64.b64decode(str(b64)).decode("utf-8", "ignore")
+                        except Exception:
+                            text = ""
+        if text:
+            comments.append(text)
+    return comments
+
+
+def _out_comments_toncenter(item: dict) -> list[str]:
+    """Комментарии исходящих сообщений одной транзакции (формат Toncenter v3)."""
+    comments: list[str] = []
+    for msg in item.get("out_msgs") or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("message_content") or {}
+        decoded = content.get("decoded") if isinstance(content, dict) else None
+        if isinstance(decoded, dict) and decoded.get("@type") == "comment":
+            text = str(decoded.get("comment") or "")
+            if text:
+                comments.append(text)
+    return comments
+
+
+async def _markers_via_tonapi() -> set[str]:
+    url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
+    headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(url, params={"limit": 128, "sort_order": "desc"}, headers=headers)
+        response.raise_for_status()
+        items = response.json().get("transactions") or []
+    markers: set[str] = set()
+    for item in items:
+        markers.update(_out_comments_tonapi(item))
+    return markers
+
+
+async def _markers_via_toncenter() -> set[str]:
+    url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/transactions"
+    params = {
+        "account": settings.active_treasury_address,
+        "limit": 128,
+        "sort": "desc",
+    }
+    headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        items = response.json().get("transactions") or []
+    markers: set[str] = set()
+    for item in items:
+        markers.update(_out_comments_toncenter(item))
+    return markers
+
+
+async def fetch_broadcast_markers() -> set[str]:
+    """Memo недавних исходящих переводов казначея (TonAPI → фолбэк Toncenter).
+
+    Сверка перед ПОВТОРНОЙ отправкой: перевод мог уйти в цепочку в прошлый
+    раз, но статус «sent» сохранить не успели (краш/таймаут сразу после
+    вещания). Повтор такой выплаты — реальные чужие деньги дважды. Пустой
+    результат при сбое сети значит «не знаем»: ведём себя как раньше и
+    пытаемся отправить — узкое окно риска лучше постоянной блокировки очереди.
+    """
+    for fetch in (_markers_via_tonapi, _markers_via_toncenter):
+        try:
+            return await fetch()
+        except Exception as exc:
+            logger.warning("История исходящих казначея (%s) недоступна: %s", fetch.__name__, exc)
+    return set()
+
+
 async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: str) -> str | None:
     """Отправляет перевод с казначея. Возвращает метку вещания или None.
 
@@ -312,15 +407,34 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 payout.attempts += 1
                 payout.status = "sending"
         await session.commit()
+        # Сверка с историей нужна только для повторов: свежая выплата
+        # (attempts == 0) вещаться ещё не могла. Один проход истории на цикл.
+        markers: set[str] = set()
+        if any(payout.attempts > 1 for payout in payouts):
+            markers = await fetch_broadcast_markers()
         for payout in payouts:
             if not payout.dest_address:
                 payout.status = "failed"
+                continue
+            comment = f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+            if comment in markers:
+                # Перевод уже ушёл в цепочку раньше, но статус тогда не
+                # сохранился (краш/таймаут после вещания). Повтор задвоил бы
+                # платёж — фиксируем доставку без новой отправки.
+                payout.tx_hash = None
+                payout.status = "sent"
+                payout.sent_at = datetime.now(timezone.utc)
+                sent += 1
+                logger.warning(
+                    "Выплата %d уже разослана ранее (memo найдено у казначея) — помечена sent без повтора",
+                    payout.id,
+                )
                 continue
             try:
                 tx_hash = await send_ton_transfer(
                     payout.dest_address,
                     payout.amount_nanotons,
-                    comment=f"way:{payout.round_id}:{payout.kind}#{payout.id}",
+                    comment=comment,
                 )
             except Exception as exc:
                 logger.warning("Выплата %s не ушла: %s", payout.id, exc)
