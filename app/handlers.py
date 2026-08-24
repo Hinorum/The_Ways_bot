@@ -348,17 +348,22 @@ async def _today_stake_line(session, player_id: int) -> str | None:
     """Строка про ставку игрока в открытом дне или None, если показывать нечего.
 
     Используется везде, где игроку полезно видеть свой вклад в фонд дня:
-    /wallet, /stake и приватная кнопка в группах."""
+    /wallet, /stake и приватная кнопка в группах. Любой сбой здесь не имеет
+    права хоронить весь вид кошелька — возвращаем None и логируем."""
     if not settings.ton_enabled:
         return None
-    round_row = await get_active_round(session)
-    if round_row is None:
+    try:
+        round_row = await get_active_round(session)
+        if round_row is None:
+            return None
+        stake = (
+            await session.execute(
+                select(Stake).where(Stake.round_id == round_row.id, Stake.player_id == player_id)
+            )
+        ).scalar_one_or_none()
+    except Exception:
+        logger.warning("Статус ставки для вида кошелька не прочитан", exc_info=True)
         return None
-    stake = (
-        await session.execute(
-            select(Stake).where(Stake.round_id == round_row.id, Stake.player_id == player_id)
-        )
-    ).scalar_one_or_none()
     if stake is None:
         return None
     state = {
@@ -367,6 +372,35 @@ async def _today_stake_line(session, player_id: int) -> str | None:
         "rejected": "не принята (меньше минимума) — вернём после итогов ↩️",
     }.get(stake.status, "ждёт подтверждения сети ⏳")
     return f"Ставка сегодня: {from_nano(stake.amount_nanotons):g} Gram ({state})."
+
+
+async def _wallet_view_safe(user) -> str:
+    """Вид /wallet, который отвечает ВСЕГДА: сбой сборки подменяется
+    статичной инструкцией вместо общего «сеть дрогнула»."""
+    try:
+        return await _wallet_view_text(user)
+    except Exception:
+        logger.exception("Вид /wallet не собрался — отвечаем статикой")
+        return (
+            f"{warn_mark('wallet-view')} Раздел кошелька сейчас не собирается — уже разбираюсь.\n"
+            "Привязать или сменить адрес можно прямо сейчас: отправь одной строкой\n"
+            "<code>/wallet UQ…</code> (или EQ…).\n"
+            "Если кошелёк был привязан ранее — он никуда не делся, переводы с него засчитываются."
+        )
+
+
+async def _stake_view_safe(user) -> str:
+    """Аналогично для /stake: инструкция доходит даже при сбое статусной части."""
+    try:
+        return await _stake_view_text(user)
+    except Exception:
+        logger.exception("Вид /stake не собрался — отвечаем статикой")
+        return (
+            f"{hint_mark('stake')} Ставка в три шага:\n"
+            "1. Привяжи кошелёк: /wallet UQ…\n"
+            "2. Переведи сумму казначею со своего кошелька (адрес появится здесь позже).\n"
+            "3. Нажми карту пути до закрытия голосования."
+        )
 
 
 async def _wallet_view_text(user) -> str:
@@ -508,7 +542,7 @@ async def cmd_wallet(message: Message) -> None:
                     parse_mode=ParseMode.HTML,
                 )
                 return
-            await message.answer(await _wallet_view_text(message.from_user), parse_mode=ParseMode.HTML)
+            await message.answer(await _wallet_view_safe(message.from_user), parse_mode=ParseMode.HTML)
             return
         await message.answer(
             "Информация о кошельке видна только тебе — нажми кнопку.",
@@ -521,10 +555,10 @@ async def cmd_wallet(message: Message) -> None:
 @router.callback_query(F.data == "wallet:view")
 async def on_wallet_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
-        await callback.message.answer(await _wallet_view_text(callback.from_user), parse_mode=ParseMode.HTML)
+        await callback.message.answer(await _wallet_view_safe(callback.from_user), parse_mode=ParseMode.HTML)
         await callback.answer()
         return
-    text = await _wallet_view_text(callback.from_user)
+    text = await _wallet_view_safe(callback.from_user)
     await callback.answer(text[:200], show_alert=True)
 
 
@@ -599,7 +633,7 @@ async def cmd_stake(message: Message) -> None:
         )
         return
     await message.answer(
-        await _stake_view_text(message.from_user),
+        await _stake_view_safe(message.from_user),
         parse_mode=ParseMode.HTML,
         reply_markup=_stake_pay_keyboard(),
     )
@@ -609,7 +643,7 @@ async def cmd_stake(message: Message) -> None:
 async def on_stake_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
         await callback.message.answer(
-            await _stake_view_text(callback.from_user),
+            await _stake_view_safe(callback.from_user),
             parse_mode=ParseMode.HTML,
             reply_markup=_stake_pay_keyboard(),
         )

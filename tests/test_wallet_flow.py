@@ -13,6 +13,7 @@ import pytest
 
 from app.config import settings
 from app.db import SessionLocal, init_db
+from app import handlers as handlers_module
 from app.handlers import (
     cmd_stake,
     cmd_wallet,
@@ -211,6 +212,41 @@ async def test_stake_button_alert_short() -> None:
     args, kwargs = callback.answer.call_args
     assert len(args[0]) <= 200
     assert kwargs.get("show_alert") is True
+
+
+async def _link_wallet(uid: int, address: str) -> None:
+    await start_dialog(uid)
+    message = make_message("private", uid, address)
+    await on_private_fallback(message)
+
+
+async def test_wallet_answers_fallback_when_builder_breaks(monkeypatch) -> None:
+    """/wallet обязан ответить даже при сбое сборки вида — статичной инструкцией."""
+    uid = next_uid()
+    fallback_address = "UQJD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnJ"
+    await _link_wallet(uid, fallback_address)
+
+    async def boom(user):
+        raise RuntimeError("внезапный сбой сборки")
+
+    monkeypatch.setattr(handlers_module, "_wallet_view_text", boom)
+    handlers_module._WALLET_LAST.clear()  # привязка выше уже потратила окно троттлинга
+    message = make_message("private", uid, "/wallet")
+    await cmd_wallet(message)
+    text = message.answer.call_args.args[0]
+    assert "Раздел кошелька" in text
+    assert "/wallet UQ…" in text  # путь привязки продиктован
+
+
+async def test_stake_answers_fallback_when_builder_breaks(monkeypatch) -> None:
+    async def boom(user):
+        raise RuntimeError("внезапный сбой сборки")
+
+    monkeypatch.setattr(handlers_module, "_stake_view_text", boom)
+    message = make_message("private", next_uid(), "/stake")
+    await cmd_stake(message)
+    text = message.answer.call_args.args[0]
+    assert "три шага" in text
 
 
 async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: int, address: str) -> None:
