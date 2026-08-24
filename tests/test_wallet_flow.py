@@ -213,6 +213,100 @@ async def test_stake_button_alert_short() -> None:
     assert kwargs.get("show_alert") is True
 
 
+async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: int, address: str) -> None:
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        session.add(Player(id=uid, username=f"viewer{uid}", wallet_address=address))
+        rnd = Round(
+            day_index=day_index,
+            status=RoundStatus.OPEN,
+            win_rule=WinRule.MAJORITY,
+            rule_commitment="c",
+            chapter_title="t",
+            chapter_text="x",
+            lore_summary="l",
+            opens_at=now,
+            voting_ends_at=now + timedelta(hours=1),
+            tally_ends_at=now + timedelta(hours=2),
+        )
+        session.add(rnd)
+        await session.flush()
+        session.add(
+            Stake(
+                round_id=rnd.id,
+                player_id=uid,
+                amount_nanotons=amount_nanotons,
+                tx_hash=f"view-tx-{day_index}",
+                status="confirmed",
+            )
+        )
+        await session.commit()
+
+
+async def _cleanup_open_day(day_index: int) -> None:
+    from sqlalchemy import delete as sa_delete
+
+    async with SessionLocal() as session:
+        await session.execute(sa_delete(Stake).where(Stake.tx_hash == f"view-tx-{day_index}"))
+        await session.execute(sa_delete(Round).where(Round.day_index == day_index))
+        await session.commit()
+
+
+async def test_stake_button_alert_shows_amount(monkeypatch) -> None:
+    """Кнопка в группе показывает личную сумму ставки: попап виден только нажавшему."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    uid = next_uid()
+    address = "UQGD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnG"
+    # День с большим индексом, чем у соседних тестов модуля: активным
+    # становится именно он (get_active_round берёт последний).
+    await _seed_open_day_with_stake(uid, day_index=99_098, amount_nanotons=250_000_000, address=address)
+    try:
+        callback = SimpleNamespace(
+            data="stake:view",
+            from_user=make_user(uid),
+            message=SimpleNamespace(chat=SimpleNamespace(type="supergroup")),
+            answer=AsyncMock(),
+        )
+        await on_stake_view(callback)
+        text = callback.answer.call_args.args[0]
+        assert "0.25 Gram" in text
+        assert "подтверждена" in text
+        assert len(text) <= 200
+    finally:
+        await _cleanup_open_day(99_098)
+
+
+async def test_wallet_view_includes_today_stake(monkeypatch) -> None:
+    """/wallet показывает вклад в фонд текущего дня рядом с адресом кошелька."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    uid = next_uid()
+    address = "UQHD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnH"
+    await _seed_open_day_with_stake(uid, day_index=99_097, amount_nanotons=100_000_000, address=address)
+    try:
+        message = make_message("private", uid, "/wallet")
+        await cmd_wallet(message)
+        text = message.answer.call_args.args[0]
+        assert "0.1 Gram" in text
+        assert "Ставка сегодня" in text
+        assert "привязанный кошелёк" in text.lower()
+    finally:
+        await _cleanup_open_day(99_097)
+
+
+async def test_stake_button_without_wallet_hints_dialog(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    callback = SimpleNamespace(
+        data="stake:view",
+        from_user=make_user(next_uid()),
+        message=SimpleNamespace(chat=SimpleNamespace(type="supergroup")),
+        answer=AsyncMock(),
+    )
+    await on_stake_view(callback)
+    text = callback.answer.call_args.args[0]
+    assert "не привязан" in text
+    assert "/wallet" in text
+
+
 async def test_wallet_rate_limited_on_spam(monkeypatch) -> None:
     """Второй /wallet тем же игроком подряд встречает троттлинг, диалог
     не переоткрывается; админ и «остывший» игрок проходят свободно."""

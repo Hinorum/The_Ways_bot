@@ -339,24 +339,53 @@ _DYOR_TEXT = (
 )
 
 
+async def _today_stake_line(session, player_id: int) -> str | None:
+    """Строка про ставку игрока в открытом дне или None, если показывать нечего.
+
+    Используется везде, где игроку полезно видеть свой вклад в фонд дня:
+    /wallet, /stake и приватная кнопка в группах."""
+    if not settings.ton_enabled:
+        return None
+    round_row = await get_active_round(session)
+    if round_row is None:
+        return None
+    stake = (
+        await session.execute(
+            select(Stake).where(Stake.round_id == round_row.id, Stake.player_id == player_id)
+        )
+    ).scalar_one_or_none()
+    if stake is None:
+        return None
+    state = {
+        "confirmed": "подтверждена ✅",
+        "pending": "ждёт подтверждения сети ⏳",
+        "rejected": "не принята (меньше минимума) — вернём после итогов ↩️",
+    }.get(stake.status, "ждёт подтверждения сети ⏳")
+    return f"Ставка сегодня: {from_nano(stake.amount_nanotons):g} Gram ({state})."
+
+
 async def _wallet_view_text(user) -> str:
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
+        stake_line = await _today_stake_line(session, player.id)
         if player.wallet_address:
             shown = friendly_address(player.wallet_address, testnet=settings.is_testnet)
-            return (
+            body = (
                 f"{money_mark(str(user.id))} Привязанный кошелёк:\n<code>{shown}</code>\n"
                 "Переводы считаются твоими, если отправлены именно с этого кошелька.\n"
                 "Чтобы перепривязать: /wallet <адрес>\n"
                 "Как поставить на путь: /stake"
-                f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
             )
-    return (
-        f"{money_mark('none')} Кошелёк не привязан.\n"
-        "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
-        "Он нужен для ставок на путь и призовых выплат (включая топ недели).\n"
-        f"{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
-    )
+        else:
+            body = (
+                f"{money_mark('none')} Кошелёк не привязан.\n"
+                "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
+                "Он нужен для ставок на путь и призовых выплат (включая топ недели).\n"
+                "Как поставить на путь: /stake"
+            )
+        if stake_line:
+            body += f"\n\n💸 {stake_line}"
+        return f"{body}{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
 
 
 # Диалог «пришли адрес следующим сообщением» живёт в БД (wallet_dialogs):
@@ -531,9 +560,9 @@ async def _stake_view_text(user) -> str:
                     )
                 ).scalar_one_or_none()
                 if stake is not None:
-                    state = "подтверждена ✅" if stake.status == "confirmed" else "ждёт подтверждения сети ⏳"
+                    line = await _today_stake_line(session, player.id)
                     status = (
-                        f"\n\n{money_mark(str(round_row.id))} Твоя ставка сегодня: {from_nano(stake.amount_nanotons):g} Gram ({state}).\n"
+                        f"\n\n{money_mark(str(round_row.id))} 💸 {line}\n"
                         "Выигрыш придёт, если твой голос совпадёт с победившим путём."
                     )
                 elif await get_vote(session, round_row.id, player.id) is not None:
@@ -581,10 +610,32 @@ async def on_stake_view(callback: CallbackQuery) -> None:
         )
         await callback.answer()
         return
-    hint = (
-        f"Ставка: переведи от {settings.stake_min_ton:g} Gram казначею "
-        "со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
-    )
+    # Попап кнопки виден только нажавшему — личные цифры можно показывать
+    # прямо в группе, как у /score: сумма ставки и её статус.
+    hint = "Ставка: переведи от 0.1 Gram казначею со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
+    try:
+        async with SessionLocal() as session:
+            player = await upsert_player(session, callback.from_user)
+            if not settings.ton_enabled:
+                hint = "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+            elif not player.wallet_address:
+                hint = (
+                    f"Кошелёк не привязан: /wallet в личке. Потом переведи от "
+                    f"{settings.stake_min_ton:g} Gram казначею и жми карту пути."
+                )
+            else:
+                line = await _today_stake_line(session, player.id)
+                if line is not None:
+                    hint = f"💸 {line} Подробности: /stake в личке."
+                elif await get_active_round(session) is None:
+                    hint = "Сейчас открытого дня нет: ставки принимаются на открытый день."
+                else:
+                    hint = (
+                        f"Ставки сегодня нет. Переведи от {settings.stake_min_ton:g} Gram "
+                        "казначею со своего кошелька — адрес: /stake в личке."
+                    )
+    except Exception:
+        logger.exception("Статус ставки для кнопки не собран — отвечаем общей подсказкой")
     await callback.answer(hint[:200], show_alert=True)
 
 
