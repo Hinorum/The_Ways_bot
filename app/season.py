@@ -207,6 +207,8 @@ def season_block(
     pblock = prologue_block(run_day)
     if pblock:
         block += "\n" + pblock
+    if midpoint_day(run_day, total):
+        block += "\n" + _MIDPOINT_BLOCK
     return block
 
 
@@ -270,6 +272,24 @@ def villain_stage(run_day: int, total: int) -> int:
     if run_day >= 7:
         return 1
     return 0
+
+
+def midpoint_day(run_day: int, total: int) -> bool:
+    """Серединный поворот: первый день ступени 2 плана злодея.
+
+    Структурное событие пустыни акта 2: день запечатан (как глухой), закон
+    дня принудительно «медиана» — Середняк забирает развилку. Финалу не
+    грозит: ступень 2 начинается минимум за семь дней до Лая.
+    """
+    return villain_stage(run_day, total) == 2 and run_day == max(8, total // 2)
+
+
+_MIDPOINT_BLOCK = (
+    "ПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки впервые действует открыто — "
+    "мир на глазах «чинится» чужой рукой. Архив запечатал урну, а закон "
+    "дня принадлежит Середняку. Покажи, как удобно стало тропам — и как "
+    "неуютно от этого стало стае."
+)
 
 
 def villain_event(season_key_value: str, stage: int, salt: str = "") -> str:

@@ -97,4 +97,47 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
 
 
 def echo_prompt_lines(echoes) -> list[str]:
+
     return [f"- {echo.title}: {echo.description}" for echo in echoes]
+
+
+# ---------- Квиз памяти: «откуда след?» ----------
+
+
+async def surfaced_echoes_for_round(session, day_index: int) -> list[LoreEcho]:
+    """Эха, реально вплетённые в главу этого дня (уже вскрытые при генерации)."""
+    result = await session.execute(
+        select(LoreEcho).where(LoreEcho.surfaced_day == day_index)
+    )
+    return list(result.scalars().all())
+
+
+def build_memory_quiz(
+    player_id: int, round_id: int, true_titles: list[str], decoy_pool: list[str]
+) -> dict | None:
+    """Три варианта «откуда след?»: истина + 2 приманки из давнего канона.
+
+    Сид детерминирован парой игрок+день: перезапускать расклад бесполезно,
+    а сервер при ответе пересобирает те же варианты и сверяет выбор.
+    None — собирать квиз не из чего.
+    """
+    import random as _random
+
+    truths = sorted({title.strip() for title in true_titles if title and title.strip()})
+    if not truths:
+        return None
+    pool = []
+    seen = set(truths)
+    for title in decoy_pool:
+        clean = (title or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            pool.append(clean)
+    rng = _random.Random(f"memquiz:{player_id}:{round_id}")
+    options = [truths[0], *pool[:2]]
+    rng.shuffle(options)
+    correct_indices = [
+        index for index, option in enumerate(options) if option in truths
+    ]
+    return {"options": options, "correct": set(correct_indices), "true_title": truths[0]}
+

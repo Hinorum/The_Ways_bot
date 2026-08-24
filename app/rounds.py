@@ -390,7 +390,6 @@ async def _plan_and_render(
     """
     beats = await previous_beats(session)
     echoes = await collect_due_echoes(session, day_index)
-    rule = secrets.choice(list(WinRule))
     salt = secrets.token_hex(16)
 
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
@@ -421,8 +420,25 @@ async def _plan_and_render(
         pass
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
+    # Отношения NPC к стае: канон последних дней в одной строке тона.
+    from app.relations import relations_block_for_session
+
+    try:
+        relations_block = await relations_block_for_session(session)
+    except Exception:
+        relations_block = None
+    if relations_block:
+        sblock = f"{sblock}\n{relations_block}"
     # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
     villain = await _villain_block(session, open_moment, anchor)
+
+    # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
+    from app.season import midpoint_day as season_midpoint
+    from app.season import run_position as season_run_position
+
+    run_day_now, total_now = season_run_position(anchor, open_moment)
+    twist = season_midpoint(run_day_now, total_now)
+    rule = WinRule.MEDIAN if twist else secrets.choice(list(WinRule))
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
@@ -439,7 +455,7 @@ async def _plan_and_render(
     chapter = await generate_chapter(
         day_index, beats, rule, echoes, distant_echoes=distant,
         season_block=sblock, places_block=places_block,
-        villain_block=villain, sealed=sealed_day(day_index),
+        villain_block=villain, sealed=sealed_day(day_index) or twist,
         pending_outcome=pending_outcome,
         salt=secrets.token_hex(4),
     )
@@ -523,7 +539,7 @@ async def _plan_and_render(
         "day_index": day_index,
         "rule": rule.value,
         "commitment": commit_rule(rule, salt) + ":" + salt,
-        "sealed": sealed_day(day_index),
+        "sealed": sealed_day(day_index) or twist,
         "chapter_title": chapter["title"],
         "chapter_text": chapter["text"],
         "lore_summary": chapter["lore_summary"],
@@ -1200,6 +1216,13 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     # страховка для путей, миновавших закрытие голосования (/advance и legacy).
     if not await _echoes_already_spawned(session, round_row.day_index):
         spawn_echoes_from_round(session, round_row)
+    # Отношения NPC: один шаг по тегу победившего пути (у фолбэка тега нет).
+    try:
+        from app.relations import apply_round_result
+
+        await apply_round_result(session, getattr(winning_card, "tag", None))
+    except Exception:
+        logger.warning("Шаг отношений NPC дня %s не удался", round_row.day_index, exc_info=True)
     try:
         await session.commit()
     except IntegrityError:

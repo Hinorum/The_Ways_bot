@@ -33,7 +33,6 @@ from app.models import (
     Chat,
     Income,
     LeaderboardPot,
-    MemoryHit,
     Payout,
     Player,
     RevoteGrant,
@@ -102,6 +101,18 @@ async def cmd_start(message: Message) -> None:
     await cmd_today(message)
 
 
+async def _remember_flag(day_index: int) -> bool:
+    """Кнопка памяти живёт только в дни с реально всплывшим эхом."""
+    from app.echoes import surfaced_echoes_for_round
+
+    try:
+        async with SessionLocal() as session:
+            return bool(await surfaced_echoes_for_round(session, day_index))
+    except Exception:
+        logger.warning("Флаг памяти дня %s не проверен", day_index, exc_info=True)
+        return False
+
+
 @router.message(Command("today"))
 async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
@@ -113,7 +124,10 @@ async def cmd_today(message: Message) -> None:
         # Картинки — украшение, текст дня обязан дойти даже при сбое Telegram
         # или пропавших файлов: игрок должен видеть развилку и кнопки.
         logger.warning("Медиа-группа дня %s не ушла (%s) — доставляем текст", round_row.day_index, exc)
-    await message.answer(status_text(round_row), reply_markup=cards_keyboard(round_row.id))
+    await message.answer(
+        status_text(round_row),
+        reply_markup=cards_keyboard(round_row.id, remember=await _remember_flag(round_row.day_index)),
+    )
 
 
 @router.message(Command("lore"))
@@ -414,8 +428,12 @@ async def cmd_best(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("remember:"))
 async def on_remember(callback: CallbackQuery) -> None:
-    """«Я помню этот след»: отметка внимательности. Бот не подтверждает
-    догадку и не раскрывает, было ли эхо вплетено, — только копит счётчик."""
+    """«Я помню этот след» — старт квиза: откуда всплывший след?
+
+    Кнопка живёт только в дни с реальным всплытием эха. Варианты — истина
+    плюс две приманки из давнего канона; расклад детерминирован парой
+    игрок+день, одна попытка на день.
+    """
     parts = callback.data.split(":")
     if len(parts) != 2:
         await callback.answer("Некорректная метка.", show_alert=True)
@@ -425,20 +443,98 @@ async def on_remember(callback: CallbackQuery) -> None:
     except ValueError:
         await callback.answer("Некорректная метка.", show_alert=True)
         return
-    from app.tally import register_memory_hit
+    from sqlalchemy import select as _select
+
+    from app.echoes import build_memory_quiz, surfaced_echoes_for_round
+    from app.models import StoryBeat
 
     async with SessionLocal() as session:
         player = await upsert_player(session, callback.from_user)
-        created = await register_memory_hit(session, player.id, round_id)
-        if created:
-            await callback.answer("Сеть запомнила, что ты помнишь. ✨ +1 нюх.")
+        echoes = await surfaced_echoes_for_round(session, round_id)
+        if not echoes:
+            await callback.answer("Сегодня в главе не пахло старым.", show_alert=True)
+            return
+        true_titles = [echo.title for echo in echoes]
+        source_days = {echo.source_day for echo in echoes}
+        beats = (
+            await session.execute(
+                _select(StoryBeat.title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+            )
+        ).all()
+        decoys = [
+            title for title, day in beats if day not in source_days and (day < min(source_days) - 1 or day > max(source_days) + 1)
+        ]
+        quiz = build_memory_quiz(player.id, round_id, true_titles, decoys)
+        if quiz is None:
+            await callback.answer("Архив слишком мал, чтобы проверять память. Позже.", show_alert=True)
+            return
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"📖 {option[:60]}", callback_data=f"remember:pick:{round_id}:{index}")]
+                for index, option in enumerate(quiz["options"])
+            ]
+        )
+    await callback.message.answer("🧠 Архивариус прищуривается: «Откуда этот след?»", reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("remember:pick:"))
+async def on_remember_pick(callback: CallbackQuery) -> None:
+    """Ответ на квиз памяти: верно — отметка и нюх; мимо — архив молчит."""
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Некорректный выбор.", show_alert=True)
+        return
+    try:
+        round_id, index = int(parts[2]), int(parts[3])
+    except ValueError:
+        await callback.answer("Некорректный выбор.", show_alert=True)
+        return
+    from app.models import WatcherState
+    from app.tally import register_memory_hit
+    from app.echoes import build_memory_quiz, surfaced_echoes_for_round
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        marker = f"memquiz:{player.id}:{round_id}"
+        if await session.get(WatcherState, marker) is not None:
+            await callback.answer("Сегодня архив уже закрыл твой вопрос.", show_alert=True)
+            return
+        echoes = await surfaced_echoes_for_round(session, round_id)
+        true_titles = [echo.title for echo in echoes]
+        # Пересобираем тот же расклад: серверу нечего хранить в кнопке.
+        from sqlalchemy import select as _select
+        from app.models import StoryBeat
+
+        beats = (
+            await session.execute(
+                _select(StoryBeat.title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+            )
+        ).all()
+        source_days = {echo.source_day for echo in echoes}
+        decoys = [
+            title for title, day in beats if day not in source_days and (day < min(source_days) - 1 or day > max(source_days) + 1)
+        ]
+        quiz = build_memory_quiz(player.id, round_id, true_titles, decoys)
+        correct = (
+            quiz is not None
+            and 0 <= index < len(quiz["options"])
+            and quiz["options"][index] in quiz["correct"]
+        )
+        session.add(WatcherState(key=marker, value="1"))
+        if correct:
+            await register_memory_hit(session, player.id, round_id)
+            await callback.answer("Архивариус молча ставит галочку. ✨ +1 нюх.", show_alert=True)
+            if callback.message is not None:
+                try:
+                    await callback.message.answer(
+                        "📚 «Память сети пополнилась», — шепчет Архивариус и не объясняет, чью."
+                    )
+                except Exception:
+                    pass
         else:
-            hits = (
-                await session.execute(
-                    select(func.count()).select_from(MemoryHit).where(MemoryHit.player_id == player.id)
-                )
-            ).scalar_one()
-            await callback.answer(f"Этот след ты уже отметил. Память сети: {hits}.")
+            await callback.answer("Архивариус хмурится: «Не тот след». Попробуй завтра.", show_alert=True)
+        await session.commit()
 
 
 @router.callback_query(F.data.startswith("vote:"))
@@ -1269,7 +1365,7 @@ async def cmd_advance(message: Message) -> None:
         media = day_media_group(nxt)
         if media:
             await message.answer_media_group(media)
-        await message.answer(status_text(nxt), reply_markup=cards_keyboard(nxt.id))
+        await message.answer(status_text(nxt), reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index)))
 
 
 @router.message(Command("resetgame"))

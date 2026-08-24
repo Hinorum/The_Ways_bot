@@ -31,22 +31,25 @@ _MAX_TEXT_LEN = 3900
 _FORGET_MARKS = ("forbidden", "not found", "kicked", "deactivated", "migrated")
 
 
-def cards_keyboard(round_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Путь I", callback_data=f"vote:{round_id}:0"),
-                InlineKeyboardButton(text="Путь II", callback_data=f"vote:{round_id}:1"),
-                InlineKeyboardButton(text="Путь III", callback_data=f"vote:{round_id}:2"),
-            ],
+def cards_keyboard(round_id: int, remember: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="Путь I", callback_data=f"vote:{round_id}:0"),
+            InlineKeyboardButton(text="Путь II", callback_data=f"vote:{round_id}:1"),
+            InlineKeyboardButton(text="Путь III", callback_data=f"vote:{round_id}:2"),
+        ],
+    ]
+    if remember:
+        # Кнопка памяти живёт только в дни, когда в главу реально всплыло эхо.
+        rows.append(
             [
                 InlineKeyboardButton(
                     text="🧠 Я помню этот след",
                     callback_data=f"remember:{round_id}",
                 )
-            ],
-        ]
-    )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _clamp(text: str, limit: int) -> str:
@@ -241,6 +244,7 @@ async def _deliver_day(
     round_row: Round,
     finished: Round | None,
     results_text: str | None = None,
+    remember: bool = False,
 ) -> None:
     """Полный пакет дня в один чат. Итоги передаются готовым текстом:
     экономика дня считается один раз на рассылку, а не на каждый чат."""
@@ -262,7 +266,7 @@ async def _deliver_day(
     await bot.send_message(
         chat_id,
         status_text(round_row),
-        reply_markup=cards_keyboard(round_row.id),
+        reply_markup=cards_keyboard(round_row.id, remember=remember),
     )
 
 
@@ -272,15 +276,16 @@ async def _deliver_chat(
     round_row: Round,
     finished: Round | None,
     results_text: str | None,
+    remember: bool = False,
 ) -> int | None:
     """Доставка в чат с одним ретраем после флуд-контроля. None — неудача."""
     try:
-        await _deliver_day(bot, chat_id, round_row, finished, results_text)
+        await _deliver_day(bot, chat_id, round_row, finished, results_text, remember=remember)
         return chat_id
     except TelegramRetryAfter as exc:
         logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
         await asyncio.sleep(exc.retry_after + 1)
-        await _deliver_day(bot, chat_id, round_row, finished, results_text)
+        await _deliver_day(bot, chat_id, round_row, finished, results_text, remember=remember)
         return chat_id
     except TelegramForbiddenError:
         await deactivate_chat(chat_id)
@@ -310,11 +315,20 @@ async def announce_new_day(
         return []
     chat_ids = await active_chat_ids()
     results_text = await results_message(finished) if finished is not None else None
+    # Кнопка памяти — только когда в главу дня реально всплыло эхо.
+    remember = False
+    try:
+        from app.echoes import surfaced_echoes_for_round
+
+        async with SessionLocal() as session:
+            remember = bool(await surfaced_echoes_for_round(session, round_row.day_index))
+    except Exception:
+        logger.warning("Не удалось проверить всплытие эха дня %s", round_row.day_index, exc_info=True)
     semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 
     async def worker(chat_id: int) -> int | None:
         async with semaphore:
-            return await _deliver_chat(bot, chat_id, round_row, finished, results_text)
+            return await _deliver_chat(bot, chat_id, round_row, finished, results_text, remember=remember)
 
     outcomes = await asyncio.gather(*(worker(chat_id) for chat_id in chat_ids))
     delivered = [chat_id for chat_id in outcomes if chat_id is not None]
