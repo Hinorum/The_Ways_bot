@@ -364,16 +364,21 @@ _SNIFF_SCENES = (
 )
 
 
-def compose_sniff_scene(seed_key: str, calling, place: str | None) -> str:
+def compose_sniff_scene(
+    seed_key: str, calling, place: str | None, trail_tint: str | None = None
+) -> str:
     """Личная микросцена за жетон: детерминированная, офлайн, без информации о законе."""
     import random as _random
 
     rng = _random.Random(f"sniff:{seed_key}")
-    template = rng.choice(_SNIFF_SCENES)
-    return template.format(
+    template = _SNIFF_SCENES[rng.randrange(len(_SNIFF_SCENES))]
+    scene = template.format(
         place=place or "кружке порталов",
         calling_title=f"«{calling.title}»" if calling is not None else "Собака стаи",
     )
+    if trail_tint:
+        scene += f"\n{trail_tint}"
+    return scene
 
 
 @router.callback_query(F.data == "sniff:use")
@@ -401,10 +406,15 @@ async def on_sniff_use(callback: CallbackQuery) -> None:
         session.add(WatcherState(key=marker, value="1"))
         await session.commit()
         from app.callings import calling_by_key
+        from app.trail import trail_stats, trail_tint_line
 
         calling = calling_by_key(player.calling)
         place = getattr(round_row, "place", None) if round_row is not None else None
-        scene = compose_sniff_scene(str(marker), calling, place)
+        try:
+            tint = trail_tint_line(await trail_stats(session, player.id))
+        except Exception:
+            tint = None
+        scene = compose_sniff_scene(str(marker), calling, place, trail_tint=tint)
     await callback.answer()
     try:
         await callback.message.answer(scene)

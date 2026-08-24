@@ -82,7 +82,7 @@ def status_text(round_row: Round) -> str:
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2900)}\n\n"
+        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 3200)}\n\n"
         f"{cards}\n\n{phase}\n"
         f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
         f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
@@ -447,19 +447,33 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
                 select(Vote.player_id, Vote.card_position).where(Vote.round_id == finished.id)
             )
         ).all()
-        # Окраска эха призванием: один запрос на всех проигравших.
+        # Окраска эха: призвание сильнее, иначе — клетка Следа.
         from app.callings import echo_tail
         from app.models import Player as _Player
+        from app.trail import trail_stats, trail_tint_line
 
         loser_ids = [pid for pid, pos in rows if pos != winner_pos]
-        calling_map: dict[int, str | None] = {}
+        tail_map: dict[int, str] = {}
         if loser_ids:
             calling_rows = (
                 await session.execute(
                     select(_Player.id, _Player.calling).where(_Player.id.in_(loser_ids))
                 )
             ).all()
-            calling_map = {pid: calling for pid, calling in calling_rows}
+            for pid, calling in calling_rows:
+                tail = echo_tail(calling)
+                if tail:
+                    tail_map[pid] = tail
+            # Без призвания окраску даёт След (если уже проявился).
+            for pid in loser_ids:
+                if pid in tail_map:
+                    continue
+                try:
+                    tint = trail_tint_line(await trail_stats(session, pid))
+                except Exception:
+                    tint = None
+                if tint:
+                    tail_map[pid] = tint
     losers = [(pid, pos) for pid, pos in rows if pos != winner_pos]
     semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 
@@ -470,7 +484,7 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
         text = personal_echo_text(
             f"{finished.id}:{player_id}", card.title, card.consequence, winner.title
         )
-        tail = echo_tail(calling_map.get(player_id))
+        tail = tail_map.get(player_id)
         if tail:
             text += f"\n\n{tail}"
         async with semaphore:

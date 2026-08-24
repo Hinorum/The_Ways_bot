@@ -548,6 +548,13 @@ def _build_story_prompt(
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
     season_text = f"{season_block}\n" if season_block else ""
+    # Пролог и серединный поворот несут двойную нагрузку (сцена + знакомство/
+    # событие): просим у модели более длинную главу. Пост выдерживает до
+    # ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
+    expanded_day = bool(season_block) and (
+        "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
+    )
+    chapter_low, chapter_high = (2200, 3000) if expanded_day else (1800, 2600)
     villain_text = villain_text if villain_block else ""
     places_text = ""
     if places_block:
@@ -567,7 +574,8 @@ def _build_story_prompt(
         f"{echo_block}"
         f"{distant_block}"
         f"{places_text}"
-        "Напиши главу дня — цельный рассказ на 1800-2600 знаков, от второго "
+        "Напиши главу дня — цельный рассказ на "
+        f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
         "героев: Баркод, Миска, Вектор, Пиксель и Безымянная — только фоновый "
         "бросок, новых главных персонажей не вводи.\n"
@@ -626,7 +634,7 @@ def _build_story_prompt(
         "угроза»: что стая получит и чем за это заплатит; оно завтра станет "
         "каноном.\n"
         'Формат: {"title":"День N. ...","place":"короткое название места дня",'
-        '"text":"история дня, 1800-2600 знаков",'
+        f'"text":"история дня, {chapter_low}-{chapter_high} знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
         '"cards":[{"title":"...","description":"...","consequence":"...",'

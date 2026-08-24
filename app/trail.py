@@ -89,6 +89,32 @@ async def trail_stats(session: AsyncSession, player_id: int) -> dict | None:
     }
 
 
+# Тональная окраска клетки: как След пахнет в личных текстах (эхо, нюх).
+TRAIL_TINTS: dict[tuple[int, int], str] = {
+    (1, 1): "Хор ведёт — и ты идёшь в первых рядах.",
+    (0, 1): "Ты держишь направление, когда стая спорит.",
+    (-1, 1): "Сердце выбирает не то, что громче.",
+    (1, 0): "Порядок стаи — твой нюх порядка.",
+    (0, 0): "Ты — стая сама по себе: ни в чью сторону, во все.",
+    (-1, 0): "Куда все — туда и не пахнет.",
+    (1, -1): "Порядок полезен, когда грызёт.",
+    (0, -1): "Тень двора знает цену каждому запаху.",
+    (-1, -1): "Грызло помнит: тихий след самый честный.",
+}
+
+
+def trail_tint_line(stats: dict | None) -> str | None:
+    """Строка-тон для личного текста; None — Следа ещё нет."""
+    if not stats:
+        return None
+    cell = trail_cell(stats["order"], stats["moral"])
+    name = TRAIL_CELLS.get(cell)
+    tint = TRAIL_TINTS.get(cell)
+    if name is None or tint is None:
+        return None
+    return f"Твой След — «{name}»: {tint}"
+
+
 def trail_line(stats: dict) -> str:
     """Строка для /score: клетка, проценты, объём выборки."""
     name = trail_name(stats["order"], stats["moral"]) or "Стая сама по себе"
