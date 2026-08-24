@@ -266,6 +266,39 @@ async def test_wallet_survives_total_inner_crash(monkeypatch) -> None:
     assert not await _dialog_active(uid)
 
 
+import re as _re
+
+_HTML_TAG = _re.compile(r"<(?!/?(?:code|b|i|u|s|pre|a|blockquote)\b)[^>]{1,30}>")
+
+
+async def test_wallet_view_html_is_telegram_safe(monkeypatch) -> None:
+    """Регрессия прод-сбоя: «/wallet <адрес>» парсился Telegram как битый тег.
+
+    Вид кошелька уходит с parse_mode=HTML — кириллических псевдотегов и
+    любых незнакомых угловых скобок в нём быть не должно.
+    """
+    from pathlib import Path
+
+    from app.handlers import _wallet_view_text
+
+    # 1. Сам источник больше не содержит литерал-виновника.
+    source = Path("app/handlers.py").read_text(encoding="utf-8")
+    assert "<адрес" not in source
+
+    # 2. Сгенерированный вид (обе ветки) проходит Telegram-парсер.
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    uid = next_uid()
+    linked_address = "UQLD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnL"
+    await _seed_open_day_with_stake(uid, day_index=99_099, amount_nanotons=100_000_000, address=linked_address)
+    try:
+        user = make_user(uid)
+        text = await _wallet_view_text(user)
+        assert _HTML_TAG.search(text) is None
+        assert "<code>" in text and "</code>" in text
+    finally:
+        await _cleanup_open_day(99_099)
+
+
 async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: int, address: str) -> None:
     now = datetime.now(timezone.utc)
     async with SessionLocal() as session:
