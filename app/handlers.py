@@ -104,9 +104,14 @@ async def cmd_start(message: Message) -> None:
 @router.message(Command("today"))
 async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
-    media = day_media_group(round_row)
-    if media:
-        await message.answer_media_group(media)
+    try:
+        media = day_media_group(round_row)
+        if media:
+            await message.answer_media_group(media)
+    except Exception as exc:
+        # Картинки — украшение, текст дня обязан дойти даже при сбое Telegram
+        # или пропавших файлов: игрок должен видеть развилку и кнопки.
+        logger.warning("Медиа-группа дня %s не ушла (%s) — доставляем текст", round_row.day_index, exc)
     await message.answer(status_text(round_row), reply_markup=cards_keyboard(round_row.id))
 
 
@@ -1222,27 +1227,72 @@ def _register_error_handler(dispatcher: Dispatcher) -> None:
     """Глобальный обработчик сбоев: без него aiogram глотает исключение и
     отвечает вебхуку 200 — Telegram не перезашлёт апдейт, и действие игрока
     (голос, оплата) теряется молча. Логируем стек и говорим игроку честное
-    «не получилось»: повторный клик обычно проходит."""
+    «не получилось»: повторный клик обычно проходит. Кнопке снимаем спиннер
+    (иначе он висит до клиентского таймаута), а причину сбоя хранитель
+    получает в личку (троттлинг раз в час) — диагноз не требует логов."""
 
     @dispatcher.error()
     async def on_error(event: ErrorEvent) -> bool:
-        logger.exception("Ошибка обработки апдейта", exc_info=event.exception)
-        chat_id = None
-        update = event.update
-        if update.message is not None:
-            chat_id = update.message.chat.id
-        elif update.callback_query is not None and update.callback_query.message is not None:
-            chat_id = update.callback_query.message.chat.id
-        if chat_id is not None:
-            try:
-                await update.bot.send_message(
-                    chat_id,
-                    "⚠️ Сеть мира дрогнула — шаг не засчитан. Повтори ещё раз; "
-                    "если повторится, напиши хранителю.",
-                )
-            except Exception:
-                pass
+        await handle_update_error(event.bot, event)
         return True
+
+
+# Троттлинг личных алертов о сбоях апдейтов: процессный, раз в час.
+_LAST_UPDATE_ERROR_ALERT = {"ts": 0.0}
+_UPDATE_ERROR_ALERT_COOLDOWN = 3600.0
+
+_PLAYER_ERROR_TEXT = (
+    "⚠️ Сеть мира дрогнула — шаг не засчитан. Повтори ещё раз; "
+    "если повторится, напиши хранителю."
+)
+
+
+async def handle_update_error(bot: Bot | None, event) -> None:
+    """Единая реакция на упавший апдейт: игроку, кнопке и хранителю."""
+    import time as _time
+
+    logger.error("Ошибка обработки апдейта", exc_info=event.exception)
+    update = event.update
+    callback = update.callback_query
+    chat_id = None
+    if update.message is not None:
+        chat_id = update.message.chat.id
+    elif callback is not None and getattr(callback, "message", None) is not None:
+        chat_id = callback.message.chat.id
+    # Кнопка не должна крутиться до клиентского таймаута.
+    if callback is not None:
+        try:
+            await callback.answer("Сеть мира дрогнула — попробуй ещё раз.", show_alert=True)
+        except Exception:
+            pass
+    if chat_id is not None and bot is not None:
+        try:
+            await bot.send_message(chat_id, _PLAYER_ERROR_TEXT)
+        except Exception:
+            pass
+    now = _time.monotonic()
+    if (
+        bot is not None
+        and settings.admin_id_set
+        and now - _LAST_UPDATE_ERROR_ALERT["ts"] >= _UPDATE_ERROR_ALERT_COOLDOWN
+    ):
+        _LAST_UPDATE_ERROR_ALERT["ts"] = now
+        kind = (
+            "callback"
+            if callback is not None
+            else ("message" if update.message is not None else "update")
+        )
+        summary = f"{type(event.exception).__name__}: {event.exception}"[:350]
+        from app.ops import notify_admins
+
+        try:
+            await notify_admins(
+                bot,
+                f"⚠️ Сбой обработки апдейта ({kind}): {summary}\n"
+                "Полный стек — в логах сервиса по строке «Ошибка обработки апдейта».",
+            )
+        except Exception:
+            pass
 
 
 async def create_bot() -> Bot:
