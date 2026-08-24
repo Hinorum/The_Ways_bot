@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"
     use_free_images: bool = True
+    # Токен Pollinations (pollinations.ai → auth): поднимает лимиты анонимного
+    # tier'а — без него общий IP Render регулярно ловит 429 на весь день.
+    pollinations_token: str = ""
     use_free_story_llm: bool = True
     # Бесплатные модели неторопливы: таймауты щедрые, чтобы день собирался
     # нейросетью, а не фолбэками. Настраивается из Environment.

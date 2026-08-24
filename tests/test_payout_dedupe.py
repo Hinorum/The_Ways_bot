@@ -305,6 +305,44 @@ def test_watcher_state_value_is_unlimited_text() -> None:
     assert column_type.length is None
 
 
+def test_pollinations_429_breaker_blocks_until_cooldown(monkeypatch) -> None:
+    """429 ставит паузу: следующие кадры не дёргают провайдер впустую."""
+    from app import story
+
+    monkeypatch.setattr(story, "_THROTTLED_UNTIL_MONOTONIC", 0.0)
+    assert story._throttle_active() is False
+
+    story._note_429(60)
+    assert story._throttle_active() is True
+    assert 0 < story._throttle_left_seconds() <= 60
+
+    async def explode_client(*args, **kwargs):
+        raise AssertionError("в период охлаждения сеть не должна дёргаться")
+
+    monkeypatch.setattr(story.httpx, "AsyncClient", explode_client)
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    result = _asyncio.run(
+        story.fetch_free_image("prompt", _Path("unused.jpg"), seed=1, width=64, height=64)
+    )
+    assert result is False
+
+    monkeypatch.setattr(story, "_THROTTLED_UNTIL_MONOTONIC", 0.0)
+    assert story._throttle_active() is False
+
+
+async def test_image_stub_roundtrip(session) -> None:
+    """Заглушки фиксируются и вынимаются однократно (для отложенного апгрейда)."""
+    from app.rounds import _pop_image_stubs, _record_image_stubs
+
+    await _record_image_stubs(session, 8_800, cover_stub=True, card_positions=[1, 2])
+    first = await _pop_image_stubs(session, 8_800)
+    assert first == {"cover": True, "cards": [1, 2]}
+    # Повторное чтение — пусто: задача апгрейда не задвоится.
+    assert await _pop_image_stubs(session, 8_800) is None
+
+
 async def test_wallet_uses_remote_liteserver_config(monkeypatch) -> None:
     """LITESERVER_CONFIG_URL доходит до конструктора провайдера."""
     import pytest

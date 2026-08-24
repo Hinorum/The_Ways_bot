@@ -214,6 +214,19 @@ async def _teaser_job(round_id: int) -> None:
         logger.exception("Тизер подсчёта не удался (не мешает тику)")
 
 
+async def _image_upgrade_job(day_index: int) -> None:
+    """Отложенная перерисовка PIL-заглушек: пик 429 спадает за четверть часа."""
+    try:
+        await asyncio.sleep(900)
+        from app.rounds import upgrade_stub_images
+
+        upgraded = await upgrade_stub_images(day_index)
+        if upgraded:
+            logger.info("Картинки дня %d обновлены: %d кадр(ов) перерисовано", day_index, upgraded)
+    except Exception:
+        logger.exception("Апгрейд картинок дня %s не удался (не мешает тику)", day_index)
+
+
 async def _personal_echo_job(round_id: int) -> None:
     """Личное эхо проигравшим голосующим: чем пахла бы их тропа.
 
@@ -307,6 +320,8 @@ async def tick(bot: Bot | None = None) -> None:
             nxt, created = await create_next_round_detailed(session)
             if created:
                 await announce_new_day(bot, nxt, finished if closed_here else None)
+                # Заглушки картинок дорисовываются фоном через 15 минут.
+                asyncio.create_task(_image_upgrade_job(nxt.day_index))
             if closed_here and settings.personal_echo:
                 asyncio.create_task(_personal_echo_job(finished.id))
 

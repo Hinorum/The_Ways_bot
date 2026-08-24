@@ -487,8 +487,10 @@ async def _plan_and_render(
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
         await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
     cards_payload = []
+    stub_positions: list[int] = []
     for (position, card, image_path, _prompt, _short), ok in zip(jobs, fetched[1:]):
         if not ok:
+            stub_positions.append(position)
             await asyncio.to_thread(render_card, image_path, card["title"], card["description"], position)
         cards_payload.append(
             {
@@ -499,6 +501,12 @@ async def _plan_and_render(
                 "tag": card.get("tag", "care"),
                 "image_path": str(image_path),
             }
+        )
+    if not fetched[0] or stub_positions:
+        # Часть кадров ушла в PIL-заглушки: фиксируем на будущее — через
+        # четверть часа после анонса фоновая задача попробует перерисовать.
+        await _record_image_stubs(
+            session, day_index, cover_stub=not fetched[0], card_positions=stub_positions
         )
     return {
         "v": PREPARED_PAYLOAD_VERSION,
@@ -598,6 +606,129 @@ def place_seed_for(place: str | None) -> int | None:
     if not place or not place.strip():
         return None
     return 10_000 + zlib.crc32(place.strip().lower().encode("utf-8")) % 890_000
+
+
+# ---------- Отложенный апгрейд PIL-заглушек картинок ----------
+
+
+def _stubs_key(day_index: int) -> str:
+    return f"img_stubs:{day_index}"
+
+
+async def _record_image_stubs(
+    session: AsyncSession, day_index: int, cover_stub: bool, card_positions: list[int]
+) -> None:
+    from app.models import WatcherState
+
+    payload = json.dumps({"cover": cover_stub, "cards": sorted(card_positions)})
+    key = _stubs_key(day_index)
+    row = await session.get(WatcherState, key)
+    if row is None:
+        session.add(WatcherState(key=key, value=payload))
+    else:
+        row.value = payload
+    await session.commit()
+
+
+async def _pop_image_stubs(session: AsyncSession, day_index: int) -> dict | None:
+    from app.models import WatcherState
+
+    key = _stubs_key(day_index)
+    row = await session.get(WatcherState, key)
+    if row is None or not row.value:
+        return None
+    try:
+        data = json.loads(row.value)
+    except ValueError:
+        data = None
+    await session.delete(row)
+    await session.commit()
+    return data if isinstance(data, dict) else None
+
+
+async def upgrade_stub_images(day_index: int) -> int:
+    """Вторая попытка для кадров, ушедших в PIL-заглушку (429/таймауты).
+
+    Запускается через ~15 минут после анонса дня: пик троттлинга обычно
+    спадает, и кадры дорисовываются нейромоделью — /today и будущие
+    пересылки показывают уже полноценные картинки. Возвращает число
+    обновлённых кадров.
+    """
+    from sqlalchemy.orm import selectinload
+
+    from app.art_director import build_image_prompt, offline_bible, short_image_prompt
+    from app.db import SessionLocal
+    from app.story import fetch_free_image
+
+    async with SessionLocal() as session:
+        stubs = await _pop_image_stubs(session, day_index)
+        round_row = (
+            await session.execute(
+                select(Round).options(selectinload(Round.cards)).where(Round.day_index == day_index).limit(1)
+            )
+        ).scalar_one_or_none()
+    if round_row is None or not stubs:
+        return 0
+    media_root = Path(settings.media_dir)
+    chapter_like = {
+        "title": round_row.chapter_title,
+        "text": round_row.chapter_text,
+        "cards": [
+            {"title": card.title, "image_prompt": ""}
+            for card in sorted(round_row.cards, key=lambda item: item.position)
+        ],
+    }
+    bible = offline_bible(chapter_like)
+    day_seed = 10_000 + day_index * 7
+    cover_seed = place_seed_for(round_row.place) or day_seed
+    semaphore = asyncio.Semaphore(2)
+
+    async def _pull(slot: str, prompt: str, short: str, dest: Path, seed: int) -> bool:
+        async with semaphore:
+            return await fetch_free_image(prompt, dest, seed=seed)
+
+    jobs = []
+    if stubs.get("cover"):
+        jobs.append(
+            (
+                "cover",
+                media_root / f"day{day_index}_cover.jpg",
+                build_image_prompt(bible, "cover", seed=cover_seed),
+                short_image_prompt(bible, "cover", seed=cover_seed),
+                cover_seed,
+            )
+        )
+    cards_by_pos = {card.position: card for card in round_row.cards}
+    for position in stubs.get("cards", []):
+        dest = media_root / f"day{day_index}_card{position}.jpg"
+        _card = cards_by_pos.get(position)
+        jobs.append(
+            (
+                str(position),
+                dest,
+                build_image_prompt(bible, str(position), seed=day_seed + position + 1),
+                short_image_prompt(bible, str(position), seed=day_seed + position + 1),
+                day_seed + position + 1,
+            )
+        )
+
+    upgraded = 0
+    remaining_cover = bool(stubs.get("cover"))
+    remaining_cards: list[int] = []
+    results = await asyncio.gather(*(_pull(slot, p, s, d, sd) for slot, d, p, s, sd in jobs))
+    for (slot, _dest, _p, _s, _sd), ok in zip(jobs, results):
+        if ok:
+            upgraded += 1
+            continue
+        if slot == "cover":
+            remaining_cover = True
+        else:
+            remaining_cards.append(int(slot))
+    if remaining_cover or remaining_cards:
+        async with SessionLocal() as session:
+            await _record_image_stubs(session, day_index, remaining_cover, remaining_cards)
+    logger.info("Апгрейд заглушек дня %d: перерисовано %d из %d", day_index, upgraded, len(jobs))
+    return upgraded
 
 
 async def patch_prepared_day(session: AsyncSession, finished: Round) -> bool:

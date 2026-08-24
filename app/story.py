@@ -88,6 +88,30 @@ def _looks_like_image(content: bytes) -> bool:
     return png or jpeg or webp
 
 
+# ---------- Предохранитель 429 (общий IP Render троттлится целиком) ----------
+
+_THROTTLED_UNTIL_MONOTONIC = 0.0
+
+
+def _note_429(cooldown_seconds: int) -> None:
+    global _THROTTLED_UNTIL_MONOTONIC
+    import time as _time
+
+    _THROTTLED_UNTIL_MONOTONIC = _time.monotonic() + max(10, cooldown_seconds)
+
+
+def _throttle_active() -> bool:
+    import time as _time
+
+    return _time.monotonic() < _THROTTLED_UNTIL_MONOTONIC
+
+
+def _throttle_left_seconds() -> int:
+    import time as _time
+
+    return max(0, int(_THROTTLED_UNTIL_MONOTONIC - _time.monotonic()))
+
+
 def _save_image(image: Image.Image, path: Path) -> None:
     if path.suffix.lower() in {".jpg", ".jpeg"}:
         image.save(path, "JPEG", quality=88, optimize=True)
@@ -305,13 +329,29 @@ async def fetch_free_image(
     ]
     for model, seconds, attempts in plans:
         for attempt in range(1, attempts + 1):
+            # Предохранитель 429: провайдер троттлит общий IP — дальнейшие
+            # попытки этого цикла бессмысленны, кадр честно уходит в PIL.
+            if _throttle_active():
+                logger.warning("Pollinations охлаждается до %d с — кадр %s в фолбэк", _throttle_left_seconds(), dest.name)
+                return False
             url = (
                 f"{base}?width={width}&height={height}&nologo=true&model={model}"
-                f"&enhance=true&seed={seed if seed is not None else random.randint(1, 999999)}"
+                f"&seed={seed if seed is not None else random.randint(1, 999999)}"
             )
+            if settings.pollinations_token:
+                url += "&token=" + quote(settings.pollinations_token)
             try:
                 async with httpx.AsyncClient(timeout=seconds, follow_redirects=True) as client:
                     response = await client.get(url)
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("retry-after")
+                        _note_429(int(retry_after) if retry_after and retry_after.isdigit() else 60)
+                        logger.warning(
+                            "Pollinations %s: 429 (retry-after %s) — остальные попытки кадра пропущены",
+                            model,
+                            retry_after or "—",
+                        )
+                        return False
                     if response.status_code != 200:
                         logger.warning("Pollinations %s: HTTP %d (попытка %d)", model, response.status_code, attempt)
                         continue

@@ -374,6 +374,14 @@ async def _today_stake_line(session, player_id: int) -> str | None:
     return f"Ставка сегодня: {from_nano(stake.amount_nanotons):g} Gram ({state})."
 
 
+_WALLET_FALLBACK_TEXT = (
+    f"{warn_mark('wallet-view')} Раздел кошелька сейчас не собирается — уже разбираюсь.\n"
+    "Привязать или сменить адрес можно прямо сейчас: отправь одной строкой\n"
+    "<code>/wallet UQ…</code> (или EQ…).\n"
+    "Если кошелёк был привязан ранее — он никуда не делся, переводы с него засчитываются."
+)
+
+
 async def _wallet_view_safe(user) -> str:
     """Вид /wallet, который отвечает ВСЕГДА: сбой сборки подменяется
     статичной инструкцией вместо общего «сеть дрогнула»."""
@@ -381,12 +389,7 @@ async def _wallet_view_safe(user) -> str:
         return await _wallet_view_text(user)
     except Exception:
         logger.exception("Вид /wallet не собрался — отвечаем статикой")
-        return (
-            f"{warn_mark('wallet-view')} Раздел кошелька сейчас не собирается — уже разбираюсь.\n"
-            "Привязать или сменить адрес можно прямо сейчас: отправь одной строкой\n"
-            "<code>/wallet UQ…</code> (или EQ…).\n"
-            "Если кошелёк был привязан ранее — он никуда не делся, переводы с него засчитываются."
-        )
+        return _WALLET_FALLBACK_TEXT
 
 
 async def _stake_view_safe(user) -> str:
@@ -521,6 +524,19 @@ def _wallet_throttled(user_id: int) -> bool:
 
 @router.message(Command("wallet"))
 async def cmd_wallet(message: Message) -> None:
+    """Иммунитет команды: любой сбой внутри — статическая памятка игроку."""
+    uid = message.from_user.id if message.from_user else 0
+    try:
+        await _cmd_wallet_impl(message)
+    except Exception:
+        logger.exception("/wallet упал целиком (uid=%s) — отправляю памятку", uid)
+        try:
+            await message.answer(_WALLET_FALLBACK_TEXT, parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.exception("Даже статический ответ /wallet не ушёл (uid=%s)", uid)
+
+
+async def _cmd_wallet_impl(message: Message) -> None:
     if message.from_user is not None and message.from_user.id not in settings.admin_id_set:
         if _wallet_throttled(message.from_user.id):
             await message.answer(
@@ -533,6 +549,7 @@ async def cmd_wallet(message: Message) -> None:
             async with SessionLocal() as session:
                 player = await upsert_player(session, message.from_user)
             if not player.wallet_address:
+                logger.info("/wallet uid=%s: кошелёк не привязан — открываю диалог привязки", message.from_user.id)
                 await _dialog_start(message.from_user.id)
                 await message.answer(
                     f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего Gram-кошелька (бывший TON) — привяжу автоматически.\n"
@@ -542,6 +559,11 @@ async def cmd_wallet(message: Message) -> None:
                     parse_mode=ParseMode.HTML,
                 )
                 return
+            logger.info(
+                "/wallet uid=%s: кошелёк привязан (%s…) — показываю вид",
+                message.from_user.id,
+                str(player.wallet_address)[-10:],
+            )
             await message.answer(await _wallet_view_safe(message.from_user), parse_mode=ParseMode.HTML)
             return
         await message.answer(
@@ -1060,6 +1082,12 @@ async def cmd_advance(message: Message) -> None:
         await message.answer(f"День {nxt.day_index} уже объявлен.")
         return
     delivered = await announce_new_day(message.bot, nxt, round_row if closed_here else None)
+    # Заглушки картинок дорисовываются фоном — как и в автопереходе.
+    import asyncio as _asyncio
+
+    from app.scheduler import _image_upgrade_job
+
+    _asyncio.create_task(_image_upgrade_job(nxt.day_index))
     if delivered:
         await message.answer(f"День {nxt.day_index} объявлен в {len(delivered)} чат(ах).")
     else:
