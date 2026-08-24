@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import secrets
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.echoes import collect_due_echoes, spawn_echoes_from_round
+from app.lore import offline_opening_echo
 from app.models import (
     Card,
     LoreEcho,
@@ -32,11 +34,14 @@ from app.models import (
     Vote,
     WinRule,
 )
-from app.art_director import build_image_prompt, plan_day_art, short_image_prompt
+from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
 from app.memory import recall_beats
 from app.season import season_key
-from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
+from app.story import fetch_day_image, generate_chapter, generate_epilogue, generate_opening_echo, render_card, render_cover
 from app.ton_pay import pending_payout_count
+
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -338,12 +343,18 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
 
 
 async def _plan_and_render(
-    session: AsyncSession, day_index: int, opens_hint: datetime | None = None
+    session: AsyncSession,
+    day_index: int,
+    opens_hint: datetime | None = None,
+    pending_outcome: bool = False,
 ) -> dict:
     """Тяжёлая половина создания дня: глава, библия арта и четыре картинки.
 
     Всё сетевое и медленное — здесь. Результат — лёгкий JSON-payload,
     который материализуется в раунд за миллисекунды.
+
+    pending_outcome=True — фаза 1 прегенерации: итог «вчера» ещё не вскрыт,
+    поэтому глава пишется без отголоска (его допишет patch_prepared_day).
     """
     beats = await previous_beats(session)
     echoes = await collect_due_echoes(session, day_index)
@@ -388,18 +399,27 @@ async def _plan_and_render(
         day_index, beats, rule, echoes, distant_echoes=distant,
         season_block=sblock, places_block=places_block,
         villain_block=villain, sealed=sealed_day(day_index),
+        pending_outcome=pending_outcome,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.
     echo_motifs = sorted({_ECHO_ART_MOTIFS.get(echo.kind, "portal hum haze") for echo in echoes})
+    # Сквозные персонажи главы получают стабильные визуальные дескрипторы:
+    # Лайнер в кадре сегодня и через неделю — одна и та же фигура.
+    hero_motifs = character_motifs_for(f"{chapter.get('title', '')} {chapter.get('text', '')}")
     anchor = await _load_art_anchor(session)
-    bible = await plan_day_art(chapter, beats, anchor=anchor, extra_motifs=echo_motifs)
+    bible = await plan_day_art(
+        chapter, beats, anchor=anchor, extra_motifs=sorted(set(echo_motifs + hero_motifs))
+    )
     await _save_art_anchor(session, bible)
 
     media_root = Path(settings.media_dir)
     cover_path = media_root / f"day{day_index}_cover.jpg"
     day_seed = 10_000 + day_index * 7
+    # Сид обложки привязан к месту дня: возвращение в «Старый приют»
+    # рисует тот же мир, а не новую случайную сцену.
+    cover_seed = place_seed_for(chapter.get("place")) or day_seed
     jobs = []
     for position, card in enumerate(chapter["cards"]):
         image_path = media_root / f"day{day_index}_card{position}.jpg"
@@ -409,10 +429,10 @@ async def _plan_and_render(
     fetched = await asyncio.gather(
         # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
         fetch_day_image(
-            build_image_prompt(bible, "cover", seed=day_seed),
-            short_image_prompt(bible, "cover", seed=day_seed),
+            build_image_prompt(bible, "cover", seed=cover_seed),
+            short_image_prompt(bible, "cover", seed=cover_seed),
             cover_path,
-            seed=day_seed,
+            seed=cover_seed,
             width=1280,
             height=720,
         ),
@@ -525,16 +545,82 @@ _PREGEN_LOCK_TTL = 1800  # секунд: генерация дольше пол�
 
 # Формат payload'а заготовки. Незнакомая версия выбрасывается при
 # материализации — день честно генерируется заново по текущим правилам.
-PREPARED_PAYLOAD_VERSION = 1
+# v2: двухфазная прегенерация — глава собирается до вскрытия итогов дня,
+# открывающее эхо дописывает patch_prepared_day после finish_tally.
+PREPARED_PAYLOAD_VERSION = 2
+
+
+def place_seed_for(place: str | None) -> int | None:
+    """Стабильный сид обложки по названию места: возвращение стаи в место
+    выглядит как возвращение — тот же кадр-база, а не новый случайный мир."""
+    if not place or not place.strip():
+        return None
+    return 10_000 + zlib.crc32(place.strip().lower().encode("utf-8")) % 890_000
+
+
+async def patch_prepared_day(session: AsyncSession, finished: Round) -> bool:
+    """Фаза 2 прегенерации: вплетает итог дня в готовую заготовку следующего.
+
+    Заготовка собрана в час подсчёта, когда исход ещё не вскрыт, поэтому её
+    глава начинается сразу со сцены. Здесь — после записи StoryBeat и эпилога —
+    дописываем открывающий абзац-отголосок (нейро или офлайн-строка лора)
+    и приклеиваем его перед сценой. Так обещание «итог становится завязкой
+    завтрашней главы» выполняется, а открытие дня остаётся мгновенным.
+
+    True — патч применён. Любая незапланированная ситуация (нет заготовки,
+    нет итога дня) — False без исключений: день откроется как есть.
+    """
+    next_index = finished.day_index + 1
+    prepared = await session.get(PreparedDay, next_index)
+    if prepared is None or not prepared.payload:
+        return False
+    try:
+        payload = json.loads(prepared.payload)
+    except ValueError:
+        return False
+    if (
+        int(payload.get("v", 0)) != PREPARED_PAYLOAD_VERSION
+        or int(payload.get("day_index", -1)) != next_index
+    ):
+        return False
+    beat = (
+        await session.execute(
+            select(StoryBeat).where(StoryBeat.day_index == finished.day_index).limit(1)
+        )
+    ).scalar_one_or_none()
+    if beat is None:
+        # Итога ещё нет (патч вызван раньше finish_tally) — нечем вплетать.
+        return False
+    opening = await generate_opening_echo(
+        day_index=finished.day_index,
+        beat_title=beat.winning_title,
+        beat_text=beat.winning_text[:300],
+        chapter_excerpt=payload.get("chapter_text", "")[:500],
+        epilogue_hook=(finished.epilogue_text or "")[:220],
+    )
+    if not opening:
+        opening = offline_opening_echo(beat.winning_title)
+    opening = opening.strip()
+    text = payload.get("chapter_text", "")
+    if not opening or text.startswith(opening):
+        return False
+    payload["chapter_text"] = f"{opening}\n\n{text}" if text else opening
+    prepared.payload = json.dumps(payload, ensure_ascii=False)
+    await session.commit()
+    logger.info("Заготовка дня %d дополнена итогом дня %d", next_index, finished.day_index)
+    return True
 
 
 async def prepare_next_day(session: AsyncSession, current_day_index: int) -> bool:
     """Прегенерация следующего дня в час подсчёта.
 
     Тяжёлая генерация уходит в окно TALLYING, поэтому в 11:00 UTC день
-    открывается мгновенно из готовой заготовки. Claim через PreparedDay-строку
-    и временный лок в watcher_state: повторные тики и второй инстанс не плодят
-    параллельных генераций. False — готовить нечего/уже готовится.
+    открывается мгновенно из готовой заготовки. Заготовка собирается ДО
+    вскрытия итогов (pending_outcome=True): глава без отголоска, который
+    допишет patch_prepared_day сразу после finish_tally. Claim через
+    PreparedDay-строку и временный лок в watcher_state: повторные тики и
+    второй инстанс не плодят параллельных генераций.
+    False — готовить нечего/уже готовится.
     """
     day_index = current_day_index + 1
     existing = (
@@ -567,7 +653,9 @@ async def prepare_next_day(session: AsyncSession, current_day_index: int) -> boo
             )
         ).scalar_one_or_none()
         opens_hint = utc_aware(current.tally_ends_at) if current and current.tally_ends_at else None
-        payload = await _plan_and_render(session, day_index, opens_hint=opens_hint)
+        payload = await _plan_and_render(
+            session, day_index, opens_hint=opens_hint, pending_outcome=True
+        )
         blob = json.dumps(payload, ensure_ascii=False)
         if prepared is None:
             session.add(PreparedDay(day_index=day_index, payload=blob))

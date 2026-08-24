@@ -44,7 +44,7 @@ from app.models import (
     WalletDialog,
 )
 from app.payments import build_revote_payload, parse_revote_payload, revote_memo
-from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, reset_game, write_epilogue
+from app.rounds import claim_announcement, close_voting, create_next_round_detailed, ensure_current_round, finish_tally, get_active_round, get_latest_round, get_round, patch_prepared_day, reset_game, write_epilogue
 from app.style import day_mark, hint_mark, money_mark, ok_mark, path_mark, result_mark, warn_mark
 from app.tally import award_points
 from app.ton_pay import pending_payout_count
@@ -919,6 +919,16 @@ async def track_chat(event: ChatMemberUpdated) -> None:
     logger.info("Чат %s (%s): статус бота %s, active=%s", chat.id, chat.type, status, active)
 
 
+def _patch_prepared_safe(session, round_row) -> None:
+    """Фаза 2 прегенерации для /advance: итог дня вплетается в заготовку.
+
+    Падение не роняет команду — день откроется заготовкой как есть."""
+    try:
+        patch_prepared_day(session, round_row)
+    except Exception:
+        logger.exception("Патч заготовки итогом дня %s не удался", round_row.day_index)
+
+
 @router.message(Command("advance"))
 async def cmd_advance(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -942,12 +952,14 @@ async def cmd_advance(message: Message) -> None:
             if closed_here:
                 await award_points(session, round_row)
                 await write_epilogue(session, round_row)
+                await _patch_prepared_safe(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         elif round_row.status.value == "tallying":
             round_row, closed_here = await finish_tally(session, round_row)
             if closed_here:
                 await award_points(session, round_row)
                 await write_epilogue(session, round_row)
+                await _patch_prepared_safe(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         else:
             return

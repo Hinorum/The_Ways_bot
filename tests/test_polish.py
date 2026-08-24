@@ -108,6 +108,28 @@ def test_offline_backstory_of_yesterday_choice() -> None:
     assert "Вчера стая выбрала" not in first["text"]
 
 
+def test_offline_villain_weave_takes_event_not_prompt_instructions() -> None:
+    """В офлайн-главу вплетается событие злодея, а не служебная строка промпта."""
+    from app.season import villain_prompt_block
+
+    block = villain_prompt_block(["Миски наполнились сами, но еда была вчерашняя."], 2)
+    chapter = compose_chapter(9, ["Костёр стаи: появился общий костёр"], WinRule.MAJORITY, villain_line=block)
+    text = chapter["text"]
+    assert "Миски наполнились сами" in text
+    assert "Вплетай это фоном" not in text
+    assert "Текущая ступень" not in text
+
+
+def test_pregen_phase_one_has_no_stale_echo_offline() -> None:
+    """Фаза 1 прегенерации не претендует на знание исхода «вчера»."""
+    chapter = compose_chapter(
+        7, ["Костёр стаи: появился общий костёр"], WinRule.MAJORITY, pending_outcome=True
+    )
+    assert "Вчера стая выбрала" not in chapter["text"]
+    # Сцена дня на месте.
+    assert "Сегодня стая идёт" in chapter["text"]
+
+
 def test_story_prompt_demands_full_narrative() -> None:
     from app.models import RULE_PHRASES
     from app.story import _build_story_prompt
@@ -117,7 +139,7 @@ def test_story_prompt_demands_full_narrative() -> None:
         ["Костёр стаи: появился общий костёр"],
         WinRule.MAJORITY,
     )
-    assert "1200-2200" in prompt
+    assert "1800-2600" in prompt
     assert "новых главных персонажей не вводи" in prompt
     assert "реплика" in prompt and "сенсорная деталь" in prompt
     assert "крючок" in prompt  # финальная строка главы обрывает сцену
@@ -233,8 +255,23 @@ async def test_create_next_round_dedupes_on_race(session, monkeypatch) -> None:
     from app.art_director import offline_bible
     from app import rounds as rounds_mod
 
-    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None, **kwargs):
-        return compose_chapter(day_index, beats, rule, echoes)
+    async def instant_chapter(
+        day_index,
+        beats,
+        rule=None,
+        echoes=None,
+        distant_echoes=None,
+        season_block=None,
+        villain_block=None,
+        sealed=False,
+        pending_outcome=False,
+        **kwargs,
+    ):
+        return compose_chapter(
+            day_index, beats, rule, echoes, distant_echoes,
+            season_block=season_block, villain_line=villain_block,
+            sealed=sealed, pending_outcome=pending_outcome,
+        )
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
     monkeypatch.setattr(

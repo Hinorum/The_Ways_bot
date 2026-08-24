@@ -71,6 +71,34 @@ _PALETTE_ROTATION = [
 # протаскивается в библию следующего — сериальность вместо лотереи.
 AnchorKey = "art_anchor"
 
+# Стабильные визуальные дескрипторы постоянных лиц мира: кто упомянут в главе —
+# тот и получает узнаваемую фигуру в кадре. Детерминированно, без сети и БД:
+# Лайнер в кадре сегодня и через неделю — одна и та же силуэтность.
+_CHARACTER_MOTIFS = {
+    "лайнер": (
+        "Liner the memory-trader, hooded stray dog with soft lantern eyes "
+        "and a satchel of glowing memory vials"
+    ),
+    "архивариус": (
+        "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
+        "drifting paper dust, thin spectacles, whispering folders"
+    ),
+    "хранитель спорных версий": (
+        "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
+        "drifting paper dust, thin spectacles, whispering folders"
+    ),
+    "хозяин ошибки": (
+        "faceless Error Master, a tall silhouette of counting hands and "
+        "misplaced numbers hovering over a glitching portal"
+    ),
+}
+
+
+def character_motifs_for(text: str) -> list[str]:
+    """Дескрипторы персонажей, упомянутых в тексте главы (без дублей)."""
+    low = (text or "").lower()
+    return sorted({descriptor for needle, descriptor in _CHARACTER_MOTIFS.items() if needle in low})
+
 
 def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
     """Детерминированный план дня без сети: сцены берём из image_prompt карт.

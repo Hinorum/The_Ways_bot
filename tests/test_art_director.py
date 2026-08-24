@@ -131,3 +131,25 @@ def test_compact_anchor_fits_state_limit() -> None:
 
     blob = json.dumps(compact_anchor(bible), ensure_ascii=False)
     assert len(blob) <= 255
+
+
+def test_character_motifs_detected_from_chapter_text() -> None:
+    from app.art_director import character_motifs_for
+
+    text = "Лайнер отсчитывает сдачу, а Архивариус шепчет над папками. Хозяин Ошибки молчит."
+    motifs = character_motifs_for(text)
+    assert len(motifs) == 3
+    assert all("Liner" in m or "Archivist" in m or "Error Master" in m for m in motifs)
+    assert character_motifs_for("Стая идёт через пустой город") == []
+    # Детерминированность: тот же текст — тот же набор.
+    assert motifs == character_motifs_for(text.lower())
+
+
+def test_place_seed_is_stable_per_place_and_none_when_empty() -> None:
+    from app.rounds import place_seed_for
+
+    first = place_seed_for("Старый приют")
+    assert first is not None
+    assert first == place_seed_for("старый приют ")  # регистр и пробелы не важны
+    assert place_seed_for(None) is None
+    assert place_seed_for("") is None

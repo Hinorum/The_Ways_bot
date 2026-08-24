@@ -364,17 +364,18 @@ async def generate_chapter(
     places_block: str | None = None,
     villain_block: str | None = None,
     sealed: bool = False,
+    pending_outcome: bool = False,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
-        villain_line=villain_block, sealed=sealed,
+        villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome,
     )
     if not settings.use_free_story_llm:
         return authored
     neural = await _free_story_llm(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
-        villain_block=villain_block, sealed=sealed,
+        villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
     )
     return neural or authored
 
@@ -460,6 +461,7 @@ def _build_story_prompt(
     places_block: str | None = None,
     villain_block: str | None = None,
     sealed: bool = False,
+    pending_outcome: bool = False,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -515,7 +517,7 @@ def _build_story_prompt(
             "вернувшегося места укажи в поле place.\n"
             + places_block + "\n"
         )
-    return (
+    head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
@@ -524,14 +526,30 @@ def _build_story_prompt(
         f"{echo_block}"
         f"{distant_block}"
         f"{places_text}"
-        "Напиши главу дня — цельный рассказ на 1200-2200 знаков, от второго "
+        "Напиши главу дня — цельный рассказ на 1800-2600 знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
         "героев: Гавкус, Миска, Рекс-9, Пиксель и Безымянная — только фоновый "
         "бросок, новых главных персонажей не вводи.\n"
         "Обязательный состав главы, по порядку:\n"
-        "(1) Отголосок вчера: чем отозвался вчерашний выбор из канона — через "
-        "одну конкретную деталь мира или стаи, не пересказом;\n"
-        "(2) Сцена сейчас: куда стая вышла сегодня; живая сенсорная деталь "
+    )
+    if pending_outcome:
+        # Фаза 1 прегенерации: итог «вчера» ещё неизвестен (глава собирается
+        # в час подсчёта, до вскрытия урны). Отголосок допишет отдельный
+        # короткий вызов после итогов — здесь он превратился бы в галлюцинацию.
+        opening_line = (
+            "(1) Вступление-отголосок будет дописано позже отдельным вызовом — "
+            "НЕ пиши его. Начинай сразу со сцены «сейчас», не упоминая "
+            "вчерашний выбор и его исход;\n"
+        )
+    else:
+        opening_line = (
+            "(1) Отголосок вчера: чем отозвался вчерашний выбор из канона — через "
+            "одну конкретную деталь мира или стаи, не пересказом;\n"
+        )
+    return (
+        head
+        + opening_line
+        + "(2) Сцена сейчас: куда стая вышла сегодня; живая сенсорная деталь "
         "(звук портала, свет мисок, шёпот папок) и минимум одна прямая реплика "
         "персонажа с его характерной манерой речи;\n"
         "(3) Закон дня звучит голосом Архивариуса как реплика в сцене — с его "
@@ -556,7 +574,7 @@ def _build_story_prompt(
         "угроза»: что стая получит и чем за это заплатит; оно завтра станет "
         "каноном.\n"
         'Формат: {"title":"День N. ...","place":"короткое название места дня",'
-        '"text":"история дня, 1200-2200 знаков",'
+        '"text":"история дня, 1800-2600 знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
         '"cards":[{"title":"...","description":"...","consequence":"...",'
@@ -577,11 +595,12 @@ async def _free_story_llm(
     places_block: str | None = None,
     villain_block: str | None = None,
     sealed: bool = False,
+    pending_outcome: bool = False,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
-        villain_block=villain_block, sealed=sealed,
+        villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
@@ -625,7 +644,7 @@ async def generate_epilogue(
         f"День {day_index} закрылся. Сработал закон дня: {rule_phrase}. "
         f"Победивший путь «{winner_title}»: {winner_consequence} "
         f"Голосование по путям выглядело так (счёт скрыт был до этого момента): {counts_line}. "
-        "Напиши завершение истории дня от второго лица на 250-400 знаков: "
+        "Напиши завершение истории дня от второго лица на 350-600 знаков: "
         "как этот выбор меняет вечер и что стая почувствует ночью. "
         "Последняя фраза — крючок на завтра: недоговорённый звук, примета или "
         "вопрос без ответа, который завтрашняя глава обязана подхватить. "
@@ -650,8 +669,9 @@ async def generate_epilogue(
         return ""
     if not text:
         return ""
-    if len(text) > 460:
-        cut = text[:460]
+    # Потолок согласован с Round.epilogue_text (String(700)).
+    if len(text) > 680:
+        cut = text[:680]
         stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
         text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
     if not text_is_clean(text):
@@ -666,7 +686,65 @@ _TEASER_FALLBACKS = (
     "Счёт известен только архиву. Стая чувствует это шерстью: сегодня мир повернётся не туда, куда все смотрели.",
     "Голоса сложились. Хранитель Спорных Версий запечатывает папку — и ухмыляется краем морды.",
     "Всё уже решено, но не названо. Порталы гудят чуть громче обычного: им первым докладывают о переменах.",
+    "В архиве сегодня тихо. Слишком тихо для дня, когда счёт сошёлся с первого раза.",
+    "Папка дня уже подписана. Чернила ещё не просохли, а мир уже начал перестраиваться.",
+    "Безымянная подошла к урне и нюхала её дольше обычного. Собаки знают исход раньше архива.",
+    "Хозяин Ошибки заглянул в урну первым. Что он там пересчитал — узнаем вместе с итогами.",
 )
+
+
+async def generate_opening_echo(
+    day_index: int,
+    beat_title: str,
+    beat_text: str,
+    chapter_excerpt: str,
+    epilogue_hook: str = "",
+) -> str:
+    """Открывающий абзац завтрашней главы: отголосок только что свершившегося выбора.
+
+    Фаза 2 прегенерации: заготовка дня собрана в час подсчёта, до вскрытия
+    итогов, поэтому первый абзац дописывается отдельно и ставится перед
+    готовой сценой. "" — если сеть молчит (тогда вызывающий код возьмёт
+    детерминированную офлайн-строку из лора).
+    """
+    prompt = (
+        f"Вчера (день {day_index}) стая выбрала путь «{beat_title}», и мир "
+        f"перестроился под итог: {beat_text} "
+        + (f"К ночи это отозвалось так: {epilogue_hook} " if epilogue_hook else "")
+        + "Сегодняшняя глава уже написана и начинается так:\n"
+        f"«{chapter_excerpt}»\n"
+        "Напиши ОТКРЫВАЮЩИЙ абзац этой главы на 250-450 знаков: одно-три "
+        "предложения от второго лица в настоящем времени о том, чем утро "
+        "отозвало вчерашний выбор. Одна конкретная примета мира или стаи, без "
+        "пересказа события и без слов «вчера», «выбор», «итог». Абзац должен "
+        "естественно подводить к приведённой сцене, не повторяя её слов и "
+        "названий мест. Без заголовков, без JSON, чистый художественный текст."
+    )
+    result = await _chat_completion(
+        [
+            {"role": "system", "content": DM_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        timeout=55,
+    )
+    if result is None:
+        return ""
+    payload, used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+    except Exception as exc:
+        logger.warning("Открывающее эхо от %s не разобрано: %s", used_model, exc)
+        return ""
+    if not text or not text_is_clean(text):
+        logger.warning("Открывающее эхо отброшено (пустое или нечистое)")
+        return ""
+    text = text.strip('"«»')
+    if len(text) > 520:
+        cut = text[:520]
+        stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
+        text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
+    logger.info("Открывающее эхо дня %d написано моделью %s", day_index + 1, used_model)
+    return text
 
 
 async def generate_teaser(day_index: int, rule_phrase: str) -> str:

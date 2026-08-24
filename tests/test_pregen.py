@@ -9,8 +9,13 @@ from sqlalchemy import select
 
 from app.art_director import offline_bible
 from app.lore import compose_chapter
-from app.models import Card, PreparedDay, Round, RoundStatus, WatcherState, WinRule
-from app.rounds import create_next_round_detailed, prepare_next_day
+from app.models import Card, PreparedDay, Round, RoundStatus, StoryBeat, WatcherState, WinRule
+from app.rounds import (
+    PREPARED_PAYLOAD_VERSION,
+    create_next_round_detailed,
+    patch_prepared_day,
+    prepare_next_day,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -18,8 +23,23 @@ def offline_generation(monkeypatch):
     """Сетевые генераторы заменены мгновенными: тестируем только конвейер."""
     from app import rounds as rounds_mod
 
-    async def instant_chapter(day_index, beats, rule=None, echoes=None, distant_echoes=None, **kwargs):
-        return compose_chapter(day_index, beats, rule, echoes)
+    async def instant_chapter(
+        day_index,
+        beats,
+        rule=None,
+        echoes=None,
+        distant_echoes=None,
+        season_block=None,
+        villain_block=None,
+        sealed=False,
+        pending_outcome=False,
+        **kwargs,
+    ):
+        return compose_chapter(
+            day_index, beats, rule, echoes, distant_echoes,
+            season_block=season_block, villain_line=villain_block,
+            sealed=sealed, pending_outcome=pending_outcome,
+        )
 
     monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
     monkeypatch.setattr(
@@ -65,6 +85,116 @@ async def test_prepare_next_day_creates_prepared(session) -> None:
     assert len(payload["cards"]) == 3
     # Лок снят после успеха.
     assert await session.get(WatcherState, "pregen_lock:6") is None
+
+
+async def test_pregen_phase_one_waits_for_outcome(session) -> None:
+    """Фаза 1 (час подсчёта): итог дня ещё не вскрыт — глава без отголоска."""
+    round_row = await _seed_tallying_day(session)
+    assert await prepare_next_day(session, round_row.day_index) is True
+    payload = json.loads((await session.get(PreparedDay, 6)).payload)
+    assert int(payload["v"]) == PREPARED_PAYLOAD_VERSION
+    # Офлайн-глава в обычном режиме начинает с эха «вчера стая выбрала…»;
+    # в фазе 1 этого быть не должно: исход ещё неизвестен.
+    assert not payload["chapter_text"].startswith("Сеть стала")
+    assert "Вчера стая выбрала" not in payload["chapter_text"]
+
+
+async def test_patch_applies_outcome_and_survives_materialization(session, monkeypatch) -> None:
+    """Фаза 2: после вскрытия итогов открывающее эхо встаёт перед сценой."""
+    from app import rounds as rounds_mod
+
+    round_row = await _seed_tallying_day(session)
+    assert await prepare_next_day(session, round_row.day_index) is True
+
+    session.add(
+        StoryBeat(
+            day_index=5,
+            winning_title="Кабель в зубах",
+            winning_text="Кабель удержался. Стая получила час форы.",
+            win_rule="majority",
+            vote_counts="{}",
+        )
+    )
+    round_row.epilogue_text = "Ночь прошла тревожно: кабель трещал во сне."
+    await session.commit()
+
+    async def fake_opening(**kwargs):
+        assert kwargs["beat_title"] == "Кабель в зубах"
+        return "Утро пахло жжёной изоляцией: вчерашний кабель всё ещё держал."
+
+    monkeypatch.setattr(rounds_mod, "generate_opening_echo", fake_opening)
+
+    assert await patch_prepared_day(session, round_row) is True
+    patched = json.loads((await session.get(PreparedDay, 6)).payload)
+    assert patched["chapter_text"].startswith("Утро пахло жжёной изоляцией")
+
+    created_round, created = await create_next_round_detailed(session)
+    assert created is True
+    assert created_round.chapter_text.startswith("Утро пахло жжёной изоляцией")
+
+
+async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None:
+    """Патч до записи StoryBeat ничего не делает и не генерирует зря."""
+    from app import rounds as rounds_mod
+
+    round_row = await _seed_tallying_day(session)
+    assert await prepare_next_day(session, round_row.day_index) is True
+
+    async def explode(**kwargs):
+        raise AssertionError("без итога дня генерация эха не запускается")
+
+    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
+    assert await patch_prepared_day(session, round_row) is False
+
+
+async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> None:
+    """Сеть молчит — эхо собирает офлайн-лор по названию победившего пути."""
+    from app import rounds as rounds_mod
+    from app.lore import offline_opening_echo
+
+    round_row = await _seed_tallying_day(session)
+    assert await prepare_next_day(session, round_row.day_index) is True
+    session.add(
+        StoryBeat(
+            day_index=5,
+            winning_title="Кабель в зубах",
+            winning_text="Кабель удержался.",
+            win_rule="majority",
+            vote_counts="{}",
+        )
+    )
+    await session.commit()
+
+    async def silent(**kwargs):
+        return ""
+
+    monkeypatch.setattr(rounds_mod, "generate_opening_echo", silent)
+    assert await patch_prepared_day(session, round_row) is True
+    patched = json.loads((await session.get(PreparedDay, 6)).payload)
+    assert patched["chapter_text"].startswith(offline_opening_echo("Кабель в зубах"))
+
+
+async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:
+    """Заготовки нет (сеть упала в фазе 1) — день честно соберётся синхронно."""
+    from app import rounds as rounds_mod
+
+    round_row = await _seed_tallying_day(session)
+    session.add(
+        StoryBeat(
+            day_index=5,
+            winning_title="t",
+            winning_text="x",
+            win_rule="majority",
+            vote_counts="{}",
+        )
+    )
+    await session.commit()
+
+    async def explode(**kwargs):
+        raise AssertionError("без заготовки патчить нечего")
+
+    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
+    assert await patch_prepared_day(session, round_row) is False
 
 
 async def test_prepare_skips_when_already_prepared_or_locked(session) -> None:
