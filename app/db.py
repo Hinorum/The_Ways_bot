@@ -43,6 +43,7 @@ _SQLITE_COLUMN_DDL = {
         "network": "ALTER TABLE payouts ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
         "attempts": "ALTER TABLE payouts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
         "alerted": "ALTER TABLE payouts ADD COLUMN alerted BOOLEAN NOT NULL DEFAULT 0",
+        "last_error": "ALTER TABLE payouts ADD COLUMN last_error VARCHAR(200)",
     },
 }
 
@@ -111,6 +112,10 @@ async def init_db() -> None:
             # Дедуп алертов о выплатах в БД: безопасен при рестартах и репликах.
             await conn.execute(text(
                 "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS alerted BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            # Причина последней неудачи отправки: /payouts и алерты показывают её сами.
+            await conn.execute(text(
+                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)"
             ))
             # Доли казны (рейк/копилка месяца) уходят без игрока.
             await conn.execute(text("ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL"))

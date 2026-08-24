@@ -304,29 +304,28 @@ async def fetch_broadcast_markers() -> set[str]:
 async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: str) -> str | None:
     """Отправляет перевод с казначея. Возвращает метку вещания или None.
 
-    None значит «не ушло» — выплата вернётся в очередь ретраев. Успех
-    фиксируется лайтсервером (результат 1); фактический хеш транзакции
+    None — только когда отправка невозможна в принципе (TON выключен или нет
+    мнемоники): вызывающий диспетчер сам запишет понятную причину в
+    payouts.last_error. Реальные ошибки (пара мнемоника/адрес, лайтсерверы,
+    seqno) ПРОПАГАЦИЯТСЯ исключением — диспетчер кладёт их текст в
+    last_error, и причина видна в /payouts и алертах без раскопок логов.
+    Успех фиксируется лайтсервером (результат 1); фактический хеш транзакции
     смотрится в эксплорере по memo-комментарию.
     """
     if not settings.ton_enabled or not settings.active_treasury_mnemonic:
         logger.warning("TON выключен или нет мнемоники: выплата к …%s не отправлена", dest_address[-6:])
         return None
-    try:
-        wallet = await _get_wallet()
-        result = await wallet.transfer(
-            destination=dest_address,
-            amount=amount_nanotons,
-            body=_comment_cell(comment),
-        )
-        if result != 1:
-            logger.warning("Лайтсерверы не приняли перевод к …%s", dest_address[-6:])
-            return None
-        marker = f"bcast:{int(datetime.now(timezone.utc).timestamp())}"
-        logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
-        return marker
-    except Exception as exc:
-        logger.warning("Отправка TON не удалась (%s): %s", dest_address[-6:], exc)
-        return None
+    wallet = await _get_wallet()
+    result = await wallet.transfer(
+        destination=dest_address,
+        amount=amount_nanotons,
+        body=_comment_cell(comment),
+    )
+    if result != 1:
+        raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
+    marker = f"bcast:{int(datetime.now(timezone.utc).timestamp())}"
+    logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
+    return marker
 
 
 async def _reset_retriable(session, network: str) -> None:
@@ -345,33 +344,36 @@ async def _reset_retriable(session, network: str) -> None:
 
 async def _alert_admin(bot: Bot | None, network: str) -> None:
     """Алерты о failed-выплатах. Дедуп — колонка payouts.alerted в БД:
-    переживает рестарт и безопасен при нескольких инстансах."""
+    переживает рестарт и безопасен при нескольких инстансах. В текст идут
+    причины из last_error — разбор начинается без открытия логов."""
     if bot is None:
         return
     async with SessionLocal() as session:
-        fresh = (
+        rows = (
             (
                 await session.execute(
-                    select(Payout.id).where(
+                    select(Payout.id, Payout.last_error).where(
                         Payout.status == "failed",
                         Payout.alerted.is_(False),
                         Payout.network == network,
                     )
                 )
             )
-            .scalars()
             .all()
         )
-        if not fresh:
+        if not rows:
             return
+        sample = "; ".join(
+            f"#{payout_id}: {reason}" if reason else f"#{payout_id}"
+            for payout_id, reason in rows[:3]
+        )
         text = (
-            f"⚠️ Выплаты не ушли ({len(fresh)} шт., сеть {network}). "
-            f"Id: {', '.join(map(str, fresh[:10]))}{'…' if len(fresh) > 10 else ''}. "
-            "Проверь казначея и SDK."
+            f"⚠️ Выплаты не ушли ({len(rows)} шт., сеть {network}). {sample}. "
+            "Разбор: /payouts (причина видна у каждой строки)."
         )
         await session.execute(
             update(Payout)
-            .where(Payout.id.in_(fresh))
+            .where(Payout.id.in_([row_id for row_id, _reason in rows]))
             .values(alerted=True)
         )
         await session.commit()
@@ -380,6 +382,10 @@ async def _alert_admin(bot: Bot | None, network: str) -> None:
             await bot.send_message(admin_id, text)
         except Exception as exc:
             logger.warning("Алерт админу %s не доставлен: %s", admin_id, exc)
+
+
+# Доли казны без игрока: адрес получателя — OWNER_WALLET_ADDRESS.
+_TREASURY_KINDS = {"rake", "leaderboard"}
 
 
 async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> int:
@@ -400,6 +406,16 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
             .limit(limit)
         )
         payouts = list(result.scalars().all())
+        # Доля казны могла быть создана раньше, чем владелец задал адрес:
+        # подставляем актуальный OWNER_WALLET_ADDRESS прямо перед отправкой —
+        # старые «пустые» строки оживают сами, ручной retry не нужен.
+        for payout in payouts:
+            if (
+                not payout.dest_address
+                and payout.kind in _TREASURY_KINDS
+                and settings.owner_wallet_address
+            ):
+                payout.dest_address = normalize_address(settings.owner_wallet_address)
         # Фиксируем «взятые в работу» ДО вещания: падение сервиса между
         # broadcast и коммитом не приведёт к повторной отправке.
         for payout in payouts:
@@ -415,6 +431,11 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
         for payout in payouts:
             if not payout.dest_address:
                 payout.status = "failed"
+                payout.last_error = (
+                    "нет адреса получателя: для доли казны задай OWNER_WALLET_ADDRESS"
+                    if payout.kind in _TREASURY_KINDS
+                    else "нет адреса получателя (кошелёк игрока не найден)"
+                )
                 continue
             comment = f"way:{payout.round_id}:{payout.kind}#{payout.id}"
             if comment in markers:
@@ -424,6 +445,7 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 payout.tx_hash = None
                 payout.status = "sent"
                 payout.sent_at = datetime.now(timezone.utc)
+                payout.last_error = None
                 sent += 1
                 logger.warning(
                     "Выплата %d уже разослана ранее (memo найдено у казначея) — помечена sent без повтора",
@@ -438,17 +460,23 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 )
             except Exception as exc:
                 logger.warning("Выплата %s не ушла: %s", payout.id, exc)
+                payout.last_error = str(exc)[:200]
                 tx_hash = None
+            if tx_hash is None and payout.last_error is None:
+                # Единственный путь сюда — guard выключенного TON/мнемоники.
+                payout.last_error = "отправка недоступна: TON выключен или нет мнемоники казначея"
             if tx_hash:
                 payout.tx_hash = tx_hash
                 payout.status = "sent"
                 payout.sent_at = datetime.now(timezone.utc)
                 payout.attempts = 0
+                payout.last_error = None
                 sent += 1
             elif payout.attempts >= settings.payout_max_attempts:
                 payout.status = "failed"
             else:
-                # Лимит не исчерпан — вернётся в очередь следующего цикла.
+                # Лимит не исчерпан — вернётся в очередь следующего цикла;
+                # last_error сохраняем: причина видна в /payouts уже сейчас.
                 payout.status = "pending"
         await session.commit()
     dead = [p.id for p in payouts if p.status == "failed"]

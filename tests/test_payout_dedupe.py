@@ -128,3 +128,178 @@ async def test_first_attempt_skips_history_check(monkeypatch) -> None:
         async with SessionLocal() as session:
             await session.delete(await session.get(Payout, payout_id))
             await session.commit()
+
+
+async def test_failed_transfer_records_reason(monkeypatch) -> None:
+    """Причина неудачи пишется в last_error и переживает исчерпание ретраев."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    # Guard пропускает дальше только при непустой мнемонике активной сети.
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(["слово"] * 24))
+    payout_id = await _seed_payout(attempts=settings.payout_max_attempts - 1)
+
+    # Сломанная пара мнемоника/адрес — типичная тестнет-причина.
+    async def broken_wallet():
+        raise ValueError("Адрес казначея не совпадает с производным от мнемоники")
+
+    async def empty_markers() -> set[str]:
+        return set()
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", broken_wallet)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", empty_markers)
+
+    try:
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "failed"
+        assert row.last_error is not None
+        assert "не совпадает" in row.last_error
+
+        # Ручной retry снова поднимет строку с той же видимой причиной.
+        row.status = "pending"
+        row.attempts = 0
+        row.alerted = False
+        await session.commit()
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+async def test_empty_treasury_dest_revives_from_owner_env(monkeypatch) -> None:
+    """Рейк без адреса (OWNER_WALLET_ADDRESS задан позже) уходит сам, без retry."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    owner = "0:" + os.urandom(32).hex()
+    monkeypatch.setattr(settings, "owner_wallet_address", owner)
+    async with SessionLocal() as session:
+        payout = Payout(
+            round_id=7,
+            player_id=None,
+            kind="rake",
+            amount_nanotons=50_000_000,
+            dest_address="",  # создано до того, как адрес появился в окружении
+        )
+        session.add(payout)
+        await session.flush()
+        payout_id = payout.id
+        await session.commit()
+
+    transfer = AsyncMock(return_value="bcast:88")
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", transfer)
+
+    try:
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        assert transfer.await_count == 1
+        assert transfer.await_args.args[0] == owner
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "sent" and row.last_error is None
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+async def test_empty_dest_without_owner_fails_with_clear_reason(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "owner_wallet_address", "")
+    async with SessionLocal() as session:
+        payout = Payout(
+            round_id=7,
+            player_id=None,
+            kind="leaderboard",
+            amount_nanotons=30_000_000,
+            dest_address="",
+        )
+        session.add(payout)
+        await session.flush()
+        payout_id = payout.id
+        await session.commit()
+
+    try:
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "failed"
+        assert "OWNER_WALLET_ADDRESS" in row.last_error
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+async def test_payouts_listing_shows_reason(monkeypatch) -> None:
+    """/payouts показывает причину у каждой строки — разбор без логов."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.handlers import cmd_payouts
+
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    async with SessionLocal() as session:
+        payout = Payout(
+            round_id=9,
+            kind="prize",
+            amount_nanotons=2_000_000,
+            dest_address="0:" + os.urandom(32).hex(),
+            status="pending",
+            attempts=2,
+            last_error="Лайтсерверы не приняли перевод (результат 0)",
+        )
+        session.add(payout)
+        await session.flush()
+        payout_id = payout.id
+        await session.commit()
+
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=4242),
+        text="/payouts",
+        answer=AsyncMock(),
+    )
+    try:
+        await cmd_payouts(message)
+        text = message.answer.call_args.args[0]
+        assert f"#{payout_id}" in text
+        assert "Лайтсерверы не приняли" in text
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+async def test_dead_letter_alert_carries_reason(monkeypatch) -> None:
+    """Алерт админу называет причину, а не только id."""
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    sent: list[tuple[int, str]] = []
+
+    class Bot:
+        async def send_message(self, chat_id, text):
+            sent.append((chat_id, text))
+
+    async with SessionLocal() as session:
+        payout = Payout(
+            round_id=8,
+            kind="prize",
+            amount_nanotons=1_000_000,
+            dest_address="0:" + os.urandom(32).hex(),
+            status="failed",
+            alerted=False,
+            attempts=5,
+            last_error="Лайтсерверы не приняли перевод",
+        )
+        session.add(payout)
+        await session.flush()
+        payout_id = payout.id
+        await session.commit()
+
+    try:
+        await ton_pay._alert_admin(Bot(), settings.ton_network)
+        texts = [text for _chat, text in sent]
+        assert any(str(payout_id) in t and "Лайтсерверы не приняли" in t for t in texts)
+        # Дедуп: повторный вызов молчит.
+        await ton_pay._alert_admin(Bot(), settings.ton_network)
+        assert len(sent) == len(settings.admin_id_set)
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()

@@ -1103,9 +1103,11 @@ async def cmd_payouts(message: Message) -> None:
         return
     lines = ["Неотправленные выплаты:"]
     for row in rows:
+        reason = getattr(row, "last_error", None)
+        tail = f" · {reason[:110]}" if reason else ""
         lines.append(
             f"#{row.id} · {row.kind} · {from_nano(row.amount_nanotons):.4f} Gram · "
-            f"{row.status} · попыток {row.attempts} · …{row.dest_address[-8:]}"
+            f"{row.status} · попыток {row.attempts} · …{row.dest_address[-8:]}{tail}"
         )
     lines.append("")
     lines.append(

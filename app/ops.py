@@ -218,15 +218,18 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
         # 3. Dead-letter выплаты существуют — деньги ждут ручного разбора.
         dead = (
             await session.execute(
-                select(Payout.id).where(Payout.status == "failed").limit(20)
+                select(Payout.id, Payout.last_error).where(Payout.status == "failed").limit(20)
             )
-        ).scalars().all()
+        ).all()
         if dead:
             problems.append(f"dead-letter выплат: {len(dead)}")
+            reasons = [f"#{row_id} {reason}" for row_id, reason in dead[:2] if reason]
+            reason_note = f": {'; '.join(reasons)}" if reasons else ""
             if await _throttled(session, ALERT_DEAD_KEY):
                 await notify_admins(
                     bot,
                     "⚠️ Есть безнадёжные выплаты (failed после всех ретраев): "
-                    f"{', '.join(map(str, dead[:10]))}. Разбери вручную перед сбросом игры.",
+                    f"{', '.join(str(row_id) for row_id, _r in dead[:10])}{reason_note}. "
+                    "Разбор: /payouts → /payout <id> retry|spam перед сбросом игры.",
                 )
     return problems

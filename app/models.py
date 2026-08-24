@@ -229,6 +229,9 @@ class Payout(Base):
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Причина последней неудачи отправки: видно в /payouts и алертах админу,
+    # диагноз не требует раскопок логов сервиса.
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Админ уже предупреждён об этой выплате: дедуп алертов живёт в БД,
     # а не в памяти процесса — переживает рестарт, безопасен при репликах.
     alerted: Mapped[bool] = mapped_column(Boolean, default=False)
