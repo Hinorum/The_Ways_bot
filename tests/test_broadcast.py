@@ -137,3 +137,22 @@ async def test_migrated_chat_is_forgotten(tmp_path, monkeypatch) -> None:
 
 async def test_no_bot_no_broadcast() -> None:
     assert await announce_new_day(None, SimpleNamespace(day_index=1)) == []
+
+
+def test_status_hides_descriptions_and_captions_carry_them(tmp_path) -> None:
+    """Описания путей переехали в подписи фото: пост дня остаётся главе."""
+    from app.broadcast import day_media_group, status_text
+
+    round_row = _round(9300, tmp_path)
+    status = status_text(round_row)
+    assert "описание" not in status  # описания больше не в текстовом посте
+    for position in range(3):
+        assert f"{['I', 'II', 'III'][position]}. Путь {position}" in status
+
+    media = day_media_group(round_row)
+    captions = [item.caption for item in media[1:]]
+    assert len(captions) == 3
+    for position, caption in enumerate(captions):
+        assert f"Путь {['I', 'II', 'III'][position]}." in caption
+        assert "описание" in caption  # полное описание живёт на картинке пути
+        assert len(caption) <= 1024  # лимит Telegram на подпись фото

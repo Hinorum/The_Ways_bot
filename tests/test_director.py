@@ -61,6 +61,26 @@ def test_results_median_takes_middle() -> None:
     assert "середина" in text or "меру" in text
 
 
+def test_results_flip_margin_for_close_race() -> None:
+    """«Канон на волоске»: плотная развилка показывает, чего не хватило."""
+    text = format_results(_round(WinRule.MAJORITY, {0: 9, 1: 8, 2: 1}, winner=0))
+    assert "на волоске" in text
+    assert "ещё 1 голос за «Путь 1»" in text
+
+
+def test_results_flip_margin_minority_twist() -> None:
+    """Меньшинство победило с минимальным перевесом — волосок виден."""
+    text = format_results(_round(WinRule.MINORITY, {0: 2, 1: 3, 2: 4}, winner=0))
+    assert "на волоске" in text
+    assert "ещё 1 голос" in text
+
+
+def test_results_no_flip_line_for_blowout() -> None:
+    """Разгром не притворяется драмой: строки про волосок нет."""
+    text = format_results(_round(WinRule.MAJORITY, {0: 50, 1: 1, 2: 0}, winner=0))
+    assert "на волоске" not in text
+
+
 def test_results_keeps_tie_note(test_rules_round) -> None:
     text = format_results(test_rules_round)
     assert "жребий закона" in text

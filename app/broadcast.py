@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from pathlib import Path
 
 from aiogram import Bot
@@ -71,12 +72,14 @@ def status_text(round_row: Round) -> str:
         phase = "⏳ Голосование закрыто. Идёт час подсчёта."
     else:
         phase = "🌙 День закрыт."
-    cards = "\n\n".join(
-        f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}\n{_clamp(card.description, 240)}"
+    # Описания путей живут в подписях фото (лимит подписи 1024), поэтому
+    # текстовый пост остаётся главе и фазе — больше воздуха для истории.
+    cards = "\n".join(
+        f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2350)}\n\n"
+        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2900)}\n\n"
         f"{cards}\n\n{phase}\n"
         f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
         f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
@@ -109,10 +112,14 @@ def _card_media(card) -> InputMediaPhoto:
     path = Path(card.image_path)
     if not path.exists():
         render_card(path, card.title, card.description, card.position)
-    return InputMediaPhoto(
-        media=FSInputFile(path),
-        caption=f"{path_mark(getattr(card, 'tag', 'care'), str(card.round_id) + str(card.position))} Путь {POSITIONS[card.position]}. {card.title}",
+    # Подпись несёт полное описание пути (лимит Telegram — 1024 знака):
+    # игрок читает развилку прямо на картинке, не отрываясь от истории.
+    caption = (
+        f"{path_mark(getattr(card, 'tag', 'care'), str(card.round_id) + str(card.position))} "
+        f"Путь {POSITIONS[card.position]}. {_clamp(card.title, 100)}\n\n"
+        f"{_clamp(card.description, 700)}"
     )
+    return InputMediaPhoto(media=FSInputFile(path), caption=caption)
 
 
 def _cover_media(round_row: Round) -> InputMediaPhoto:
@@ -339,4 +346,108 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
     outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
     delivered = sum(1 for ok in outcomes if ok)
     logger.info("Шёпот дня разослан в %d из %d чатов", delivered, len(chat_ids))
+    return delivered
+
+
+# Личное эхо проигравшим: у каждого голосовавшего «не туда» остаётся личная
+# незакрытая ветка — причина вернуться к следующей развилке. Только публичные
+# данные (карты дня видны всем), никаких цифр и механики.
+_PERSONAL_ECHO_TEMPLATES = (
+    (
+        "Стая пошла иначе — за «{winner}». Твоя тропа «{title}» никуда не делась: "
+        "{consequence} Такие тропы мир помнит — иногда они всплывают там, где их "
+        "не ждут. Новая развилка уже открыта: один выбор на всех."
+    ),
+    (
+        "Ты звал стаю на «{title}», но она ушла за «{winner}». Несостоявшийся путь "
+        "остался приметой мира: {consequence} Вечером станет видно, чья дорога "
+        "была дальновиднее. Сегодняшние карты уже ждут."
+    ),
+    (
+        "«{title}» — твой вчерашний путь — не стал каноном: стая выбрала "
+        "«{winner}». Но невыбранное здесь не исчезает: {consequence} Мир запомнил "
+        "и это. Загляни на новую развилку, когда сможешь."
+    ),
+    (
+        "Стая свернула к «{winner}», а твоя тропа «{title}» осталась тлеть на "
+        "обочине: {consequence} Здесь нет неверных дорог — есть недожитые. "
+        "Новая развилка открыта."
+    ),
+    (
+        "Вчера ты был за «{title}», стая — за «{winner}». След твоего пути "
+        "вплетён в мир: {consequence} Через несколько дней его можно узнать на "
+        "тропе. А пока — новый день и новые карты."
+    ),
+)
+
+
+def personal_echo_text(
+    seed_key: str, loser_title: str, loser_consequence: str, winner_title: str
+) -> str:
+    """Детерминированное личное сообщение проигравшему: один игрок в один день
+    всегда получает одну и ту же формулировку."""
+    rng = random.Random(f"pecho:{seed_key}")
+    template = _PERSONAL_ECHO_TEMPLATES[rng.randrange(len(_PERSONAL_ECHO_TEMPLATES))]
+    return template.format(
+        title=_clamp(loser_title.strip(), 80),
+        consequence=_clamp(loser_consequence.strip(), 240),
+        winner=_clamp(winner_title.strip(), 80),
+    )
+
+
+async def send_personal_echoes(bot: Bot | None, finished) -> int:
+    """Личное эхо каждому, кто голосовал мимо победившего пути.
+
+    Читает голоса закрытого дня из базы, пишет только в личку игрока
+    (chat_id = player_id); недоставленные сообщения молча пропускаются —
+    бот не имеет права писать тем, кто его не начинал. Возвращает число
+    доставленных сообщений.
+    """
+    if bot is None or not settings.personal_echo or finished is None:
+        return 0
+    winner_pos = getattr(finished, "winner_card", None)
+    cards = {card.position: card for card in finished.cards}
+    winner = cards.get(winner_pos)
+    if winner_pos is None or winner is None:
+        return 0
+    from app.models import Vote
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Vote.player_id, Vote.card_position).where(Vote.round_id == finished.id)
+            )
+        ).all()
+    losers = [(pid, pos) for pid, pos in rows if pos != winner_pos]
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(player_id: int, position: int) -> bool:
+        card = cards.get(position)
+        if card is None:
+            return False
+        text = personal_echo_text(
+            f"{finished.id}:{player_id}", card.title, card.consequence, winner.title
+        )
+        async with semaphore:
+            try:
+                await bot.send_message(player_id, text)
+                return True
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after + 1)
+                try:
+                    await bot.send_message(player_id, text)
+                    return True
+                except Exception:
+                    return False
+            except Exception:
+                return False
+
+    outcomes = await asyncio.gather(*(worker(pid, pos) for pid, pos in losers))
+    delivered = sum(1 for ok in outcomes if ok)
+    logger.info(
+        "Личное эхо дня %d доставлено %d из %d проигравших",
+        getattr(finished, "day_index", "?"),
+        delivered,
+        len(losers),
+    )
     return delivered

@@ -6,6 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, WinRule, RULE_PHRASES
+from app.rounds import pick_winner
 from app.ton_utils import from_nano
 from app.weeks import iso_week_key
 
@@ -89,6 +90,55 @@ def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) ->
     return phrases[rng.randrange(len(phrases))]
 
 
+_FLIP_SEARCH_CAP = 15  # отрыв больше этого уже не «на волоске» — строку не пишем
+
+
+def _votes_word(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return "голос"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "голоса"
+    return "голосов"
+
+
+def flip_margin(counts: dict[int, int], win_rule, winner_card: int | None) -> tuple[int, int] | None:
+    """«Канон на волоске»: минимальное число переносов голосов, меняющее исход.
+
+    Перенос = один голос меняет путь. Ищем минимальный k, при котором
+    существует перераспределение k голосов, дающее другого победителя по
+    закону дня. Возвращает (k, альтернативный победитель) или None: развязка
+    была плотной, но перебор ограничен капом — разгромные дни недраматичны.
+    """
+    if winner_card is None or win_rule is None:
+        return None
+    total = sum(counts.values())
+    if total < 2:
+        return None
+    base = [counts.get(i, 0) for i in range(3)]
+    cap = min(total, _FLIP_SEARCH_CAP)
+    for k in range(1, cap + 1):
+        # Все способы снять k голосов с трёх путей.
+        takings = [
+            (d0, d1, k - d0 - d1)
+            for d0 in range(min(k, base[0]) + 1)
+            for d1 in range(min(k - d0, base[1]) + 1)
+            if 0 <= k - d0 - d1 <= base[2]
+        ]
+        # Все способы положить k голосов обратно (куда угодно).
+        gives = [
+            (g0, g1, k - g0 - g1)
+            for g0 in range(k + 1)
+            for g1 in range(k - g0 + 1)
+        ]
+        for taking in takings:
+            for giving in gives:
+                fresh = {i: base[i] - taking[i] + giving[i] for i in range(3)}
+                alt = pick_winner(fresh, win_rule)
+                if alt != winner_card:
+                    return k, alt
+    return None
+
+
 def format_results(round_row: Round) -> str:
     from app.style import result_mark
 
@@ -101,6 +151,17 @@ def format_results(round_row: Round) -> str:
         f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
         f"🕯 Архивариус вскрывает урну: {reveal}.",
     ]
+    # «Канон на волоске»: сколько голосов отделяло мир от другого исхода.
+    margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
+    if margin is not None:
+        k, alt = margin
+        alt_name = names.get(alt)
+        if alt_name:
+            word = _votes_word(k)
+            lines.append(
+                f"🩸 Канон держался на волоске: ещё {k} {word} за «{alt_name}» — "
+                "и тропа повела бы иначе."
+            )
     if getattr(round_row, "sealed", False):
         lines.append(f"🗝 Запечатанный с утра закон оказался: {RULE_PHRASES[round_row.win_rule]}")
     else:
