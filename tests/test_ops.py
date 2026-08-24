@@ -152,8 +152,10 @@ async def test_watch_once_advances_cursor_and_dedupes(monkeypatch: pytest.Monkey
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
+    # Свежие метки времени: древние переводы watcher больше не возвращает.
+    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
     transfers = [
-        ton_watch.Transfer(f"c-{i}", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 1000 + i)
+        ton_watch.Transfer(f"c-{i}", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 1 + i)
         for i in range(3)
     ]
     monkeypatch.setattr(
@@ -162,13 +164,13 @@ async def test_watch_once_advances_cursor_and_dedupes(monkeypatch: pytest.Monkey
 
     # Стартовый курсор раньше всех транзакций (фолбэк «now−12ч» их новее).
     async with SessionLocal() as db:
-        db.add(WatcherState(key=ton_watch.CURSOR_KEY, value="999"))
+        db.add(WatcherState(key=ton_watch.CURSOR_KEY, value=str(base - 1)))
         await db.commit()
 
     await ton_watch.watch_once()
     async with SessionLocal() as db:
         cursor_row = await db.get(WatcherState, ton_watch.CURSOR_KEY)
-        assert cursor_row is not None and int(cursor_row.value) == 1002
+        assert cursor_row is not None and int(cursor_row.value) == base + 3
         refunds = (
             await db.execute(
                 select(Payout).where(Payout.kind == "refund", Payout.tx_hash.in_([t.tx_hash for t in transfers]))
@@ -196,8 +198,9 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
-    bad = ton_watch.Transfer("bad-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 500)
-    good = ton_watch.Transfer("good-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", 501)
+    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    bad = ton_watch.Transfer("bad-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base)
+    good = ton_watch.Transfer("good-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 1)
     monkeypatch.setattr(
         ton_watch,
         "fetch_recent_transfers",
@@ -214,7 +217,7 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
         await ton_watch.watch_once()
         async with SessionLocal() as db:
             row = await db.get(WatcherState, ton_watch.CURSOR_KEY)
-            assert row is None or int(row.value) < 500  # курсор застрял до сбойного перевода
+            assert row is None or int(row.value) < base  # курсор застрял до сбойного перевода
     finally:
         async with SessionLocal() as db:
             await db.execute(WatcherState.__table__.delete().where(WatcherState.key == ton_watch.CURSOR_KEY))

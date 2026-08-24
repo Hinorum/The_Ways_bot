@@ -67,7 +67,7 @@ async def test_new_style_binding_matches_raw_source(ton_on) -> None:
         await session.commit()
 
     status = await process_transfer(
-        Transfer(tx_hash="raw-match-1", source=RAW, value_nanotons=500_000_000, comment="", utime=1)
+        Transfer(tx_hash="raw-match-1", source=RAW, value_nanotons=500_000_000, comment="", utime=int(datetime.now(timezone.utc).timestamp()))
     )
     assert status == "ok"
 
@@ -85,7 +85,7 @@ async def test_old_friendly_row_would_miss_and_migration_fixes_it(ton_on) -> Non
     # До миграции перевод не находит хозяина и уходит в возвраты — так выглядел баг.
     await _open_round(902)
     status_before = await process_transfer(
-        Transfer(tx_hash="mig-before-1", source=old_raw, value_nanotons=300_000_000, comment="", utime=2)
+        Transfer(tx_hash="mig-before-1", source=old_raw, value_nanotons=300_000_000, comment="", utime=int(datetime.now(timezone.utc).timestamp()) - 60)
     )
     assert status_before == "refund_queued"
 
@@ -131,7 +131,9 @@ async def test_confirmed_stake_notifies_player(ton_on) -> None:
 
     bot = _RecorderBot()
     status = await process_transfer(
-        Transfer(tx_hash="dm-ok-1", source=raw, value_nanotons=500_000_000, comment="", utime=1),
+        # Старше stake_confirm_seconds (в фикстуре он 10 000 с) — ставка
+        # подтвердится сразу с «принята», но свежее лимита авто-возвратов.
+        Transfer(tx_hash="dm-ok-1", source=raw, value_nanotons=500_000_000, comment="", utime=int(datetime.now(timezone.utc).timestamp()) - 11_000),
         bot=bot,
     )
     assert status == "ok"
@@ -180,9 +182,10 @@ async def test_rejected_stake_tells_the_reason(ton_on) -> None:
 
     bot = _RecorderBot()
     status = await process_transfer(
-        Transfer(tx_hash="dm-small-1", source=raw, value_nanotons=1, comment="", utime=1),
+        Transfer(tx_hash="dm-small-1", source=raw, value_nanotons=1, comment="", utime=int(datetime.now(timezone.utc).timestamp())),
         bot=bot,
     )
     assert status == "too_small"
     assert len(bot.messages) == 1
     assert "не принята" in bot.messages[0][1]
+

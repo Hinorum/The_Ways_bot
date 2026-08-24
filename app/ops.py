@@ -28,9 +28,12 @@ TICK_KEY = "last_tick_iso"
 ALERT_WATCHER_KEY = "alert_watcher_ts"
 ALERT_QUEUE_KEY = "alert_queue_ts"
 ALERT_DEAD_KEY = "alert_dead_ts"
+ALERT_TICK_KEY = "alert_tick_ts"
 _ALERT_COOLDOWN = timedelta(hours=1)
 _WATCHER_STALE_AFTER = timedelta(minutes=30)
 _QUEUE_OLD_AFTER = timedelta(minutes=30)
+# Тики идут каждые 15 секунд: тишина дольше пары минут — процесс болен.
+_TICK_STALE_AFTER = timedelta(minutes=5)
 
 
 def _now() -> datetime:
@@ -158,6 +161,16 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
     """Фоновые проверки раз в минутный цикл обслуживания; возвращает список проблем."""
     problems: list[str] = []
     async with SessionLocal() as session:
+        # 0. Планировщик молчит — дни не закрываются, выплаты не уходят.
+        tick_age = _age_seconds(await _get_state(session, TICK_KEY))
+        if tick_age is not None and tick_age > _TICK_STALE_AFTER.total_seconds():
+            note = f"планировщик не тикает {int(tick_age // 60)} мин"
+            problems.append(note)
+            if await _throttled(session, ALERT_TICK_KEY):
+                await notify_admins(
+                    bot,
+                    f"⚠️ {note.capitalize()}. Дни не переключаются, смотрите логи сервиса.",
+                )
         # 1. Watcher не завершает успешные циклы — ставки перестают находиться.
         # Сердцебиение ставит каждый цикл с живым TonAPI, даже если переводов
         # нет: тишина в цепочке — здоровье, а не простой. Курсор для этого

@@ -63,28 +63,22 @@ def _install_stop_handlers(stop: asyncio.Event) -> None:
 
 
 async def boot_game(bot) -> None:
+    """Стартовые шаги. Планировщик запускается ПЕРВЫМ делом: сетевой сбой
+    бэкапа или профиля не смеет оставлять игру без тиков навсегда (раньше
+    исключение до start_scheduler означало молчаливо мёртвое расписание)."""
+    set_bot(bot)
     try:
-        set_bot(bot)
-        from app.scheduler import boot_maintenance
-
-        await boot_maintenance()
-        await apply_profile(bot)
         await tick(bot)
-        start_scheduler()
     except Exception:
-        log.exception("Failed to prepare the daily round")
+        log.exception("Первый тик не удался — повторится по расписанию")
+    start_scheduler()
+    from app.scheduler import boot_maintenance
 
-
-def _install_stop_handlers(stop: asyncio.Event) -> None:
-    loop = asyncio.get_running_loop()
-    for name in ("SIGINT", "SIGTERM"):
-        sig = getattr(signal, name, None)
-        if sig is None:
-            continue
+    for name, step in (("backup", boot_maintenance), ("profile", lambda: apply_profile(bot))):
         try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass
+            await step()
+        except Exception:
+            log.exception("Шаг старта «%s» не удался — игра продолжается без него", name)
 
 
 async def run_webhook(bot, dispatcher) -> None:

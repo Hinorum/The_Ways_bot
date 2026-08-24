@@ -337,7 +337,19 @@ async def _stash_refund(session, transfer: Transfer, round_id: int | None) -> st
 
     Идемпотентно по tx_hash: повторная обработка той же транзакции не плодит
     вторую выплату. Отправка — обычным порядком через dispatch_pending_payouts.
+
+    Древние переводы (старе WATCH_REFUND_MAX_AGE_DAYS) не возвращаются: после
+    сброса базы курсор обнуляется и история казны перечитывается целиком —
+    без лимита старый спам вечно рождал бы новые dead-letter возвраты.
     """
+    age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
+    if age_days > max(0, settings.watch_refund_max_age_days):
+        logger.warning(
+            "Перевод %s старше %d дн. — авто-возврат не создаётся (спам/хлам остаётся в казнее)",
+            transfer.tx_hash[:16],
+            int(age_days),
+        )
+        return "refund_expired"
     duplicate = await session.execute(
         select(Payout.id).where(Payout.kind == "refund", Payout.tx_hash == transfer.tx_hash).limit(1)
     )

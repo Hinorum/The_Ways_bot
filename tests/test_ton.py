@@ -468,7 +468,7 @@ async def test_unknown_sender_transfer_is_auto_refunded(monkeypatch: pytest.Monk
     source = "0:" + os.urandom(32).hex()
     tx_hash = "stray-" + os.urandom(8).hex()
     transfer = Transfer(
-        tx_hash=tx_hash, source=source, value_nanotons=to_nano(0.3), comment="", utime=0
+        tx_hash=tx_hash, source=source, value_nanotons=to_nano(0.3), comment="", utime=int(datetime.now(timezone.utc).timestamp())
     )
     async with SessionLocal() as db:
         try:
@@ -524,7 +524,7 @@ async def test_repeat_stake_and_closed_day_transfers_are_refunded(
         )
         await db.commit()
         try:
-            dup = Transfer(hash_dup, wallet, to_nano(2), "", 0)
+            dup = Transfer(hash_dup, wallet, to_nano(2), "", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(dup) == "already_staked"
             row = (
                 await db.execute(Payout.__table__.select().where(Payout.tx_hash == hash_dup))
@@ -544,7 +544,7 @@ async def test_repeat_stake_and_closed_day_transfers_are_refunded(
                 .values(status=RoundStatus.CLOSED)
             )
             await db.commit()
-            late = Transfer(hash_late, wallet, to_nano(0.4), "", 0)
+            late = Transfer(hash_late, wallet, to_nano(0.4), "", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(late) == "refund_queued"
             row = (
                 await db.execute(Payout.__table__.select().where(Payout.tx_hash == hash_late))
@@ -582,9 +582,9 @@ async def test_failed_revote_payments_are_refunded(monkeypatch: pytest.MonkeyPat
         await db.flush()
         await db.commit()
         try:
-            small = Transfer(hash_small, wallet, to_nano(0.01), f"rv:{open_round.id}", 0)
+            small = Transfer(hash_small, wallet, to_nano(0.01), f"rv:{open_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(small) == "revote_too_small"
-            late = Transfer(hash_late, wallet, to_nano(2), f"rv:{closed_round.id}", 0)
+            late = Transfer(hash_late, wallet, to_nano(2), f"rv:{closed_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(late) == "revote_closed"
 
             rows = (
@@ -653,4 +653,5 @@ def test_split_equal_conserves_money_property() -> None:
         # Пыль целиком уходит меньшему id: разброс не больше n-1 нанотонов.
         assert max(values) - min(values) <= len(set(ids)) - 1
         assert shares[min(ids)] == max(values)
+
 

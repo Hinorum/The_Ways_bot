@@ -90,13 +90,40 @@ def _detect_wallet_version(
 async def pending_payout_count(session) -> int:
     """Сколько переводов ещё не ушли (обе сети, включая dead-letter failed).
 
-    «sent» — единственное конечное состояние: всё остальное значит, что
-    деньги игроку ещё должны. Сброс игры обязан ждать, пока долг закрыт.
+    «sent» — единственное конечное состояние успеха; «dismissed» — ручной
+    вердикт хранителя (спам-перевод с рекламой и т.п.), он деньгам игрокам
+    не равен и сбросу не мешает. Всё остальное значит, что деньги игроку
+    ещё должны: сброс игры обязан ждать, пока долг закрыт.
     """
     result = await session.execute(
-        select(func.count()).select_from(Payout).where(Payout.status != "sent")
+        select(func.count()).select_from(Payout).where(Payout.status.notin_(["sent", "dismissed"]))
     )
     return int(result.scalar_one())
+
+
+async def resolve_dead_payout(session, payout_id: int, action: str) -> str | None:
+    """Ручной разбор проблемной выплаты хранителем.
+
+    action="spam" — статус «dismissed»: пыльный спам-перевод с рекламой,
+    возврат которого не нужен или невозможен. Выплата исчезает из очереди,
+    алертов и перестаёт блокировать /resetgame. action="retry" — обратно в
+    очередь с нулевым счётчиком попыток (настоящий долг игроку). Возвращает
+    новый статус или None, если выплаты нет либо она уже отправлена.
+    """
+    payout = await session.get(Payout, payout_id)
+    if payout is None or payout.status == "sent":
+        return None
+    if action == "spam":
+        payout.status = "dismissed"
+    elif action == "retry":
+        payout.status = "pending"
+        payout.attempts = 0
+        payout.alerted = False
+    else:
+        return None
+    await session.commit()
+    logger.info("Выплата %d разобрана вручную: %s", payout_id, payout.status)
+    return payout.status
 
 
 async def _get_wallet():

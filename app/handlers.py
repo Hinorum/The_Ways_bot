@@ -33,6 +33,7 @@ from app.models import (
     Chat,
     Income,
     LeaderboardPot,
+    Payout,
     Player,
     RevoteGrant,
     Round,
@@ -981,6 +982,69 @@ async def cmd_resetgame(message: Message) -> None:
         f"{ok_mark('reset')} Игра обнулена. День {new_round.day_index} объявлен в чатах. "
         f"{mode} Голосование до {new_round.voting_ends_at:%H:%M} UTC."
     )
+
+
+@router.message(Command("payouts"))
+async def cmd_payouts(message: Message) -> None:
+    """Очередь выплат для хранителя: что не ушло и почему."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    async with SessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Payout)
+                    .where(Payout.status.notin_(["sent", "dismissed"]))
+                    .order_by(Payout.id.asc())
+                    .limit(30)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    if not rows:
+        await message.answer(f"{ok_mark('queue')} Долгов нет: все выплаты ушли или разобраны.")
+        return
+    lines = ["Неотправленные выплаты:"]
+    for row in rows:
+        lines.append(
+            f"#{row.id} · {row.kind} · {from_nano(row.amount_nanotons):.4f} Gram · "
+            f"{row.status} · попыток {row.attempts} · …{row.dest_address[-8:]}"
+        )
+    lines.append("")
+    lines.append(
+        "Спам (пыль с рекламой): /payout <id> spam\n"
+        "Настоящий долг, отправить снова: /payout <id> retry"
+    )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("payout"))
+async def cmd_payout(message: Message) -> None:
+    """Ручной разбор одной выплаты: /payout <id> spam|retry."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    parts = (message.text or "").lower().split()
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in {"spam", "retry"}:
+        await message.answer(
+            "Формат: <code>/payout &lt;id&gt; spam</code> — пометить спамом, "
+            "<code>/payout &lt;id&gt; retry</code> — вернуть в очередь.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    payout_id, action = int(parts[1]), parts[2]
+    from app.ton_pay import resolve_dead_payout
+
+    async with SessionLocal() as session:
+        new_status = await resolve_dead_payout(session, payout_id, action)
+    if new_status == "dismissed":
+        await message.answer(f"{ok_mark(str(payout_id))} Выплата #{payout_id} помечена как спам: из очереди ушла, сбросу больше не мешает.")
+    elif new_status == "pending":
+        await message.answer(f"{ok_mark(str(payout_id))} Выплата #{payout_id} вернулась в очередь с нулевым счётом попыток.")
+    else:
+        await message.answer(f"{warn_mark('nopay')} Выплата #{payout_id} не найдена или уже отправлена.")
 
 
 @router.message(Command("revenue"))
