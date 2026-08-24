@@ -209,10 +209,12 @@ def villain_stage(day: int, total: int) -> int:
     return 0
 
 
-def villain_event(season_key_value: str, stage: int) -> str:
-    """Детерминированное событие ступени: один сезон — одна версия события."""
+def villain_event(season_key_value: str, stage: int, salt: str = "") -> str:
+    """Событие ступени плана. Соль делает перезапуски сезона разными:
+    полный сброс стирает план, и новая арка начинается с других событий,
+    хотя пул и тональность ступеней неизменны."""
     pool = _VILLAIN_EVENTS.get(stage) or _VILLAIN_EVENTS[0]
-    digest = hashlib.sha256(f"villain:{season_key_value}:{stage}".encode()).hexdigest()
+    digest = hashlib.sha256(f"villain:{season_key_value}:{stage}:{salt}".encode()).hexdigest()
     rng = random.Random(int(digest[:16], 16))
     return rng.choice(pool)
 

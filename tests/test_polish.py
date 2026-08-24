@@ -80,6 +80,23 @@ def test_status_text_survives_huge_cards() -> None:
         assert "д" * 281 not in text
 
 
+def test_offline_lore_varies_between_resets() -> None:
+    """Соль запуска: перезапуски дают разные главы и разные тройки карт."""
+    texts: set[str] = set()
+    card_sets: set[tuple[str, ...]] = set()
+    day1_texts: set[str] = set()
+    for salt in ("a", "b", "c", "d", "e"):
+        chapter = compose_chapter(3, ["Костёр стаи: появился общий костёр"], WinRule.MAJORITY, salt=salt)
+        texts.add(chapter["text"])
+        card_sets.add(tuple(sorted(card["title"] for card in chapter["cards"])))
+        day1 = compose_chapter(1, [], WinRule.MAJORITY, salt=salt)
+        day1_texts.add(day1["text"])
+        assert "Вчера стая выбрала" not in day1["text"]
+    assert len(texts) >= 4  # закрывки и приметы не повторяются из раза в раз
+    assert len(card_sets) >= 2  # карты больше не зациклены на номере дня
+    assert len(day1_texts) >= 2  # вступление сезона варьируется
+
+
 def test_offline_lore_varies_between_days() -> None:
     """Фолбэк-лор не должен повторять одни и те же последствия изо дня в день."""
     seen_texts = set()

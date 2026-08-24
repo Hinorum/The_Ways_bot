@@ -190,12 +190,16 @@ async def _villain_block(session: AsyncSession, open_moment: datetime) -> str | 
         except ValueError:
             data = {}
     if data.get("season") != key or not isinstance(data, dict):
-        data = {"season": key, "stage": -1, "events": []}
+        # Новый сезон (или полный сброс): свежий план и своя соль событий —
+        # перезапуск игры начинает арку с других канонических вех.
+        data = {"season": key, "stage": -1, "events": [], "salt": secrets.token_hex(4)}
 
     changed = False
     while data["stage"] < stage:
         data["stage"] += 1
-        data.setdefault("events", []).append(villain_event(key, data["stage"]))
+        data.setdefault("events", []).append(
+            villain_event(key, data["stage"], data.get("salt", ""))
+        )
         changed = True
     if changed or row is None:
         payload = _json.dumps(data, ensure_ascii=False)
@@ -400,6 +404,7 @@ async def _plan_and_render(
         season_block=sblock, places_block=places_block,
         villain_block=villain, sealed=sealed_day(day_index),
         pending_outcome=pending_outcome,
+        salt=secrets.token_hex(4),
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -426,18 +431,28 @@ async def _plan_and_render(
         prompt = build_image_prompt(bible, str(position), seed=day_seed + position + 1)
         short = short_image_prompt(bible, str(position), seed=day_seed + position + 1)
         jobs.append((position, card, image_path, prompt, short))
+    # Залп из четырёх запросов бьёт по free-лимиту Pollinations (429) и
+    # роняет карты в PIL-шаблоны. Держим не больше двух генераций в полёте.
+    image_semaphore = asyncio.Semaphore(2)
+
+    async def _limited(coroutine):
+        async with image_semaphore:
+            return await coroutine
+
     fetched = await asyncio.gather(
-        # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
-        fetch_day_image(
-            build_image_prompt(bible, "cover", seed=cover_seed),
-            short_image_prompt(bible, "cover", seed=cover_seed),
-            cover_path,
-            seed=cover_seed,
-            width=1280,
-            height=720,
+        _limited(
+            # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
+            fetch_day_image(
+                build_image_prompt(bible, "cover", seed=cover_seed),
+                short_image_prompt(bible, "cover", seed=cover_seed),
+                cover_path,
+                seed=cover_seed,
+                width=1280,
+                height=720,
+            )
         ),
         *(
-            fetch_day_image(job[3], job[4], job[2], seed=day_seed + job[0] + 1)
+            _limited(fetch_day_image(job[3], job[4], job[2], seed=day_seed + job[0] + 1))
             for job in jobs
         ),
     )

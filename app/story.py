@@ -365,10 +365,11 @@ async def generate_chapter(
     villain_block: str | None = None,
     sealed: bool = False,
     pending_outcome: bool = False,
+    salt: str = "",
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
-        villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome,
+        villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
     )
     if not settings.use_free_story_llm:
         return authored

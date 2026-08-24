@@ -228,8 +228,11 @@ def compose_chapter(
     villain_line: str | None = None,
     sealed: bool = False,
     pending_outcome: bool = False,
+    salt: str = "",
 ) -> dict:
-    rng = _rng(day_index, "|".join(previous_beats[-5:]))
+    # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
+    # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
+    rng = _rng(day_index, f"{salt}|{'|'.join(previous_beats[-5:])}")
     history_tags = tags_from_beats(previous_beats)
     last = previous_beats[-1] if previous_beats else None
     # Фаза 1 прегенерации: итог «вчера» ещё не вскрыт — глава начинается сразу
@@ -276,7 +279,10 @@ def compose_chapter(
         title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
         cards = _cards(rng, day_index)
         active_echoes = list(echoes or [])
-        text = _chapter_text(day_index, echo, place, history_tags, last, win_rule, sealed=sealed)
+        text = _chapter_text(
+            day_index, echo, place, history_tags, last, win_rule,
+            sealed=sealed, salt=salt, rng=rng,
+        )
         if villain_line:
             # План Хозяина Ошибки: в текст уходит только каноническое событие
             # (строка списка «- …»), а не служебные строки блока промпта.
@@ -446,20 +452,45 @@ def _chapter_text(
     last: str | None,
     win_rule=None,
     sealed: bool = False,
+    salt: str = "",
+    rng: random.Random | None = None,
 ) -> str:
-    rng = _rng(day_index, "closing:" + "|".join(tags))
+    if rng is None:
+        rng = _rng(day_index, f"{salt}|closing:{'|'.join(tags)}")
     if sealed:
         law_line = _SEAL_VOICE
     else:
         law_line = _law_voice(win_rule) if win_rule is not None else ""
 
     if day_index == 1:
-        text = (
-            "Стая вышла к первой развилке. Впереди гудит портал — не светится и не мерцает, "
-            "а просто смотрит. На рассвете вся сеть на секунду замолчала, и в этой тишине "
-            "все собаки разом услышали Первый Лай. Миска первой прижала уши, Рекс-9 — первый "
-            "зарычал: стая ещё не знает, что этот звук будет с ними до самого конца сезона."
+        # Пул вступлений: каждый перезапуск начинает сезон по-разному.
+        openings = (
+            (
+                "Стая вышла к первой развилке. Впереди гудит портал — не светится и не мерцает, "
+                "а просто смотрит. На рассвете вся сеть на секунду замолчала, и в этой тишине "
+                "все собаки разом услышали Первый Лай. Миска первой прижала уши, Рекс-9 — первый "
+                "зарычал: стая ещё не знает, что этот звук будет с ними до самого конца сезона."
+            ),
+            (
+                "Утро началось с чужого эха в мисках: вода дрожала в такт чему-то далёкому. "
+                "Стая вышла на запах озона — и упёрлась в первую развилку. Портал впереди гудит "
+                "негромко, терпеливо. А из его глубины, сквозь слои миров, доносится Первый Лай: "
+                "Безымянная первой повернула морду на звук, и все поняли — обратной дороги нет."
+            ),
+            (
+                "Туман сегодня стоял до полудня, а когда спал — за ним открылся портал там, где "
+                "вчера была только стена. Стая обнюхала порог кругом: Гавкус чихнул, Пиксель "
+                "заворожено ловил лапой искры. И тогда изнутри портала прозвучал Первый Лай — "
+                "не громко, но так, что у всех зачесались лопатки: впереди целый сезон троп."
+            ),
+            (
+                "Стая проснулась от тишины — той самой, какой не бывает в сети порталов. "
+                "Даже ветер замер. Потом сеть вздохнула, и первый же вдох принёс Первый Лай. "
+                "Рекс-9 зарычал на пустоту, Миска прижала уши, а развилка уже ждала: три тропы "
+                "разошлись от порога, и каждая пахла чужим решением."
+            ),
         )
+        text = openings[rng.randrange(len(openings))]
         # После сброса с сохранением истории мир помнит старый канон.
         if last:
             old_title = last.split(":")[0].strip()
@@ -555,20 +586,19 @@ def _chapter_text(
 
 
 def _cards(rng: random.Random, day_index: int) -> list[CardDraft]:
-    """Карты дня без повторов на соседних сутках.
-
-    Тройка «заголовок—описание—последствие» выбирается целиком по циклу дня
-    со сдвигом на тег — карта не может выпасть два дня подряд, а последствие
-    всегда вытекает из своего действия. rng остаётся только на порядок карт.
+    """Карты дня: тройка «заголовок—описание—последствие» выбирается целиком
+    по соли запуска — перезапуски дают разные наборы вместо вечного цикла
+    «день N = одни и те же карты». Пул на тег один, последствие всегда
+    вытекает из своего действия; rng раскладывает только порядок карт.
     """
 
-    def pick(paths: list[tuple[str, str, str]], offset: int) -> CardDraft:
-        title, description, consequence = paths[(day_index + offset) % len(paths)]
+    def pick(paths: list[tuple[str, str, str]]) -> CardDraft:
+        title, description, consequence = paths[rng.randrange(len(paths))]
         return (title, description, consequence)
 
-    risk_title, risk_desc, risk_conseq = pick(_RISK_PATHS, 0)
-    care_title, care_desc, care_conseq = pick(_CARE_PATHS, 2)
-    cunning_title, cunning_desc, cunning_conseq = pick(_CUNNING_PATHS, 4)
+    risk_title, risk_desc, risk_conseq = pick(_RISK_PATHS)
+    care_title, care_desc, care_conseq = pick(_CARE_PATHS)
+    cunning_title, cunning_desc, cunning_conseq = pick(_CUNNING_PATHS)
     cards = [
         CardDraft(
             title=risk_title,
