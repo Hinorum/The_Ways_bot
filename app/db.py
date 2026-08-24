@@ -118,9 +118,24 @@ async def init_db() -> None:
                 "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)"
             ))
             # План Хозяина Ошибки не влезал в VARCHAR(255): ронял тик до
-            # создания следующего дня. Расширяем до TEXT (идемпотентно).
+            # создания следующего дня. Расширяем до TEXT, но только когда это
+            # действительно нужно: безусловный ALTER при каждом старте
+            # инвалидирует prepared-statement кэши asyncpg и будит ошибки
+            # «cached statement plan is invalid» на живых пулах соединений.
             await conn.execute(text(
-                "ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT"
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'watcher_state'
+                      AND column_name = 'value'
+                      AND data_type <> 'text'
+                  ) THEN
+                    ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT;
+                  END IF;
+                END $$;
+                """
             ))
             # Доли казны (рейк/копилка месяца) уходят без игрока.
             await conn.execute(text("ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL"))

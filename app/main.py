@@ -20,14 +20,19 @@ log = logging.getLogger("way")
 
 
 async def health(_request: web.Request) -> web.Response:
-    """Живость + операционный снимок: тик, очередь выплат, watcher, день."""
+    """Живость + операционный снимок: тик, очередь выплат, watcher, день.
+
+    Сбой снимка (переходное окно миграции, деградация БД) не роняет
+    эндпоинт — Render должен видеть процесс живым; но и «ok» без данных мы
+    не притворяемся: честный статус degraded.
+    """
     try:
         from app.ops import snapshot
 
         payload = await snapshot()
-    except Exception:
-        log.exception("snapshot упал — отвечаем минимальным ok")
-        payload = {"status": "ok"}
+    except Exception as exc:
+        log.warning("snapshot упал — отвечаем degraded: %s", exc)
+        payload = {"status": "degraded", "detail": "snapshot unavailable"}
     return web.json_response(payload)
 
 
