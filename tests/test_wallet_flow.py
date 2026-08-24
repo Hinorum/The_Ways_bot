@@ -249,6 +249,23 @@ async def test_stake_answers_fallback_when_builder_breaks(monkeypatch) -> None:
     assert "три шага" in text
 
 
+async def test_wallet_survives_total_inner_crash(monkeypatch) -> None:
+    """Падение на любом шаге (БД, диалог) не оставляет игрока без ответа."""
+    uid = next_uid()
+
+    async def db_down(session, user):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(handlers_module, "upsert_player", db_down)
+    message = make_message("private", uid, "/wallet")
+    await cmd_wallet(message)
+    text = message.answer.call_args.args[0]
+    assert "Раздел кошелька" in text
+    assert "/wallet UQ…" in text
+    # Диалог привязки при упавшей команде не открывается.
+    assert not await _dialog_active(uid)
+
+
 async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: int, address: str) -> None:
     now = datetime.now(timezone.utc)
     async with SessionLocal() as session:
