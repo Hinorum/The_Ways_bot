@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot
 from sqlalchemy import case, delete, func, or_, select
@@ -306,7 +306,30 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
         if unfinished.scalar_one_or_none() is not None:
             return False
 
-        min_days = max(1, settings.weekly_min_days)
+        # Короткая первая неделя забега: если сброс случился за 1–3 дня до
+        # понедельника, порог WEEKLY_MIN_DAYS снимается — новичкам честно
+        # дать шанс, а копилка не должна висеть вечно.
+        relaxed = False
+        try:
+            from app.season import RUN_START_KEY, parse_anchor
+
+            anchor_row = await session.get(WatcherState, RUN_START_KEY)
+            anchor = parse_anchor(anchor_row.value if anchor_row is not None else None)
+            if anchor is not None:
+                a_year, a_month = (int(part) for part in anchor["key"].split("-"))
+                start_date = date(a_year, a_month, max(1, min(int(anchor["dom"]), 31)))
+                if period_start <= start_date < period_end:
+                    span_days = (period_end - start_date).days
+                    if 1 <= span_days <= 3:
+                        relaxed = True
+                        logger.info(
+                            "Неделя %s — короткий старт забега (%d дн.): порог дней снят",
+                            prev_key, span_days,
+                        )
+        except Exception:
+            logger.warning("Не удалось проверить короткую стартовую неделю", exc_info=True)
+
+        min_days = 0 if relaxed else max(1, settings.weekly_min_days)
         rows = await weekly_top(session, period_start, period_end, limit=50)
         # Места недели — три верхних УРОВНЯ верных ответов, а не три игрока:
         # ступень 7-6-5 может сжаться до 7-5-3, если шестёрок и четвёрок нет.
@@ -330,9 +353,10 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
         if not tiers:
             # Достойных нет: метку НЕ двигаем, копилка ждёт следующей недели.
             logger.warning(
-                "Копилка недели %d нанотонов ждёт: нет игроков с кошельком и %d+ днями голосования",
+                "Копилка недели %d нанотонов ждёт: нет игроков с кошельком и %s+ днями голосования%s",
                 total,
-                min_days,
+                min_days or settings.weekly_min_days,
+                " (короткая стартовая неделя — порог снят)" if relaxed else "",
             )
             return False
 

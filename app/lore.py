@@ -230,6 +230,7 @@ def compose_chapter(
     pending_outcome: bool = False,
     salt: str = "",
     tint_lines: list[str] | None = None,
+    focus_line: str | None = None,
 ) -> dict:
     # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
     # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
@@ -340,10 +341,17 @@ def compose_chapter(
             sentence = " ".join(tint.split())
             if not sentence:
                 continue
-            if sentence[-1] not in ".!?…":
+            if sentence[-1] not in ".!?:…":
                 sentence += "."
             if sentence not in text:
                 text += f" {sentence}"
+        # Фокус-день NPC: одна «хотелка» репликой или жестом.
+        if focus_line:
+            line = " ".join(focus_line.split())
+            if line[-1] not in ".!?…":
+                line += "."
+            if line not in text:
+                text += f" {line}"
 
     return {
         "title": title,

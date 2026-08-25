@@ -408,11 +408,13 @@ async def generate_chapter(
     salt: str = "",
     alignment_block: str | None = None,
     tint_lines: list[str] | None = None,
+    promise_block: str | None = None,
+    focus_line: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
         villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
-        tint_lines=tint_lines,
+        tint_lines=tint_lines, focus_line=focus_line,
     )
     if not settings.use_free_story_llm:
         return authored
@@ -421,6 +423,8 @@ async def generate_chapter(
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
+        promise_block=promise_block,
+        focus_line=focus_line,
     )
     return neural or authored
 
@@ -508,6 +512,8 @@ def _build_story_prompt(
     sealed: bool = False,
     pending_outcome: bool = False,
     alignment_block: str | None = None,
+    promise_block: str | None = None,
+    focus_line: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -577,6 +583,8 @@ def _build_story_prompt(
         f"{law_line}"
         f"{season_text}"
         f"{align_text}"
+        f"{promise_block or ""}"
+        f"{focus_line + chr(10) if focus_line else ""}"
         f"{villain_text}"
         f"{echo_block}"
         f"{distant_block}"
@@ -640,7 +648,9 @@ def _build_story_prompt(
         "оставит. Последствие — одно-два предложения в формате «обещание + "
         "угроза»: что стая получит и чем за это заплатит; оно завтра станет "
         "каноном.\n"
-        'Формат: {"title":"День N. ...","place":"короткое название места дня",'
+            'Мини-пример формы ответа (СОКРАЩЁН, значения выдуманы — не копируй их): '
+        '{"title":"День 9. Тихий порт","place":"Тихий порт","text":"…","lore_summary":"…","cover_prompt":"wide shot, …","cards":[{"title":"…","description":"…","consequence":"обещание + угроза","tag":"risk","image_prompt":"…"},{},{},{}]}. '
+    'Формат: {"title":"День N. ...","place":"короткое название места дня",'
         f'"text":"история дня, {chapter_low}-{chapter_high} знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
@@ -664,12 +674,15 @@ async def _free_story_llm(
     sealed: bool = False,
     pending_outcome: bool = False,
     alignment_block: str | None = None,
+    promise_block: str | None = None,
+    focus_line: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
-        alignment_block=alignment_block,
+        alignment_block=alignment_block, promise_block=promise_block,
+        focus_line=focus_line,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},

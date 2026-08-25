@@ -15,7 +15,7 @@ import calendar
 import hashlib
 import json
 import random
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 # Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
 FINALE_CARDS = {
@@ -108,9 +108,12 @@ def get_cached_anchor(moment: datetime | None = None) -> dict:
 def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
     """(день забега, длина забега).
 
-    Забег длится месяц месяца-старта; длиннее месяца — цикл повторяется
-    (нарративная арка перезапускается, счёты и экономика не трогаются).
+    Длина арки = RUN_LENGTH_MONTHS месяцев от месяца-старта (по умолчанию
+    два — сюжетная линия держит интригу два месяца). Копилки недели/месяца
+    при этом остаются календарными. Если забег длиннее арки — она циклится.
     """
+    from app.config import settings as _settings
+
     year, month = (int(part) for part in anchor["key"].split("-"))
     dom = max(1, min(int(anchor["dom"]), 31))
     start = date(year, month, dom)
@@ -118,7 +121,16 @@ def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
         moment = moment.replace(tzinfo=timezone.utc)
     today = moment.astimezone(timezone.utc).date()
     raw = (today - start).days + 1
-    total = calendar.monthrange(year, month)[1]
+
+    months = max(1, int(_settings.run_length_months))
+    # Конец арки: старт + N месяцев − 1 день (включительно).
+    end_month_index = (month - 1) + months
+    end_year = year + end_month_index // 12
+    end_month = end_month_index % 12 + 1
+    end_day = min(dom, calendar.monthrange(end_year, end_month)[1])
+    end_date = date(end_year, end_month, end_day) - timedelta(days=1)
+    total = max(1, (end_date - start).days + 1)
+
     if raw < 1:
         # Часовой пояс/гонка часов: считаем первым днём.
         raw = 1

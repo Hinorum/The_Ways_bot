@@ -42,10 +42,13 @@ def test_season_block_injects_prologue_by_run_day() -> None:
         assert "акт" in block.lower()
 
 
-def test_day8_free_of_prologue_and_finale_untouched() -> None:
+def test_day8_free_of_prologue_and_finale_untouched(monkeypatch) -> None:
     block = season_block(anchor=ANCHOR, moment=_moment(8))
-    assert "ПРОЛОГ" not in block
-    # Финал (последний день месяца) не содержит пролога.
+    assert "Пролог" not in block
+    # Финал арки длиной в месяц: патчим длину, 31-е число — День Лая.
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "run_length_months", 1)
     finale = season_block(anchor=ANCHOR, moment=_moment(31), balance={"care": 5})
     assert "ДЕНЬ ПЕРВОГО ЛАЯ" in finale
     assert "ПРОЛОГ" not in finale

@@ -503,6 +503,24 @@ async def _plan_and_render(
 
     run_salt = secrets.token_hex(4)
     order_axis, moral_axis = anchor_axes(anchor)
+    # Книга обещаний: невыплаченный долг прошлых выборов.
+    try:
+        from app.promises import due_promises, promise_block
+
+        promises = await due_promises(session, day_index)
+        promise_text = promise_block(promises)
+    except Exception:
+        logger.warning("Книга обещаний недоступна", exc_info=True)
+        promise_text = None
+    # Фокус-день NPC (каждый третий день забега).
+    try:
+        from app.relations import npc_focus_line
+        from app.season import run_position as _run_pos
+
+        run_day_now, _total_now = _run_pos(anchor, open_moment)
+        focus_line = npc_focus_line(run_day_now)
+    except Exception:
+        focus_line = None
     chapter = await generate_chapter(
         day_index, beats, rule, echoes, distant_echoes=distant,
         season_block=sblock, places_block=places_block,
@@ -511,6 +529,8 @@ async def _plan_and_render(
         salt=run_salt,
         alignment_block=alignment_block(order_axis, moral_axis),
         tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
+        promise_block=promise_text,
+        focus_line=focus_line,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -1042,6 +1062,13 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     if not keep_story:
         await session.execute(delete(StoryBeat))
         await session.execute(delete(LoreEcho))
+        # Книга обещаний — часть канона: полный сброс её тоже стирает.
+        from app.models import WatcherState
+        from app.promises import PROMISE_KEY
+
+        await session.execute(
+            delete(WatcherState).where(WatcherState.key == PROMISE_KEY)
+        )
         # Полный сброс стирает и план Хозяина Ошибки: новый мир — новый план.
         from app.models import WatcherState
         from app.season import VILLAIN_KEY
@@ -1269,6 +1296,13 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             vote_counts=counts_json,
         )
     )
+    # Книга обещаний: последствие победителя живёт в мире 2–3 дня.
+    try:
+        from app.promises import record_promise
+
+        await record_promise(session, round_row.day_index, winning_card.consequence)
+    except Exception:
+        logger.warning("Обещание дня %s не записано", round_row.day_index, exc_info=True)
     # Эха обычно уже рождены в close_voting (см. комментарий там); здесь
     # страховка для путей, миновавших закрытие голосования (/advance и legacy).
     if not await _echoes_already_spawned(session, round_row.day_index):

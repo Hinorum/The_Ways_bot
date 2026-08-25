@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app import rounds as rounds_mod
+from app.config import settings
 from app.models import Card, Round, RoundStatus, StoryBeat, WinRule
 from app.season import (
     act_line,
@@ -26,31 +27,30 @@ def test_season_key_format() -> None:
     assert season_key(datetime(2026, 1, 1)) == "2026-01"  # наивное время = UTC
 
 
-def test_finale_is_last_day_of_run(anchor=None):
+def _one_month(monkeypatch) -> None:
+    """Legacy-режим: арка = один календарный месяц (для точных границ)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "run_length_months", 1)
+
+
+def test_finale_is_last_day_of_run(monkeypatch) -> None:
     """Забег, стартовавший 1-го числа, завершается последним календарным днём."""
-    anchor = anchor or {"dom": 1, "key": "2026-08"}
+    _one_month(monkeypatch)
     cases = [
-        (_utc(2026, 8, 31), True),   # 31 день в августе
-        (_utc(2028, 2, 28), True),   # 2026 не високосный — проверяем в 2028 ниже
-        (_utc(2028, 2, 29), True),   # високосный февраль
+        (_utc(2026, 8, 31), True),
         (_utc(2026, 2, 27), False),
         (_utc(2026, 12, 31), True),
         (_utc(2026, 4, 30), True),
     ]
     for moment, expected in cases:
-        anchor = {
-            "dom": 1,
-            "key": f"{moment.year:04d}-{moment.month:02d}",
-        }
-        run_day, total = run_position(anchor, moment)
-        # Февраль-2028 длиннее февраля-2026: якорь месяца момента корректен
-        # для каждого кейса отдельно.
-        if moment.year == 2028 and moment.month == 2:
-            continue
+        anchor_case = {"dom": 1, "key": f"{moment.year:04d}-{moment.month:02d}"}
+        run_day, total = run_position(anchor_case, moment)
         assert is_run_finale(run_day, total) is expected
 
 
-def test_leap_february_run_length() -> None:
+def test_leap_february_run_length(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "run_length_months", 1)
     anchor = {"dom": 1, "key": "2028-02"}
     _, total = run_position(anchor, _utc(2028, 2, 29))
     assert total == 29
@@ -70,14 +70,26 @@ def test_act_progression_and_countdown() -> None:
     assert "ДЕНЬ ПЕРВОГО ЛАЯ" in finale_line
 
 
-def test_run_wraps_after_month_length() -> None:
-    """Длинный забег циклится: 24 авг + ровно два месяца = последний день
-    второго круга, на следующий день арка пойдёт заново."""
+def test_run_wraps_after_month_length(monkeypatch) -> None:
+    """Одномесячный забег циклится ровно по границе месяца."""
+    _one_month(monkeypatch)
     anchor = {"dom": 24, "key": "2026-08"}
     last_day, total = run_position(anchor, _utc(2026, 10, 24))
     assert (last_day, total) == (31, 31)
     run_day, _total = run_position(anchor, _utc(2026, 10, 25))
     assert run_day == 1
+
+
+def test_two_month_arc_is_default(monkeypatch) -> None:
+    """По умолчанию арка держит интригу два месяца: 24 авг → 23 окт = 61 день."""
+    monkeypatch.setattr(settings, "run_length_months", 2)
+    anchor = {"dom": 24, "key": "2026-08"}
+    _, total = run_position(anchor, _utc(2026, 10, 24))
+    assert total == 61
+    finale_day, _t = run_position(anchor, _utc(2026, 10, 23))
+    from app.season import is_run_finale
+
+    assert is_run_finale(finale_day, _t)
 
 
 def test_finale_instruction_maps_balance_to_flavour() -> None:

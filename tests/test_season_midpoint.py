@@ -21,7 +21,10 @@ def test_midpoint_is_first_day_of_stage2() -> None:
     assert midpoint_day(13, 28) is False and midpoint_day(15, 28) is False
 
 
-def test_season_block_marks_midpoint_once() -> None:
+def test_season_block_marks_midpoint_once(monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "run_length_months", 1)
     block = season_block(anchor=ANCHOR, moment=_moment(15))
     assert "ПОВОРОТ СЕРЕДИНЫ" in block
     # Соседние дни и финал — без поворота.

@@ -33,28 +33,27 @@ def test_villain_stage_boundaries() -> None:
 
 
 def test_run_arc_is_relative_to_reset_not_calendar() -> None:
-    """Сброс 24-го числа: день 1 забега = акт 1, а не унаследованный кризис."""
-    from app.season import act_line, run_position
+    """Сброс 24-го: день 1 забега = акт 1, арка длится 61 день (2 месяца)."""
+    from datetime import timedelta as _td
+
+    from app.season import act_line, is_run_finale, run_position
 
     anchor = {"dom": 24, "key": "2026-08"}
     day_one = datetime(2026, 8, 24, tzinfo=timezone.utc)
     run_day, total = run_position(anchor, day_one)
-    assert (run_day, total) == (1, 31)
+    assert (run_day, total) == (1, 61)
     line = act_line(run_day, total)
     assert "акт 1" in line
-    assert "осталось 30 дн." in line
+    assert "осталось 60 дн." in line
 
-    # Финал забега — когда дорастает до длины месяца старта.
-    finale_moment = datetime(2026, 9, 23, tzinfo=timezone.utc)
-    finale_day, _total = run_position(anchor, finale_moment)
-    from app.season import is_run_finale
+    # Финал — когда забег дорастает до полной длины арки (61-й день).
+    finale_moment = day_one + _td(days=total - 1)
+    finale_day, total_f = run_position(anchor, finale_moment)
+    assert is_run_finale(finale_day, total_f)
 
-    assert is_run_finale(finale_day, _total)
-
-    # Длинный забег циклится: через два месяца арка идёт вторым кругом.
-    later = datetime(2026, 10, 25, tzinfo=timezone.utc)
-    cycle_day, cycle_total = run_position(anchor, later)
-    assert cycle_day == 1 and cycle_total == 31
+    # Цикл: на следующий день после финала арка идёт вторым кругом.
+    wrapped, _ = run_position(anchor, finale_moment + _td(days=1))
+    assert wrapped == 1
 
 
 def test_villain_event_deterministic_per_season() -> None:
@@ -73,7 +72,7 @@ async def test_villain_block_progresses_and_persists(session: AsyncSession) -> N
     block = await _villain_block(session, moment, anchor)
     assert block is not None and "план Хозяина Ошибки" in block
 
-    mid_run = moment.replace(day=15)  # день 15 забега → ступень 2
+    mid_run = moment.replace(day=30)  # день 30 забега (арка 61 дн.) → ступень 2
     await _villain_block(session, mid_run, anchor)
     row = await session.get(WatcherState, VILLAIN_KEY)
     data = json.loads(row.value)
@@ -151,8 +150,9 @@ def test_status_line_shows_act_one_after_midmonth_reset() -> None:
         ]
         text = status_text(round_row)
         assert "акт 1" in text
-        # Голосование уходит на завтра (день 2 забега) — отсчёт от якоря.
-        assert "осталось 29 дн." in text
+        # Голосование уходит на завтра (день 2 арки 61 дн.) — отсчёт от якоря.
+        assert "осталось 59 дн." in text
+        assert "Нрав стаи" in text  # характер стаи теперь в статусе
         assert "Кризис сезона" not in text
     finally:
         set_run_anchor_cache(None)
