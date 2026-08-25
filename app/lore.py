@@ -229,6 +229,7 @@ def compose_chapter(
     sealed: bool = False,
     pending_outcome: bool = False,
     salt: str = "",
+    tint_lines: list[str] | None = None,
 ) -> dict:
     # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
     # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
@@ -334,6 +335,15 @@ def compose_chapter(
             if snippet[-1] not in ".!?…":
                 snippet += "."
             text += " " + distant_variants[rng.randrange(len(distant_variants))].format(snippet=snippet)
+        # Нрав стаи: тинты характера (офлайн-фолбэк не остаётся безликим).
+        for tint in tint_lines or []:
+            sentence = " ".join(tint.split())
+            if not sentence:
+                continue
+            if sentence[-1] not in ".!?…":
+                sentence += "."
+            if sentence not in text:
+                text += f" {sentence}"
 
     return {
         "title": title,

@@ -113,14 +113,21 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
     # Финальный день сезона: эпилог закрывает месяц как финальный аккорд.
     season_note = None
     try:
-        from app.season import is_run_finale, run_position
+        from app.season import (
+            alignment_finale_line,
+            anchor_axes,
+            is_run_finale,
+            run_position,
+        )
 
         anchor = await get_run_anchor(session)
         run_day, total = run_position(anchor, utc_aware(round_row.voting_ends_at))
         if is_run_finale(run_day, total):
+            order, moral = anchor_axes(anchor)
             season_note = (
                 "Этот день закрыл сезон: эпилог должен прозвучать финальным "
-                "аккордом месяца — мир после Первого Лая уже другой."
+                "аккордом месяца — мир после Первого Лая уже другой. "
+                + alignment_finale_line(order, moral)
             )
     except Exception:
         season_note = None
@@ -207,6 +214,18 @@ async def get_run_anchor(session: AsyncSession) -> dict:
         else:
             row.value = payload
         await session.commit()
+    else:
+        # Легаси-якорь без характера: роллим один раз и закрепляем.
+        missing = [axis for axis in ("order_axis", "moral_axis") if axis not in anchor]
+        if missing:
+            import random as _random
+
+            from app.season import _AXIS_START_POOL
+
+            for axis in missing:
+                anchor[axis] = _random.choice(_AXIS_START_POOL)
+            row.value = json.dumps(anchor, ensure_ascii=False)
+            await session.commit()
     set_run_anchor_cache(anchor)
     return anchor
 
@@ -419,7 +438,13 @@ async def _plan_and_render(
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
     # Первого Лая на длине месяца старта забега.
     open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
-    from app.season import season_block as build_season_block
+    from app.season import (
+        alignment_block,
+        alignment_motifs,
+        alignment_tints,
+        anchor_axes,
+        season_block as build_season_block,
+    )
 
     anchor = await get_run_anchor(session)
     key = anchor["key"]
@@ -476,12 +501,16 @@ async def _plan_and_render(
     query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
     distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
 
+    run_salt = secrets.token_hex(4)
+    order_axis, moral_axis = anchor_axes(anchor)
     chapter = await generate_chapter(
         day_index, beats, rule, echoes, distant_echoes=distant,
         season_block=sblock, places_block=places_block,
         villain_block=villain, sealed=sealed_day(day_index) or twist,
         pending_outcome=pending_outcome,
-        salt=secrets.token_hex(4),
+        salt=run_salt,
+        alignment_block=alignment_block(order_axis, moral_axis),
+        tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -490,10 +519,14 @@ async def _plan_and_render(
     # Сквозные персонажи главы получают стабильные визуальные дескрипторы:
     # Лайнер в кадре сегодня и через неделю — одна и та же фигура.
     hero_motifs = character_motifs_for(f"{chapter.get('title', '')} {chapter.get('text', '')}")
+    # Нрав стаи красит кадр: квадрант характера добавляет свой мотив первым.
+    align_motifs = alignment_motifs(order_axis, moral_axis)
     anchor = await _load_art_anchor(session)
     bible = await plan_day_art(
-        chapter, beats, anchor=anchor, extra_motifs=sorted(set(echo_motifs + hero_motifs))
+        chapter, beats, anchor=anchor,
+        extra_motifs=sorted(set(echo_motifs + hero_motifs + align_motifs)),
     )
+    bible["motifs"] = align_motifs + [m for m in (bible.get("motifs") or []) if m not in align_motifs]
     await _save_art_anchor(session, bible)
 
     media_root = Path(settings.media_dir)
@@ -1247,6 +1280,28 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         await apply_round_result(session, getattr(winning_card, "tag", None))
     except Exception:
         logger.warning("Шаг отношений NPC дня %s не удался", round_row.day_index, exc_info=True)
+    # Нрав стаи: оси характера дрейфуют по тегу победившего пути
+    # (забота → добро, хитрость → расчёт и подлость, риск → хаос).
+    try:
+        from app.models import WatcherState as WS
+        from app.season import RUN_START_KEY, apply_alignment_drift, set_run_anchor_cache
+
+        anchor = await get_run_anchor(session)
+        order, moral, changed = apply_alignment_drift(
+            anchor, getattr(winning_card, "tag", None) or "care"
+        )
+        if changed:
+            row = await session.get(WS, RUN_START_KEY)
+            if row is not None:
+                row.value = json.dumps(anchor, ensure_ascii=False)
+                await session.commit()
+            set_run_anchor_cache(anchor)
+            logger.info(
+                "Нрав стаи после дня %s: порядок %d, мораль %d",
+                round_row.day_index, order, moral,
+            )
+    except Exception:
+        logger.warning("Дрейф нрава стаи не удался", exc_info=True)
     try:
         await session.commit()
     except IntegrityError:

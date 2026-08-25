@@ -109,6 +109,8 @@ def _season_status_line(round_row: Round) -> str | None:
     try:
         from app.season import (
             act_line,
+            alignment_label,
+            anchor_axes,
             get_cached_anchor,
             is_run_finale,
             run_position,
@@ -119,10 +121,13 @@ def _season_status_line(round_row: Round) -> str | None:
             from datetime import timezone as _tz
 
             moment = moment.replace(tzinfo=_tz.utc)
-        run_day, total = run_position(get_cached_anchor(moment), moment)
+        cached = get_cached_anchor(moment)
+        run_day, total = run_position(cached, moment)
+        order, moral = anchor_axes(cached)
+        mood = f" · 🎭 Нрав стаи: {alignment_label(order, moral)}"
         if is_run_finale(run_day, total):
-            return "🐺 Сегодня — День Первого Лая. Финал сезона."
-        line = f"🌙 {act_line(run_day, total)}"
+            return "🐺 Сегодня — День Первого Лая. Финал сезона." + mood
+        line = f"🌙 {act_line(run_day, total)}{mood}"
         from app.prologue import prologue_title
 
         title = prologue_title(run_day)

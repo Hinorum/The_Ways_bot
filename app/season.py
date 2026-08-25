@@ -51,8 +51,17 @@ def season_key(moment: datetime) -> str:
 
 
 def default_anchor(moment: datetime) -> dict:
-    """Якорь «первый день прямо сейчас»: для новых инстансов до первого сброса."""
-    return {"dom": day_of_month_of(moment), "key": season_key(moment)}
+    """Якорь «первый день прямо сейчас»: для новых инстансов до первого сброса.
+
+    Нрав стаи роллится сразу и НЕ нейтральный — обе оси из ненулевого пула.
+    """
+    order, moral = roll_axes()
+    return {
+        "dom": day_of_month_of(moment),
+        "key": season_key(moment),
+        "order_axis": order,
+        "moral_axis": moral,
+    }
 
 
 def day_of_month_of(moment: datetime) -> int:
@@ -62,7 +71,7 @@ def day_of_month_of(moment: datetime) -> int:
 
 
 def parse_anchor(raw: str | None) -> dict | None:
-    """{"dom": 24, "key": "2026-08"} из watcher_state либо None."""
+    """{"dom","key"[,"order_axis","moral_axis"]} из watcher_state либо None."""
     if not raw:
         return None
     try:
@@ -72,7 +81,11 @@ def parse_anchor(raw: str | None) -> dict | None:
         year, month = (int(part) for part in key.split("-"))
         if not 1 <= dom <= 31 or not 1 <= month <= 12:
             return None
-        return {"dom": dom, "key": f"{year:04d}-{month:02d}"}
+        anchor: dict = {"dom": dom, "key": f"{year:04d}-{month:02d}"}
+        for axis in ("order_axis", "moral_axis"):
+            if isinstance(data.get(axis), int):
+                anchor[axis] = _clamp_axis(data[axis])
+        return anchor
     except Exception:
         return None
 
@@ -145,6 +158,144 @@ def act_line(run_day: int, total: int) -> str:
     return f"Сезон: акт {act}. {tone} {tail}"
 
 
+# ---------- Нрав стаи: две оси D&D (Порядок × Мораль) ----------
+
+AXIS_MIN, AXIS_MAX = -2, 2
+# Стартовая позиция НЕ нейтральная: обе оси роллятся из ненулевых значений.
+_AXIS_START_POOL = (-2, -1, 1, 2)
+
+# Дрейф от тега победившего пути: забота добреет, риск беснуется к хаосу,
+# хитрость — расчётливая работа с архивом: подлее и «по правилам изнанки».
+_ALIGNMENT_DRIFT: dict[str, dict[str, int]] = {
+    "care": {"moral_axis": +1},
+    "cunning": {"moral_axis": -1, "order_axis": +1},
+    "risk": {"order_axis": -1},
+}
+
+
+def roll_axes() -> tuple[int, int]:
+    """Случайный ненулевой старт обеих осей."""
+    return random.choice(_AXIS_START_POOL), random.choice(_AXIS_START_POOL)
+
+
+def _clamp_axis(value: int) -> int:
+    return max(AXIS_MIN, min(AXIS_MAX, int(value)))
+
+
+def anchor_axes(anchor: dict) -> tuple[int, int]:
+    """(порядок, мораль) из якоря; отсутствие полей = нейтраль."""
+    return (
+        _clamp_axis(anchor.get("order_axis", 0)),
+        _clamp_axis(anchor.get("moral_axis", 0)),
+    )
+
+
+def apply_alignment_drift(anchor: dict, tag: str) -> tuple[int, int, bool]:
+    """Двигает оси якоря по тегу победившего пути (мутация + возврат).
+
+    Возвращает (порядок, мораль, изменилось_ли).
+    """
+    moved = _ALIGNMENT_DRIFT.get(tag)
+    changed = False
+    if moved:
+        for key, delta in moved.items():
+            current = _clamp_axis(anchor.get(key, 0))
+            fresh = _clamp_axis(current + delta)
+            if fresh != current:
+                anchor[key] = fresh
+                changed = True
+    order, moral = anchor_axes(anchor)
+    return order, moral, changed
+
+
+def alignment_label(order: int, moral: int) -> str:
+    o_word = "законопослушная" if order > 0 else "хаотичная" if order < 0 else "нейтральная"
+    m_word = "добрая" if moral > 0 else "злая" if moral < 0 else "нейтральная"
+    if order == 0 and moral == 0:
+        return "Нейтральная стая"
+    return f"{o_word.capitalize()}-{m_word}"
+
+
+def alignment_block(order: int, moral: int) -> str:
+    """Блок характера для промпта главы: поведенческие директивы Ведущему."""
+    label = alignment_label(order, moral)
+    parts: list[str] = []
+    if order > 0:
+        parts.append("Правила и уставы Архива — опора стаи: решения оформляются по протоколу, хаос раздражает.")
+    elif order < 0:
+        parts.append("Правила — препятствие: стая ищет лазы и обходы, ломает процедуры нарочно.")
+    else:
+        parts.append("К правилам стая равнодушна: соблюдает, когда удобно, игнорирует, когда нет.")
+    if moral > 0:
+        parts.append("Стая жертвует личной выгодой ради своих; чужая боль отзывается.")
+    elif moral < 0:
+        parts.append(
+            "Выгода стаи превыше чужих ожиданий; обман и чёрный юмор уместны, "
+            "но без смакования жестокости."
+        )
+    else:
+        parts.append("Чужая боль и чужая выгода трогают стаю ровно настолько, насколько это выгодно.")
+    body = " ".join(parts)
+    return f"НРАВ СТАИ — {label}. {body} Держи подачу сцены, реплики и дилеммы в этом ключе."
+
+
+def alignment_motifs(order: int, moral: int) -> list[str]:
+    """Настроенческий мотив квадранта для визуальной библии дня."""
+    table = {
+        (1, 1): "warm orderly lantern glow over tidy rows",
+        (1, -1): "cold seal-red bureaucratic light, stamped papers",
+        (-1, 1): "wild gentle dawn haze, untamed but kind",
+        (-1, -1): "ragged crimson glitch storm, crooked silhouettes",
+    }
+    key = (1 if order > 0 else -1 if order < 0 else 0,
+           1 if moral > 0 else -1 if moral < 0 else 0)
+    phrase = table.get(key, "grey even fog, balanced composition")
+    return [phrase]
+
+
+_ORDER_TINTS = (
+    "Устав архива ложится на тропу, как размеченная дорожка: стая идёт по протоколу.",
+    "Каждый поворот сверен с правилами — даже ветер сегодня ходит по регламенту.",
+)
+_CHAOS_TINTS = (
+    "Правила здесь стареют быстрее собак — стая чует это шерстью и не жалует таблички.",
+    "Тропа петляет назло разметке: хаос — родной язык этой стаи.",
+)
+_GOOD_TINTS = (
+    "Доброта сегодняшних решений пахнет тёплой миской: стая делится, не считая.",
+    "Стая оставляет лучший кусок тому, кто слабее — привычка сильнее голода.",
+)
+_EVIL_TINTS = (
+    "Выгода прежде всего: стая смотрит на чужие миски без совести, но с юмором.",
+    "Сегодня каждый решает, кого подставить под ошибку — и стая смеётся вполголоса.",
+)
+
+
+def _rng(seed: str) -> random.Random:
+    """Детерминированный генератор на строке-сиде (зеркало lore._rng)."""
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return random.Random(int(digest[:16], 16))
+
+
+def alignment_tints(order: int, moral: int, salt: str = "") -> list[str]:
+    """Офлайн-тинты главы: по одному предложению на ненулевую ось."""
+    rng = _rng(f"align:{salt}:{order}:{moral}")
+    tints: list[str] = []
+    if order != 0:
+        pool = _ORDER_TINTS if order < 0 else _ORDER_TINTS  # заглушка симметрии ниже
+        pool = _CHAOS_TINTS if order < 0 else _ORDER_TINTS
+        tints.append(pool[rng.randrange(len(pool))])
+    if moral != 0:
+        pool = _GOOD_TINTS if moral > 0 else _EVIL_TINTS
+        tints.append(pool[rng.randrange(len(pool))])
+    return tints
+
+
+def alignment_finale_line(order: int, moral: int) -> str:
+    label = alignment_label(order, moral).lower()
+    return f"Нрав забега никуда не делся: стая вошла в Лай {label} — и Лай это запомнил."
+
+
 def act_line_short(run_day: int, total: int) -> str:
     """Короткая строка акта для пульта/статусов без тонального абзаца."""
     act = 3 if crisis_act(run_day, total) else act_number(run_day)
@@ -159,7 +310,9 @@ def tag_balance_line(balance: dict[str, int]) -> str:
     return "Характер стаи за сезон — " + ", ".join(parts) + "."
 
 
-def finale_instruction(balance: dict[str, int]) -> str:
+def finale_instruction(
+    balance: dict[str, int], alignment: str | None = None
+) -> str:
     """Блок финала: три прочтения Лая, исход зависит от характера стаи."""
     dominant = max(balance, key=lambda tag: balance.get(tag, 0)) if balance else "care"
     flavour = {
@@ -170,11 +323,13 @@ def finale_instruction(balance: dict[str, int]) -> str:
     cards_hint = ", ".join(
         f"«{readable}» (tag {tag})" for tag, readable in FINALE_CARDS.items()
     )
+    align_note = f" {alignment}" if alignment else ""
     return (
         "СЕГОДНЯ — ДЕНЬ ПЕРВОГО ЛАЯ, финал сезона. Стая стоит у источника зова. "
         f"Все три карты — три прочтения Лая: {cards_hint}. Ни одно не подаётся "
         "как правильное; каждое честно меняет мир. " + flavour + " "
         + tag_balance_line(balance)
+        + align_note
         + " Эпилог дня закроет сезон одним вздохом — чем он отозвался."
     )
 
@@ -201,8 +356,11 @@ def season_block(
 ) -> str:
     """Готовый блок для промпта главы по якорю забега."""
     run_day, total = run_position(anchor, moment)
+    order_axis, moral_axis = anchor_axes(anchor)
     if is_run_finale(run_day, total):
-        return finale_instruction(balance or {})
+        return finale_instruction(
+            balance or {}, alignment=alignment_label(order_axis, moral_axis)
+        )
     block = act_line(run_day, total)
     if run_day == 1:
         block += "\n" + opener_instruction(previous_season_summary)
@@ -212,9 +370,13 @@ def season_block(
     # Пролог забега: первые семь дней знакомят стаю с миром и лицами.
     from app.prologue import prologue_block
 
-    pblock = prologue_block(run_day)
+    pblock = prologue_block(
+        run_day, alignment_label=alignment_label(order_axis, moral_axis)
+    )
     if pblock:
         block += "\n" + pblock
+    # Нрав стаи — в каждую главу: подача сцены, реплики и дилеммы в ключе осей.
+    block += "\n" + alignment_block(order_axis, moral_axis)
     if midpoint_day(run_day, total):
         block += "\n" + _MIDPOINT_BLOCK
     return block

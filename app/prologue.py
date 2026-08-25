@@ -48,8 +48,8 @@ PROLOGUE_BEATS: dict[int, dict[str, str]] = {
         "title": "Пять собак",
         "block": (
             "ПРОЛОГ, день 4 — «Свои». Сегодня называются имена: Баркод, "
-            "Миска, Вектор, Пиксель и Безымянная. Дай каждой ОДНУ именную "
-            "деталь-характер (Баркод считает дни, Миска слышит еду раньше "
+            "Стежка, Вектор, Пиксель и Безымянная. Дай каждой ОДНУ именную "
+            "деталь-характер (Баркод считает дни, Стежка слышит еду раньше "
             "звука, Вектор упрямится, Пиксель ловит искры лапой, Безымянная "
             "смотрит туда, куда не смотрят другие). Без драмы — просто стая "
             "узнаёт саму себя."
@@ -89,8 +89,12 @@ PROLOGUE_BEATS: dict[int, dict[str, str]] = {
 PROLOGUE_LAST_DAY = max(PROLOGUE_BEATS)
 
 
-def prologue_block(run_day: int) -> str | None:
-    """Блок пролога для промпта главы. None — день вне пролога."""
+def prologue_block(run_day: int, alignment_label: str | None = None) -> str | None:
+    """Блок пролога для промпта главы. None — день вне пролога.
+
+    Характер забега вплетается с первых дней: пролог знакомит не только
+    с миром, но и с тем, КАКАЯ стая в него пришла.
+    """
     beat = PROLOGUE_BEATS.get(run_day)
     if beat is None:
         return None
@@ -100,7 +104,13 @@ def prologue_block(run_day: int) -> str | None:
         if run_day <= PROLOGUE_LAST_DAY - 1
         else " Пролог закрывается: с завтрашнего дня сезон пойдёт сам."
     )
-    return beat["block"] + tail
+    align = (
+        f" Характер этой стаи проявляется с первых шагов: она {alignment_label.lower()}. "
+        "Пусть это звучит в сцене."
+        if alignment_label
+        else ""
+    )
+    return beat["block"] + align + tail
 
 
 def prologue_title(run_day: int) -> str | None:

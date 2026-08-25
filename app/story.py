@@ -406,10 +406,13 @@ async def generate_chapter(
     sealed: bool = False,
     pending_outcome: bool = False,
     salt: str = "",
+    alignment_block: str | None = None,
+    tint_lines: list[str] | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
         villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
+        tint_lines=tint_lines,
     )
     if not settings.use_free_story_llm:
         return authored
@@ -417,6 +420,7 @@ async def generate_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
+        alignment_block=alignment_block,
     )
     return neural or authored
 
@@ -503,6 +507,7 @@ def _build_story_prompt(
     villain_block: str | None = None,
     sealed: bool = False,
     pending_outcome: bool = False,
+    alignment_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -556,6 +561,7 @@ def _build_story_prompt(
     )
     chapter_low, chapter_high = (2200, 3000) if expanded_day else (1800, 2600)
     villain_text = villain_text if villain_block else ""
+    align_text = f"{alignment_block}\n" if alignment_block else ""
     places_text = ""
     if places_block:
         places_text = (
@@ -570,6 +576,7 @@ def _build_story_prompt(
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
         f"{season_text}"
+        f"{align_text}"
         f"{villain_text}"
         f"{echo_block}"
         f"{distant_block}"
@@ -656,11 +663,13 @@ async def _free_story_llm(
     villain_block: str | None = None,
     sealed: bool = False,
     pending_outcome: bool = False,
+    alignment_block: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
+        alignment_block=alignment_block,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
