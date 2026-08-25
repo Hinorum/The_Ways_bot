@@ -67,7 +67,11 @@ async def test_message_error_skips_callback_answer(monkeypatch) -> None:
 
 
 async def test_admin_alert_throttled_to_once_per_hour(monkeypatch) -> None:
-    """Причина сбоя доходит хранителю, но не чаще раза в час."""
+    """Причина сбоя доходит хранителю, но не чаще раза в час.
+
+    Регрессия: троттлинг на monotonic() лгал при аптайме процесса меньше
+    часа (свежая перезагрузка, свежий CI-раннер) — алерты молча исчезали.
+    """
     monkeypatch.setattr(settings, "admin_ids", "4242")
     sent_to_admin: list[str] = []
 
@@ -84,6 +88,26 @@ async def test_admin_alert_throttled_to_once_per_hour(monkeypatch) -> None:
 
     # Второй сбой сразу же — алерт подавлен кулдауном.
     await handle_update_error(AsyncMock(), _callback_event())
+    assert len(sent_to_admin) == 1
+
+
+async def test_admin_alert_fires_on_fresh_process_uptime(monkeypatch) -> None:
+    """Регрессия «молодого» monotonic: аптайм 100 с < кулдауна не глушит алерт."""
+    import time as _time
+
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    sent_to_admin: list[str] = []
+
+    async def fake_notify(bot, text) -> None:
+        sent_to_admin.append(text)
+
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify)
+    monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    # Аптайм-подобное маленькое значение monotonic: стеночные часы от этого
+    # не зависят, поэтому алерт обязан уйти.
+    monkeypatch.setattr(_time, "monotonic", lambda: 100.0)
+
+    await handle_update_error(AsyncMock(), _message_event())
     assert len(sent_to_admin) == 1
 
 

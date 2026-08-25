@@ -1596,7 +1596,9 @@ def _register_error_handler(dispatcher: Dispatcher) -> None:
         return True
 
 
-# Троттлинг личных алертов о сбоях апдейтов: процессный, раз в час.
+# Троттлинг личных алертов о сбоях апдейтов: раз в час по стеночному времени.
+# monotonic() здесь нельзя: на свежезагруженной машине/раннере он меньше часа,
+# и «now - 0 >= 3600» ложно — алерты молча переставали уходить.
 _LAST_UPDATE_ERROR_ALERT = {"ts": 0.0}
 _UPDATE_ERROR_ALERT_COOLDOWN = 3600.0
 
@@ -1629,7 +1631,7 @@ async def handle_update_error(bot: Bot | None, event) -> None:
             await bot.send_message(chat_id, _PLAYER_ERROR_TEXT)
         except Exception:
             pass
-    now = _time.monotonic()
+    now = _time.time()
     if (
         bot is not None
         and settings.admin_id_set
