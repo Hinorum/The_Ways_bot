@@ -1,4 +1,4 @@
-"""Планировщик e2e: тик закрывает голосование, готовит и открывает следующий день.
+﻿"""Планировщик e2e: тик закрывает голосование, готовит и открывает следующий день.
 
 Работаем с глобальной БД (SessionLocal), как настоящий тик; сетевые
 генераторы заменены мгновенными — интересует только конечный автомат дня.
@@ -202,9 +202,9 @@ async def test_start_scheduler_registers_only_zero_arg_jobs(monkeypatch) -> None
     ids = [job_id for job_id, _func in registered]
     assert {"way-tick", "db-backup", "ton-watch", "ton-settle",
             "img-polish", "style-review"} <= set(ids)
-    for job_id, func in registered:
+    for job_id, fn in registered:
         try:
-            inspect.signature(func).bind()
+            inspect.signature(fn).bind()
         except TypeError as exc:
             raise AssertionError(f"джоба {job_id} требует аргументы: {exc}")
 
