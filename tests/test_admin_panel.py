@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
-from app.handlers import _admin_panel_text, cmd_panel, on_panel_view
+from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
 from app.models import Payout, Round, RoundStatus, WinRule
 from app.rounds import _POT_CACHE
 
@@ -29,7 +29,11 @@ def make_callback(uid: int) -> SimpleNamespace:
     return SimpleNamespace(
         data="panel:view",
         from_user=SimpleNamespace(id=uid),
-        message=SimpleNamespace(edit_text=AsyncMock(), chat=SimpleNamespace(type="private")),
+        message=SimpleNamespace(
+            edit_text=AsyncMock(),
+            answer=AsyncMock(),
+            chat=SimpleNamespace(type="private"),
+        ),
         answer=AsyncMock(),
     )
 
@@ -96,17 +100,79 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
 async def test_panel_refresh_callback_edits_for_admin(monkeypatch) -> None:
     monkeypatch.setattr(settings, "admin_ids", "4242")
     callback = make_callback(4242)
+    callback.data = "panel:view"
 
     async def fake_text(session=None):
         return "🎛 ПУЛЬТ ХРАНИТЕЛЯ"
 
     monkeypatch.setattr(handlers_module, "_admin_panel_text", fake_text)
-    await on_panel_view(callback)
+    await on_panel_action(callback)
     callback.message.edit_text.assert_awaited_once()
     callback.answer.assert_awaited_once()
 
     # Не-хранителю обновление закрыто.
     outsider = make_callback(1)
-    await on_panel_view(outsider)
+    outsider.data = "panel:view"
+    await on_panel_action(outsider)
     args, kwargs = outsider.answer.call_args
     assert kwargs.get("show_alert") is True
+
+
+async def test_panel_payouts_button_sends_listing(monkeypatch) -> None:
+    from sqlalchemy import delete as _d
+
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    async with SessionLocal() as db:
+        db.add(Payout(
+            round_id=None,
+            kind="prize",
+            amount_nanotons=150_000_000,
+            dest_address="0:" + "cd" * 32,
+            status="pending",
+        ))
+        await db.commit()
+    try:
+        callback = make_callback(4242)
+        callback.data = "panel:payouts"
+        await on_panel_action(callback)
+        texts = [c.args[0] for c in callback.message.answer.await_args_list if c.args]
+        assert any("#" in t and "pending" in t for t in texts)
+        callback.answer.assert_awaited_with("Список ниже.")
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(_d(Payout).where(Payout.status == "pending"))
+            await db.commit()
+
+
+async def test_panel_advance_requires_double_press(monkeypatch) -> None:
+    """Досрочное закрытие дня — с подтверждением: первый тап только предупреждает."""
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    advance_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(handlers_module, "cmd_advance", advance_mock)
+
+    callback = make_callback(4242)
+    callback.data = "panel:advance"
+    await on_panel_action(callback)
+    args, kwargs = callback.answer.call_args
+    assert kwargs.get("show_alert") is True
+    assert "ещё раз" in args[0]
+    assert advance_mock.await_count == 0  # действия ещё не было
+
+
+async def test_panel_advance_go_runs_command(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    calls: list = []
+
+    async def fake_advance(shim_message):
+        calls.append(shim_message)
+        await shim_message.answer("День 98001 открыт.")
+
+    monkeypatch.setattr(handlers_module, "cmd_advance", fake_advance)
+    callback = make_callback(4242)
+    callback.data = "panel:advance:go"
+    callback.bot = AsyncMock()
+    await on_panel_action(callback)
+    assert len(calls) == 1
+    sent = [c.args[0] for c in callback.message.answer.await_args_list if c.args]
+    assert any("День 98001 открыт." in t for t in sent)
+    callback.answer.assert_awaited_with("День переключён.")

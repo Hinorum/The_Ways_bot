@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatType, ParseMode
@@ -68,36 +69,40 @@ async def _ensure_round():
 async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
         await upsert_player(session, message.from_user)
+    uid = str(message.from_user.id) if message.from_user else "0"
     lines = [
-        f"{day_mark(str(message.from_user.id))} Это «{settings.world_name}» — фанатская игра по мотивам Lost Dogs.",
-        "Раз в сутки — три карты. Каждое утро объявляется закон дня: "
-        "побеждает карта с большим, меньшим или средним числом голосов — "
-        "так что видно, в какую сторону голосовать. Цифры голосов скрыты до итогов.",
+        f"{day_mark(uid)} <b>{settings.world_name}</b>",
         "",
-        "Сутки Стаи: голосование идёт 23 часа, затем час подсчёта. "
-        "Итоги и новый день приходят ровно через сутки после открытия — "
-        "всегда в одно и то же время.",
+        "Ты — голос стаи потерянных собак, идущей сквозь сеть глючных миров.",
+        "Каждое утро Архивариус выносит три тропы и объявляет Закон дня:",
+        "большинство, меньшинство или середина — чей зов станет явью.",
         "",
-        "/today — карты дня",
-        "/lore — канон",
-        "/score — твои Следы",
+        "Один день — один выбор на всю стаю. Победивший путь впечатается в мир",
+        "и к утру вырастет в новую главу: здесь решения помнят дольше, чем собаки.",
+        "",
+        "🐾 Сутки Стаи: 23 часа на раздумья · час тайны урны · итоги ровно через сутки.",
+        "",
+        "<b>Команды каравана</b>",
+        "/today — карты дня · /lore — канон прожитых троп",
+        "/score — твои Следы и хроника · /calling — призвание",
+        "/best — бестиарий Сети",
     ]
     if settings.revote_enabled:
-        lines.append("/change — сменить выбор (⭐ Stars или Gram)")
+        lines.append("/change — сменить тропу (⭐ или Gram)")
     if settings.ton_enabled:
-        lines.append("/wallet — привязать кошелёк для ставок")
-        lines.append("/stake — как поставить Gram на путь")
-        lines.append("/top — копилка месяца и лидеры")
+        lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
+        lines.append("/top — копилки и лидеры")
         lines.append(
-            "\nФонд дня: 97% — поставившим на верный путь пропорционально, "
+            "\n💰 Фонд дня: 97% — поставившим на верный путь пропорционально, "
             "2% — копилка недели (/top), 0,5% — копилка месяца (/top), "
             "0,5% — налог «Децентрализованному Богу»."
         )
     lines.append(
-        f"\n{settings.world_name} — игра, а не вклад: бот и хранитель не отвечают за "
-        "утраченные средства. Ты сам решаешь, на что ставить, и сам за это отвечаешь."
+        f"\n⚠️ {settings.world_name} — игра, а не вклад: бот и хранитель не "
+        "отвечают за утраченные средства. Ты сам решаешь, на что ставишь, "
+        "и сам за это отвечаешь."
     )
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
     await cmd_today(message)
 
 
@@ -1448,11 +1453,8 @@ async def cmd_resetgame(message: Message) -> None:
 
 
 @router.message(Command("payouts"))
-async def cmd_payouts(message: Message) -> None:
-    """Очередь выплат для хранителя: что не ушло и почему."""
-    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
-        await message.answer("Команда только для хранителя игры.")
-        return
+async def _payouts_text() -> str:
+    """Список неотправленных выплат (для /payouts и кнопки пульта)."""
     async with SessionLocal() as session:
         rows = (
             (
@@ -1467,8 +1469,7 @@ async def cmd_payouts(message: Message) -> None:
             .all()
         )
     if not rows:
-        await message.answer(f"{ok_mark('queue')} Долгов нет: все выплаты ушли или разобраны.")
-        return
+        return f"{ok_mark('queue')} Долгов нет: все выплаты ушли или разобраны."
     lines = ["Неотправленные выплаты:"]
     for row in rows:
         reason = getattr(row, "last_error", None)
@@ -1482,7 +1483,15 @@ async def cmd_payouts(message: Message) -> None:
         "Спам (пыль с рекламой): /payout <id> spam\n"
         "Настоящий долг, отправить снова: /payout <id> retry"
     )
-    await message.answer("\n".join(lines))
+    return "\n".join(lines)
+
+
+async def cmd_payouts(message: Message) -> None:
+    """Очередь выплат для хранителя: что не ушло и почему."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    await message.answer(await _payouts_text())
 
 
 @router.message(Command("payout"))
@@ -1606,8 +1615,19 @@ async def _admin_panel_text(session=None) -> str:
 
 
 def _panel_keyboard() -> InlineKeyboardMarkup:
+    """Кнопочный пульт хранителя: обновление и безопасные действия."""
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:view")]]
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:view"),
+                InlineKeyboardButton(text="💸 Выплаты", callback_data="panel:payouts"),
+            ],
+            [
+                InlineKeyboardButton(text="🏛 Казначей", callback_data="panel:treasury"),
+                InlineKeyboardButton(text="💰 Касса", callback_data="panel:revenue"),
+            ],
+            [InlineKeyboardButton(text="⏩ Завершить день", callback_data="panel:advance")],
+        ]
     )
 
 
@@ -1621,32 +1641,76 @@ async def cmd_panel(message: Message) -> None:
     await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard())
 
 
-@router.callback_query(F.data == "panel:view")
-async def on_panel_view(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("panel:"))
+async def on_panel_action(callback: CallbackQuery) -> None:
+    """Единая точка кнопок пульта: гейт хранителя + маршрутизация действий."""
     if callback.from_user.id not in settings.admin_id_set:
         await callback.answer("Пульт только для хранителя.", show_alert=True)
         return
+    action = callback.data.split(":", 1)[1]
     try:
-        async with SessionLocal() as session:
-            text = await _admin_panel_text(session)
-        if callback.message is not None:
-            await callback.message.edit_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard()
+        if action in {"view", "refresh"}:
+            async with SessionLocal() as session:
+                text = await _admin_panel_text(session)
+            if callback.message is not None:
+                await callback.message.edit_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard()
+                )
+            await callback.answer("Обновлено.")
+            return
+        if action == "payouts":
+            await callback.message.answer(await _payouts_text())
+            await callback.answer("Список ниже.")
+            return
+        if action == "treasury":
+            from app.ton_pay import treasury_diagnostics
+
+            await callback.message.answer(
+                await treasury_diagnostics(), parse_mode=ParseMode.HTML
             )
-        await callback.answer("Обновлено.")
+            await callback.answer()
+            return
+        if action == "revenue":
+            await callback.message.answer(await _revenue_text())
+            await callback.answer()
+            return
+        if action in {"advance", "advance:go"}:
+            if action != "advance:go":
+                # Досрочное закрытие — действие с последствиями: первый тап
+                # только спрашивает подтверждение.
+                await callback.answer(
+                    "Закрыть голосование досрочно и открыть следующий день? "
+                    "Нажми кнопку ещё раз для подтверждения.",
+                    show_alert=True,
+                )
+                return
+            _answers: list[str] = []
+
+            class _ShimMessage:
+                """Лёгкий двойник Message: переиспользуем логику /advance."""
+
+                chat = SimpleNamespace(type=ChatType.PRIVATE)
+                text = "/advance"
+                bot = callback.bot
+                from_user = callback.from_user
+
+                async def answer(self, text, *args, **kwargs):
+                    _answers.append(str(text))
+
+            await cmd_advance(_ShimMessage())
+            summary = "\n".join(_answers)[:3500] or "Готово."
+            if callback.message is not None:
+                await callback.message.answer(f"⏩ {summary}")
+            await callback.answer("День переключён.")
+            return
+        await callback.answer("Неизвестное действие.", show_alert=True)
     except Exception as exc:
-        await callback.answer(f"Не обновилось: {exc}", show_alert=True)
+        logger.exception("Действие пульта %s не удалось", action)
+        await callback.answer(f"Не получилось: {exc}", show_alert=True)
 
 
-@router.message(Command("revenue"))
-async def cmd_revenue(message: Message) -> None:
-    """Касса игры для хранителя: ledger доходов из Income.
-
-    Звёзды сверяются с балансом бота во Fragment, Gram — с историей казны.
-    """
-    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
-        await message.answer("Команда только для хранителя игры.")
-        return
+async def _revenue_text() -> str:
+    """Касса игры: ledger доходов из Income (для /revenue и пульта)."""
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -1682,9 +1746,22 @@ async def cmd_revenue(message: Message) -> None:
                 ).group_by(Income.kind)
             )
         ).all()
-    await message.answer(
-        f"{money_mark('revenue')} Касса игры\n{_block('Месяц', month_rows)}\n{_block('Всего', total_rows)}"
+    return (
+        f"{money_mark('revenue')} Касса игры\n"
+        f"{_block('Месяц', month_rows)}\n{_block('Всего', total_rows)}"
     )
+
+
+@router.message(Command("revenue"))
+async def cmd_revenue(message: Message) -> None:
+    """Касса игры для хранителя: ledger доходов из Income.
+
+    Звёзды сверяются с балансом бота во Fragment, Gram — с историей казны.
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    await message.answer(await _revenue_text())
 
 
 @router.message(F.chat.type == ChatType.PRIVATE)
