@@ -21,6 +21,12 @@ jobs:
           pip install pytest pytest-asyncio ruff
       - name: Lint (runtime errors only)
         run: python -m ruff check app tests
+      - name: Alembic drift check
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///./data/ci_drift.db"
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
       - name: Tests
         env:
           BOT_TOKEN: "123456:ci-dummy-token"

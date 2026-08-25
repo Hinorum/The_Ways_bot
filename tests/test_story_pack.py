@@ -23,13 +23,31 @@ async def test_promises_live_three_days_then_pruned(session: AsyncSession) -> No
     await record_promise(session, 11, "Лайнер остался должен стае одну сделку.")
 
     live = await due_promises(session, 12)
-    assert len(live) == 2
+    assert [i["text"] for i in live] == [
+        "Мир обещал тёплый свет в Нулевом Блоке.",
+        "Лайнер остался должен стае одну сделку.",
+    ]
+    assert all(not i["fulfilled_today"] for i in live)
 
     # День 13: запись дня 10 выходит из TTL, остаётся только вчерашняя.
     live = await due_promises(session, 13)
-    assert live == ["Лайнер остался должен стае одну сделку."]
+    assert [i["text"] for i in live] == ["Лайнер остался должен стае одну сделку."]
     # День 14 — протухло всё.
     assert await due_promises(session, 14) == []
+
+
+async def test_promise_fulfilled_marks_today(session: AsyncSession) -> None:
+    from app.promises import mark_fulfilled_for_sources
+
+    await record_promise(session, 30, "Канон обещал лишнюю метку на ошейнике.")
+    # Эхо родом из дня 30 всплыло на день 31 → обещание исполняется сегодня.
+    changed = await mark_fulfilled_for_sources(session, {30}, today=31)
+    assert changed == 1
+    live = await due_promises(session, 31)
+    assert len(live) == 1
+    assert live[0]["fulfilled_today"] is True
+    block = promise_block(live)
+    assert "ИСПОЛНЕНО СЕГОДНЯ" in block
 
 
 async def test_promise_block_format(session: AsyncSession) -> None:
@@ -45,13 +63,18 @@ async def test_promise_block_format(session: AsyncSession) -> None:
 # ---------- Фокус-день NPC ----------
 
 
-def test_npc_focus_every_third_day_rotates() -> None:
-    assert npc_focus_line(1) is None
-    assert npc_focus_line(2) is None
-    line3 = npc_focus_line(3)
-    line6 = npc_focus_line(6)
-    assert line3 and "ФОКУС ДНЯ" in line3
-    assert line6 and line6 != line3  # персонаж ротируется
+def test_npc_focus_arcs_three_day_line() -> None:
+    """Микро-линия: один NPC держит хотелку 3 дня с фазами, потом ротация."""
+    l1, l2, l3 = (npc_focus_line(d) for d in (1, 2, 3))
+    assert all("ФОКУС ДНЯ" in x for x in (l1, l2, l3))
+    assert "завязка" in l1 and "развитие" in l2 and "ход" in l3
+    # Один и тот же персонаж внутри арки:
+    npc1 = [x.split("—")[1].strip().split(":")[0] for x in (l1, l2, l3)]
+    assert len(set(npc1)) == 1
+    # День 4 — следующий персонаж, снова завязка.
+    l4 = npc_focus_line(4)
+    assert "завязка" in l4 and l4.split("—")[1] != l1.split("—")[1]
+    assert npc_focus_line(0) is None
 
 
 # ---------- Двухмесячная арка ----------

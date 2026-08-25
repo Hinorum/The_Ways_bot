@@ -32,7 +32,7 @@ def _clamp_text(text: str, limit: int = 160) -> str:
 
 async def record_promise(session: AsyncSession, day_index: int, text: str) -> None:
     """Добавляет обещание дня (после finish_tally), вычищая протухшие."""
-    entry = {"day": int(day_index), "text": _clamp_text(text)}
+    entry = {"day": int(day_index), "text": _clamp_text(text), "fulfilled": False}
     row = await session.get(WatcherState, PROMISE_KEY)
     ledger: list[dict] = []
     if row is not None and row.value:
@@ -52,8 +52,8 @@ async def record_promise(session: AsyncSession, day_index: int, text: str) -> No
     await session.commit()
 
 
-async def due_promises(session: AsyncSession, current_day_index: int) -> list[str]:
-    """Тексты живых обещаний (не старше TTL); протухшие вычищаются на месте."""
+async def due_promises(session: AsyncSession, current_day_index: int) -> list[dict]:
+    """Живые обещания: [{"text", "fulfilled_today"}]; протухшие вычищаются."""
     row = await session.get(WatcherState, PROMISE_KEY)
     if row is None or not row.value:
         return []
@@ -62,7 +62,7 @@ async def due_promises(session: AsyncSession, current_day_index: int) -> list[st
         assert isinstance(ledger, list)
     except Exception:
         return []
-    live: list[str] = []
+    live: list[dict] = []
     stale_found = False
     for entry in ledger:
         try:
@@ -74,8 +74,10 @@ async def due_promises(session: AsyncSession, current_day_index: int) -> list[st
         if current_day_index - day >= TTL_DAYS or current_day_index < day:
             stale_found = True
             continue
-        if text:
-            live.append(text)
+        fulfilled = bool(entry.get("fulfilled"))
+        fulfilled_today = int(entry.get("fulfilled_day", -1)) == current_day_index
+        if text and (not fulfilled or fulfilled_today):
+            live.append({"text": text, "fulfilled_today": fulfilled_today})
     fresh = [
         {"day": int(e["day"]), "text": e["text"]}
         for e in ledger
@@ -87,14 +89,49 @@ async def due_promises(session: AsyncSession, current_day_index: int) -> list[st
     return live
 
 
-def promise_block(promises: list[str]) -> str | None:
+def promise_block(promises: list[dict]) -> str | None:
     """Блок для промпта главы. None — обещаний нет."""
     if not promises:
         return None
     lines = ["ОБЕЩАНИЯ МИРА (невыплаченный долг прошлых выборов):"]
-    lines += [f"- {text}" for text in promises]
+    for item in promises:
+        prefix = "[ИСПОЛНЕНО СЕГОДНЯ] " if item.get("fulfilled_today") else ""
+        lines.append(f"- {prefix}{item['text']}")
     lines.append(
         "Вплети ОДНО из них как живую деталь сцены или последствия выбора: "
         "обещание исполняется, ломается или откладывается — но не пересказывай список."
     )
     return "\n".join(lines)
+
+
+# ---------- Исполнение обещаний ----------
+
+async def mark_fulfilled_for_sources(
+    session: AsyncSession, source_days: set[int], today: int
+) -> int:
+    """Эха из дня D всплыло → обещание дня D начинает исполняться."""
+    if not source_days:
+        return 0
+    row = await session.get(WatcherState, PROMISE_KEY)
+    if row is None or not row.value:
+        return 0
+    try:
+        ledger = json.loads(row.value)
+        assert isinstance(ledger, list)
+    except Exception:
+        return 0
+    changed = 0
+    for entry in ledger:
+        try:
+            day = int(entry.get("day"))
+        except Exception:
+            continue
+        if day in source_days and not entry.get("fulfilled"):
+            entry["fulfilled"] = True
+            entry["fulfilled_day"] = today
+            changed += 1
+    if changed:
+        row.value = json.dumps(ledger, ensure_ascii=False)
+        await session.commit()
+        logger.info("Исполнено обещаний: %d (эхи совпали с днём рождения)", changed)
+    return changed

@@ -309,6 +309,25 @@ def alignment_finale_line(order: int, moral: int) -> str:
     return f"Нрав забега никуда не делся: стая вошла в Лай {label} — и Лай это запомнил."
 
 
+_WEATHER_POOL = (
+    "Сегодня тени идут против ветра — мир глючит красиво.",
+    "Полдень наступил на час раньше; архив списал это на погоду.",
+    "Все порталы сегодня одного оттенка. Так не бывает — и вот бывает.",
+    "Дождь идёт только над картами выбора, не задевая миски.",
+    "Эхо чужого дня прошло по стае вторым слоем: все на миг заговорили чужими голосами.",
+)
+
+
+def milestone_line(run_day: int, total: int) -> str | None:
+    """Микропик акта 2: каждые 10 дней арки — аномалия-погода. None вне акта 2."""
+    if run_day <= 7 or total - run_day < 7:
+        return None
+    if run_day % 10 != 0:
+        return None
+    rng = _rng(f"weather:{run_day}:{total}")
+    return _WEATHER_POOL[rng.randrange(len(_WEATHER_POOL))]
+
+
 def act_line_short(run_day: int, total: int) -> str:
     """Короткая строка акта для пульта/статусов без тонального абзаца."""
     act = 3 if crisis_act(run_day, total) else act_number(run_day)
@@ -390,6 +409,10 @@ def season_block(
         block += "\n" + pblock
     # Нрав стаи — в каждую главу: подача сцены, реплики и дилеммы в ключе осей.
     block += "\n" + alignment_block(order_axis, moral_axis)
+    # Микропик акта 2: каждые 10 дней арки мир «глючит» погодой.
+    milestone = milestone_line(run_day, total)
+    if milestone:
+        block += "\nПОГОДА МИРА: " + milestone
     if midpoint_day(run_day, total):
         block += "\n" + _MIDPOINT_BLOCK
     return block

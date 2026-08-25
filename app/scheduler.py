@@ -85,7 +85,19 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
                 else f"до Дня Первого Лая {total - run_day} дн."
             )
             chapter_excerpt = (round_row.chapter_text or "")[:700]
-            text = await _compose_whisper(day_index, season_hint, chapter_excerpt)
+            promises = []
+            try:
+                from app.promises import due_promises
+
+                promises = await due_promises(session, day_index)
+            except Exception:
+                pass
+            intrigue = day_index % 3 == 0
+            promise_text = (promises[0] or {}).get("text") if promises else None
+            text = await _compose_whisper(
+                day_index, season_hint, chapter_excerpt,
+                intrigue=intrigue, promise=promise_text,
+            )
             session.add(WatcherState(key=marker, value="1"))
             await session.commit()
         from app.broadcast import whisper_to_chats
@@ -95,7 +107,13 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
         logger.exception("Вечерняя микросцена не удалась (не мешает тику)")
 
 
-async def _compose_whisper(day_index: int, season_hint: str, chapter_excerpt: str = "") -> str:
+async def _compose_whisper(
+    day_index: int,
+    season_hint: str,
+    chapter_excerpt: str = "",
+    intrigue: bool = False,
+    promise: str | None = None,
+) -> str:
     """Микросцена вечера: нейротекст с офлайн-фолбэком. Не раскрывает ни эхи,
     ни расклад голосов — только продолжает утреннюю сцену одной репликой."""
     import random as _random
@@ -131,6 +149,24 @@ async def _compose_whisper(day_index: int, season_hint: str, chapter_excerpt: st
     except Exception:
         hint = ""
 
+    task = (
+        "Вечерняя ИНТРИГА: поставь утреннюю примету под сомнение одной "
+        "деталяю или вопросом, которого никто не произнёс вслух; "
+        "финал — недоговорённость."
+        if intrigue
+        else (
+            "Напиши микросцену вечера: 2-4 предложения (до 450 знаков). "
+            "Стая у карт, сцена дотянулась до заката; одна прямая реплика "
+            "персонажа в его манере речи; финал — недоговорённость перед "
+            "закрытием развилки."
+        )
+    )
+    promise_note = (
+        f"Учти обещание мира: «{promise}». "
+        if promise
+        else ""
+    )
+
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
         {
@@ -143,12 +179,10 @@ async def _compose_whisper(day_index: int, season_hint: str, chapter_excerpt: st
                     if chapter_excerpt
                     else ""
                 )
-                + "Напиши микросцену вечера: 2-4 предложения (до 450 знаков). "
-                "Это короткий отдых стаи: собаки лежат у карт, лижут раны, "
-                "переговариваются вполголоса; одна прямая "
-                "реплика персонажа в его характерной манере речи; финал — "
-                "недоговорённость перед закрытием развилки. Без цифр голосов и "
-                "без намёков, какой путь ведёт. Ответь чистым текстом, без JSON."
+                + task
+                + promise_note
+                + "Без цифр голосов, без намёков на текущий расклад. "
+                "Ответь чистым текстом, без JSON."
             ),
         },
     ]
@@ -417,4 +451,18 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
         )
+    # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
+    from app.style_review import run_weekly_review_and_notify
+
+    scheduler.add_job(
+        run_weekly_review_and_notify,
+        "cron",
+        day_of_week="sun",
+        hour=18,
+        minute=0,
+        id="style-review",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()

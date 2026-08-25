@@ -23,21 +23,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column(
-        "watcher_state",
-        "value",
-        existing_type=sa.String(length=255),
-        type_=sa.Text(),
-        existing_nullable=False,
-        postgresql_using="value::text",
-    )
+    with op.batch_alter_table("watcher_state") as batch:
+        batch.alter_column(
+            "value",
+            existing_type=sa.String(length=255),
+            type_=sa.Text(),
+            existing_nullable=False,
+        )
 
 
 def downgrade() -> None:
-    op.alter_column(
-        "watcher_state",
-        "value",
-        existing_type=sa.Text(),
-        type_=sa.String(length=255),
-        existing_nullable=False,
-    )
+    with op.batch_alter_table("watcher_state") as batch:
+        batch.alter_column(
+            "value",
+            existing_type=sa.Text(),
+            type_=sa.String(length=255),
+            existing_nullable=False,
+        )

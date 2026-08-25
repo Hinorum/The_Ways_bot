@@ -91,20 +91,24 @@ NPC_WANTS = {
 }
 
 
+_FOCUS_PHASES = ("завязка", "развитие", "ход")
+
+
 def npc_focus_line(run_day: int) -> str | None:
-    """Фокус-день персонажа: каждый третий день — одна «хотелка» строкой.
-
-    Детерминировано по дню забега; None — сегодня без фокуса.
-    """
-    if run_day <= 0 or run_day % 3 != 0:
+    """Микро-линия NPC: одна хотелка развивается три дня подряд
+    (завязка → развитие → ход), затем линия переходит к следующему
+    персонажу. Детерминировано по дню забега; None — день ≤ 0."""
+    if run_day <= 0:
         return None
+    arc, phase = divmod(max(1, run_day) - 1, 3)
     keys = list(NPC_TITLES)
-    npc = keys[(run_day // 3) % len(keys)]
+    npc = keys[arc % len(keys)]
     wants = NPC_WANTS[npc]
-    want = wants[(run_day // 3 // len(keys)) % len(wants)]
-    return f"ФОКУС ДНЯ — {NPC_TITLES[npc]}: {want}. Дай этому одну реплику или жест в сцене."
-
-
+    want = wants[(arc // len(keys)) % len(wants)]
+    return (
+        f"ФОКУС ДНЯ [{_FOCUS_PHASES[phase]}] — {NPC_TITLES[npc]}: {want}. "
+        "Дай этому реплику или жест в сцене."
+    )
 def relations_prompt_block(relations: dict[str, int]) -> str | None:
     """Строка для промпта главы. None — все отношения нейтральны."""
     parts = [
