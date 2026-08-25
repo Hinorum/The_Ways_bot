@@ -201,6 +201,63 @@ async def test_stake_in_group_hides_details() -> None:
     assert kwargs.get("reply_markup") is not None
 
 
+def _pay_keyboard_rows(markup):
+    return [[(b.text, b.callback_data, b.url) for b in row] for row in markup.inline_keyboard]
+
+
+async def test_pay_keyboard_multiwallet_and_copy(monkeypatch) -> None:
+    """Кнопки: Tonkeeper + Tonhub (ссылки) и «Скопировать адрес» (callback)."""
+    from app.handlers import _stake_pay_keyboard
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_address", "UQ" + "a" * 46)
+    monkeypatch.setattr(settings, "treasury_testnet_address", "")
+    markup = _stake_pay_keyboard()
+    rows = _pay_keyboard_rows(markup)
+    assert len(rows) == 2
+    texts = [cell[0] for row in rows for cell in row]
+    assert any("Tonkeeper" in t for t in texts)
+    assert any("Tonhub" in t for t in texts)
+    assert any("Скопировать адрес" in t for t in texts)
+    urls = [cell[2] for row in rows for cell in row if cell[2]]
+    assert any("app.tonkeeper.com/transfer/UQ" in u for u in urls)
+    assert any("tonhub.com/transfer/UQ" in u for u in urls)
+    copy_cb = [cell[1] for row in rows for cell in row if cell[1] is not None]
+    assert copy_cb == ["stake:copy"]
+
+
+async def test_stake_copy_button_sends_address(monkeypatch) -> None:
+    from app.handlers import on_stake_copy
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_address", "UQ" + "a" * 46)
+    monkeypatch.setattr(settings, "treasury_testnet_address", "")
+    callback = SimpleNamespace(
+        data="stake:copy",
+        from_user=make_user(next_uid()),
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await on_stake_copy(callback)
+    sent = callback.message.answer.call_args.args[0]
+    assert "Адрес Фонда игры" in sent
+    assert "UQ" + "a" * 46 in sent
+    assert "<code>" in sent
+    assert "привязанного кошелька" in sent
+
+    # Выключенный TON — вежливый отказ.
+    monkeypatch.setattr(settings, "ton_enabled", False)
+    off_cb = SimpleNamespace(
+        data="stake:copy",
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await on_stake_copy(off_cb)
+    args, kwargs = off_cb.answer.call_args
+    assert "выключен" in args[0]
+    assert kwargs.get("show_alert") is True
+
+
 async def test_stake_button_alert_short() -> None:
     callback = SimpleNamespace(
         data="stake:view",

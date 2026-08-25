@@ -898,9 +898,10 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
 _STAKE_HOWTO = (
     "{mark} Ставка на путь — три шага:\n"
     "1. Привяжи кошелёк: /wallet (потом можно перепривязать — старый адрес просто перестанет считаться).\n"
-    "2. Переведи от {min:g} Gram (потолка нет) казначею со СВОЕГО привязанного кошелька:\n"
+    "2. Переведи от {min:g} Gram (потолка нет) со СВОЕГО привязанного кошелька — "
+    "подойдёт любой TON-кошелёк (Tonkeeper, Tonhub, MyTonWallet…):\n"
     "<code>{treasury}</code>\n"
-    "Кнопка ниже открывает кошелёк с готовым получателем — останется ввести сумму.\n"
+    "Кнопки ниже: открыть в кошельке с готовым получателем или скопировать адрес.\n"
     "Комментарий не нужен: watcher найдёт перевод по отправителю примерно за минуту.\n"
     "3. Нажми кнопку с картой пути — когда угодно до закрытия голосования.\n\n"
     "Порядок не важен: голос и перевод можно заносить в любой последовательности, "
@@ -943,18 +944,50 @@ async def _stake_view_text(user) -> str:
 
 
 def _stake_pay_keyboard() -> InlineKeyboardMarkup | None:
-    """Кнопка «открыть кошелёк» с уже вписанным адресом казначея.
+    """Кнопки оплаты ставки: несколько кошельков + копирование адреса.
 
-    Универсальная ссылка Tonkeeper: на телефоне открывает приложение с
-    готовым получателем, сумму игрок вводит сам. Важно: отправлять нужно
-    с привязанного кошелька — watcher ищет перевод по отправителю.
+    Универсальная ссылка Tonkeeper осталась, но добавлены Tonhub и кнопка
+    «Скопировать адрес» — не у всех Tonkeeper, а адрес нужен любому
+    TON-кошельку. Memo не требуется: watcher ищет перевод по отправителю.
     """
     if not settings.ton_enabled or not settings.active_treasury_address:
         return None
     addr = friendly_address(settings.active_treasury_address, testnet=settings.is_testnet)
-    url = f"https://app.tonkeeper.com/transfer/{addr}"
-    label = "💸 Открыть кошелёк для ставки"
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, url=url)]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💸 Tonkeeper", url=f"https://app.tonkeeper.com/transfer/{addr}"
+                ),
+                InlineKeyboardButton(
+                    text="🪙 Tonhub", url=f"https://tonhub.com/transfer/{addr}"
+                ),
+            ],
+            [InlineKeyboardButton(text="📋 Скопировать адрес", callback_data="stake:copy")],
+        ]
+    )
+
+
+@router.callback_query(F.data == "stake:copy")
+async def on_stake_copy(callback: CallbackQuery) -> None:
+    """Адрес казначея отдельным сообщением: тап по <code> копирует его."""
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        await callback.answer("Приём ставок сейчас выключен.", show_alert=True)
+        return
+    addr = friendly_address(
+        settings.active_treasury_address, testnet=settings.is_testnet
+    )
+    try:
+        await callback.message.answer(
+            f"🏛 Адрес Фонда игры для перевода:\n<code>{addr}</code>\n\n"
+            "Нажми на адрес — он скопируется. Переводи со СВОЕГО привязанного "
+            "кошелька (/wallet), memo не нужен: watcher найдёт перевод по отправителю.",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer("Адрес ниже 👇")
+    except Exception as exc:
+        logger.warning("Адрес казначея не отправлен: %s", exc)
+        await callback.answer("Не получилось — адрес в /stake.", show_alert=True)
 
 
 @router.message(Command("stake"))
