@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -30,6 +31,9 @@ from app.config import settings
 from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote, WeeklyPot
 from app.ton_utils import to_nano
 from app.weeks import iso_week_key
+
+
+logger = logging.getLogger(__name__)
 
 
 def current_network() -> str:
@@ -215,9 +219,19 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             shares = split_pot(prize_pool, [(s.player_id, s.amount_nanotons) for s in winning_stakes])
             share_by_player = dict(shares)
             for stake in confirmed:
-                if stake.player_id in share_by_player:
-                    created += await add_payout(stake, "prize", share_by_player[stake.player_id])
-                # Проигравший не получает ничего: ставка сгорает в фонд.
+                share = share_by_player.get(stake.player_id)
+                if share is None:
+                    continue  # Проигравший не получает ничего: ставка сгорает в фонд.
+                if share <= 0:
+                    # Пыльная доля (возможна только при экзотических процентах):
+                    # пустой on-chain перевод не создаём — строка-фантом вечно
+                    # висела бы в очереди и блокировала /resetgame.
+                    logger.warning(
+                        "Ставка игрока %s дала нулевую долю (%d из %d) — перевод пропущен",
+                        stake.player_id, share, prize_pool,
+                    )
+                    continue
+                created += await add_payout(stake, "prize", share)
             if house_cut > 0:
                 created += await add_treasury_payout("rake", house_cut)
             if board_cut > 0:

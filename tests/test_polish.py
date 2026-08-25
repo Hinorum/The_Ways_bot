@@ -13,7 +13,7 @@ from app.broadcast import status_text
 from app.config import settings
 from app.handlers import _canon_text
 from app.lore import compose_chapter
-from app.models import RULE_PHRASES, Card, Round, RoundStatus, StoryBeat, WinRule
+from app.models import RULE_PHRASES, Card, Player, Round, RoundStatus, Stake, StoryBeat, Vote, WinRule
 
 
 def _beat(day: int, text_len: int = 200) -> SimpleNamespace:
@@ -606,6 +606,63 @@ async def test_results_message_refund_day_has_no_multiplier(session) -> None:
     assert "Банк дня: 1.00 Gram" in text
     assert "возвращены" in text
     assert "×" not in text
+
+
+async def test_finalize_skips_zero_share_dust(monkeypatch, session) -> None:
+    """Пыльная доля (0 нанотонов) не создаёт вечный pending-фантом в очереди."""
+    from unittest.mock import patch as _patch
+
+    from app import stakes as stakes_mod
+    from app.models import Payout
+
+    monkeypatch.setattr(settings, "use_free_images", False)
+    monkeypatch.setattr(settings, "use_free_story_llm", False)
+
+    rnd = Round(
+        day_index=31,
+        status=RoundStatus.CLOSED,
+        win_rule=WinRule.MAJORITY,
+        rule_commitment="c",
+        chapter_title="t",
+        chapter_text="x",
+        lore_summary="l",
+        opens_at=datetime.now(timezone.utc),
+        voting_ends_at=datetime.now(timezone.utc),
+        tally_ends_at=datetime.now(timezone.utc),
+        winner_card=0,
+        vote_counts_json='{"0": 2}',
+        payouts_finalized=False,
+    )
+    session.add(rnd)
+    await session.flush()
+    big = Player(id=31_001, username="big")
+    small = Player(id=31_002, username="small")
+    session.add_all([big, small])
+    await session.flush()
+    for player, amount in ((big, 200_000_000), (small, 1_000_000)):
+        session.add(Stake(
+            round_id=rnd.id, player_id=player.id, amount_nanotons=amount,
+            tx_hash=f"dust-{player.id}", status="confirmed",
+            network=settings.ton_network,
+        ))
+        session.add(Vote(round_id=rnd.id, player_id=player.id, card_position=0))
+    await session.commit()
+
+    def fake_split(pool, entries):
+        # Экзотика: мелкой ставке достаётся нулевая доля.
+        return [(pid, pool if pid == big.id else 0) for pid, _amount in entries]
+
+    with _patch.object(stakes_mod, "split_pot", fake_split):
+        await stakes_mod.finalize_day_payouts(session, rnd)
+    rows = (
+        await session.execute(select(Payout).where(Payout.round_id == rnd.id))
+    ).scalars().all()
+    # 1 приз + рейк + копилка месяца (казна), но НЕ нулевой перевод мелкому.
+    prizes = [p for p in rows if p.kind == "prize"]
+    assert len(prizes) == 1 and prizes[0].player_id == big.id
+    assert all(p.amount_nanotons > 0 for p in rows), "нулевых переводов быть не должно"
+    assert all(p.player_id != small.id for p in rows)
+    assert rnd.payouts_finalized is True
 
 
 async def test_write_epilogue_saves_once(session, monkeypatch) -> None:

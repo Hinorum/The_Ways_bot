@@ -467,11 +467,20 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 )
                 continue
             try:
-                tx_hash = await send_ton_transfer(
-                    payout.dest_address,
-                    payout.amount_nanotons,
-                    comment=comment,
+                tx_hash = await asyncio.wait_for(
+                    send_ton_transfer(
+                        payout.dest_address,
+                        payout.amount_nanotons,
+                        comment=comment,
+                    ),
+                    timeout=settings.payout_send_timeout_seconds,
                 )
+            except asyncio.TimeoutError:
+                # Зависший лайтсервер не имеет права замораживать цикл:
+                # таймаут — обычный ретрай с видимой причиной.
+                logger.warning("Выплата %s: таймаут вещания >%ss", payout.id, settings.payout_send_timeout_seconds)
+                payout.last_error = f"таймаут вещания (>{settings.payout_send_timeout_seconds} с)"
+                tx_hash = None
             except Exception as exc:
                 reason = str(exc)
                 if "no alive peers" in reason.lower():

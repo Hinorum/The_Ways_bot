@@ -6,8 +6,10 @@ sending → ретрай. Без сверки это второй реальны
 выплату sent без новой отправки.
 """
 
+import asyncio as _asyncio
 import base64
 import os
+import time as _t
 from unittest.mock import AsyncMock
 
 from app import ton_pay
@@ -294,6 +296,47 @@ async def test_peer_failure_hint_points_to_liteserver_config(monkeypatch) -> Non
             await session.commit()
 
 
+async def test_send_timeout_is_retry_not_freeze(monkeypatch) -> None:
+    """Зависший лайтсервер не морозит цикл: таймаут = ретрай с причиной."""
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(["слово"] * 24))
+    monkeypatch.setattr(settings, "payout_send_timeout_seconds", 1)
+    payout_id = await _seed_payout(attempts=0)
+
+    async def hang_forever(dest, amount, comment):
+        await _asyncio.sleep(30)
+        return None
+
+    async def empty_markers() -> set[str]:
+        return set()
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", AsyncMock(return_value=object()))
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", hang_forever)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", empty_markers)
+
+    try:
+        started = _time_now()
+        await _asyncio.wait_for(
+            ton_pay.dispatch_pending_payouts(bot=None), timeout=10
+        )
+        elapsed = _time_now() - started
+        assert elapsed < 5, "цикл не должен ждать полный hang"
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "pending"  # attempts=1 < max → вернётся в очередь
+        assert "таймаут вещания" in (row.last_error or "")
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+def _time_now() -> float:
+
+    return _t.monotonic()
+
+
 def test_watcher_state_value_is_unlimited_text() -> None:
     """Регрессия: план Хозяина Ошибки рвал тик о VARCHAR(255)."""
     from sqlalchemy import Text as SAText
@@ -320,7 +363,6 @@ def test_pollinations_429_breaker_blocks_until_cooldown(monkeypatch) -> None:
         raise AssertionError("в период охлаждения сеть не должна дёргаться")
 
     monkeypatch.setattr(story.httpx, "AsyncClient", explode_client)
-    import asyncio as _asyncio
     from pathlib import Path as _Path
 
     result = _asyncio.run(
