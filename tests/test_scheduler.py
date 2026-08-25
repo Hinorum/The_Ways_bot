@@ -178,3 +178,46 @@ async def test_tick_finishes_day_and_opens_next() -> None:
         del round_id
     finally:
         await _cleanup(9551, 9552)
+
+
+async def test_start_scheduler_registers_only_zero_arg_jobs(monkeypatch) -> None:
+    """Инцидент-регрессия: джоба с обязательным bot роняла boot_game целиком —
+    игра оставалась без тиков и watcher'а. Каждая джоба обязана вызываться
+    без аргументов, а кривая регистрация не смеет убить остальные."""
+    import inspect
+
+    from app import scheduler as scheduler_mod
+
+    registered: list[tuple[str, object]] = []
+
+    def fake_add_job(func, trigger, *, id, **kwargs):
+        registered.append((id, func))
+
+    monkeypatch.setattr(scheduler_mod.scheduler, "add_job", fake_add_job)
+    monkeypatch.setattr(scheduler_mod.scheduler, "start", lambda: None)
+    monkeypatch.setattr(settings, "ton_enabled", True)
+
+    scheduler_mod.start_scheduler()
+
+    ids = [job_id for job_id, _func in registered]
+    assert {"way-tick", "db-backup", "ton-watch", "ton-settle",
+            "img-polish", "style-review"} <= set(ids)
+    for job_id, func in registered:
+        try:
+            inspect.signature(func).bind()
+        except TypeError as exc:
+            raise AssertionError(f"джоба {job_id} требует аргументы: {exc}")
+
+
+def test_shutdown_scheduler_safe_when_never_started() -> None:
+    """Остановка сервиса до старта планировщика не должна падать."""
+    from app.scheduler import shutdown_scheduler
+
+    if not scheduler_mod_running():
+        shutdown_scheduler()  # не падает
+
+
+def scheduler_mod_running() -> bool:
+    from app.scheduler import scheduler as sched
+
+    return bool(sched.running)

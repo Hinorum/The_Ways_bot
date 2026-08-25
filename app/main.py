@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import init_db
 from app.handlers import build_dispatcher, create_bot
 from app.profile import apply_profile
-from app.scheduler import scheduler, set_bot, start_scheduler, tick
+from app.scheduler import set_bot, start_scheduler, tick
 
 
 logging.basicConfig(level=logging.INFO)
@@ -112,7 +112,9 @@ async def run_webhook(bot, dispatcher) -> None:
     _install_stop_handlers(stop)
     await stop.wait()
     log.info("Остановка: глушим планировщик и веб-сервер")
-    scheduler.shutdown(wait=False)
+    from app.scheduler import shutdown_scheduler
+
+    shutdown_scheduler()
     stop.set()  # будим self-ping для корректного завершения
     boot_task.cancel()
     ping_task.cancel()

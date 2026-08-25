@@ -415,72 +415,56 @@ async def boot_maintenance() -> None:
     await backup_job()
 
 
+def _register_job(job_id: str, func, trigger: str, **kwargs) -> None:
+    """Регистрация джобы с изоляцией сбоев.
+
+    Инцидент: обязательный аргумент bot в одной джобе ронял всю
+    start_scheduler() — игра оставалась без тиков, watcher'а и выплат,
+    а вебхук продолжал отвечать, маскируя мёртвое расписание. Теперь
+    кривая регистрация глушит только саму себя.
+    """
+    try:
+        scheduler.add_job(
+            func,
+            trigger,
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            **kwargs,
+        )
+    except Exception:
+        logger.exception("Джоба %s не зарегистрирована", job_id)
+
+
+def shutdown_scheduler() -> None:
+    """Остановка без AttributeError, если планировщик так и не стартовал."""
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
+
 def start_scheduler() -> None:
     from app.backups import backup_job
 
-    scheduler.add_job(
-        tick,
-        "interval",
-        seconds=15,
-        id="way-tick",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    _register_job("way-tick", tick, "interval", seconds=15)
     # Суточный бэкап в «мёртвый» час: 04:17 UTC.
-    scheduler.add_job(
-        backup_job,
-        "cron",
-        hour=4,
-        minute=17,
-        id="db-backup",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    _register_job("db-backup", backup_job, "cron", hour=4, minute=17)
     if settings.ton_enabled:
-        scheduler.add_job(
-            _watch_job,
-            "interval",
-            seconds=60,
-            id="ton-watch",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        scheduler.add_job(
-            _ton_maintenance,
-            "interval",
-            seconds=120,
-            id="ton-settle",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
+        _register_job("ton-watch", _watch_job, "interval", seconds=60)
+        _register_job("ton-settle", _ton_maintenance, "interval", seconds=120)
     # Шлифовка картинок-заглушек: каждые 2 часа, окно 24 часа с момента дня.
     from app.rounds import polish_stub_images
 
-    scheduler.add_job(
-        polish_stub_images,
-        "interval",
-        hours=2,
-        id="img-polish",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    _register_job("img-polish", polish_stub_images, "interval", hours=2)
     # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
     from app.style_review import run_weekly_review_and_notify
 
-    scheduler.add_job(
+    _register_job(
+        "style-review",
         run_weekly_review_and_notify,
         "cron",
         day_of_week="sun",
         hour=18,
         minute=0,
-        id="style-review",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
     )
     scheduler.start()

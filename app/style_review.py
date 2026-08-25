@@ -76,7 +76,7 @@ def text_is_clean_local(text: str) -> bool:
     return bool(low) and not low.startswith(("извин", "к сожалению", "sorry"))
 
 
-async def run_weekly_review_and_notify(bot) -> None:
+async def run_weekly_review_and_notify(bot=None) -> None:
     if bot is None:
         return
     try:
