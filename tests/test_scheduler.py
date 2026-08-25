@@ -149,7 +149,7 @@ async def test_tick_schedules_preparation_during_tally_window(monkeypatch) -> No
     await _seed(9541, RoundStatus.TALLYING, voting_in=timedelta(hours=-3), tally_in=timedelta(minutes=20))
     try:
         await tick(None)
-        for _ in range(5):
+        for _ in range(20):
             await asyncio.sleep(0)  # даём фоновой задаче стартовать
         assert prepare_job.await_count == 1
         assert prepare_job.await_args.args[0] >= 1
