@@ -86,7 +86,21 @@ PROLOGUE_BEATS: dict[int, dict[str, str]] = {
     },
 }
 
+
+
+# Подсказки каравана: обучение через сценарий вместо простыни команд.
+# День пролога мягко открывает соответствующую команду игроку.
 PROLOGUE_LAST_DAY = max(PROLOGUE_BEATS)
+PROLOGUE_HINTS: dict[int, str] = {
+    1: "Карта дня уже у тебя: /today",
+    2: "Канон прожитых троп: /lore",
+    3: "Лайнер меняет память на провод: /stake — если решишь ставить",
+    4: "Свои следы: /score · призвание собаки: /calling",
+    5: "Встреченных зверей Сети: /best",
+    6: "Кто ведёт стаю: /top · копилки недели и месяца",
+    7: "Завтра приметы множатся — возвращайся к утренней главе",
+}
+
 
 
 def prologue_block(run_day: int, alignment_label: str | None = None) -> str | None:
@@ -110,7 +124,9 @@ def prologue_block(run_day: int, alignment_label: str | None = None) -> str | No
         if alignment_label
         else ""
     )
-    return beat["block"] + align + tail
+    hint = PROLOGUE_HINTS.get(run_day)
+    hint_line = f" Подсказка каравана: {hint}" if hint else ""
+    return beat["block"] + align + tail + hint_line
 
 
 def prologue_title(run_day: int) -> str | None:

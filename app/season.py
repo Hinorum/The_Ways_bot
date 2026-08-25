@@ -409,10 +409,6 @@ def season_block(
         block += "\n" + pblock
     # Нрав стаи — в каждую главу: подача сцены, реплики и дилеммы в ключе осей.
     block += "\n" + alignment_block(order_axis, moral_axis)
-    # Микропик акта 2: каждые 10 дней арки мир «глючит» погодой.
-    milestone = milestone_line(run_day, total)
-    if milestone:
-        block += "\nПОГОДА МИРА: " + milestone
     if midpoint_day(run_day, total):
         block += "\n" + _MIDPOINT_BLOCK
     return block

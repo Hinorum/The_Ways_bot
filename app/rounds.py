@@ -420,6 +420,21 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
     await session.commit()
 
 
+# ---------- Ротация гост-блоков промпта ----------
+
+_GUEST_POOL = ("villain", "promises", "echoes", "focus", "places", "distant")
+
+
+def guest_blocks_for(day_index: int) -> set[str]:
+    """Бюджет главы: ≤4 сюжетных блока. Постоянные (закон, нрав,
+    акт-рамка) не считаются. Гости ротируются парами по дню забега:
+    {villain↔focus} / {promises↔places} / {echoes↔distant} — каждая пара
+    видна через день, антагонист дышит через день без давления."""
+    first = day_index % len(_GUEST_POOL)
+    second = (first + 3) % len(_GUEST_POOL)
+    return {_GUEST_POOL[first], _GUEST_POOL[second]}
+
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -450,6 +465,7 @@ async def _plan_and_render(
     )
 
     anchor = await get_run_anchor(session)
+    guests = guest_blocks_for(day_index)
     key = anchor["key"]
     balance = await season_tag_balance(session, key)
     prev_summary = None
@@ -461,7 +477,9 @@ async def _plan_and_render(
         balance=balance,
         previous_season_summary=prev_summary,
     )
-    places_block = await places_memory_block(session)
+    places_block = (
+        await places_memory_block(session) if "places" in guests else None
+    )
     # Призвания стаи: Ведущий может показать их одним касанием в сцене.
     from app.callings import callings_prompt_block
 
@@ -482,7 +500,8 @@ async def _plan_and_render(
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
     # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
-    villain = await _villain_block(session, open_moment, anchor)
+    villain_full = await _villain_block(session, open_moment, anchor)
+    villain = villain_full if "villain" in guests else None
 
     # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
     from app.season import midpoint_day as season_midpoint
@@ -506,33 +525,27 @@ async def _plan_and_render(
 
     run_salt = secrets.token_hex(4)
     order_axis, moral_axis = anchor_axes(anchor)
-    # Книга обещаний: невыплаченный долг прошлых выборов.
-    try:
-        from app.promises import due_promises, promise_block
-
-        promises = await due_promises(session, day_index)
-        promise_text = promise_block(promises)
-    except Exception:
-        logger.warning("Книга обещаний недоступна", exc_info=True)
-        promise_text = None
     # Фокус-день NPC (каждый третий день забега).
     try:
         from app.relations import npc_focus_line
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
-        focus_line = npc_focus_line(run_day_now)
+        focus_line = (
+            npc_focus_line(run_day_now) if "focus" in guests else None
+        )
     except Exception:
         focus_line = None
     chapter = await generate_chapter(
-        day_index, beats, rule, echoes, distant_echoes=distant,
+        day_index, beats, rule,
+        echoes=echoes if "echoes" in guests else [],
+        distant_echoes=distant if "distant" in guests else [],
         season_block=sblock, places_block=places_block,
         villain_block=villain, sealed=sealed_day(day_index) or twist,
         pending_outcome=pending_outcome,
         salt=run_salt,
         alignment_block=alignment_block(order_axis, moral_axis),
         tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
-        promise_block=promise_text,
         focus_line=focus_line,
     )
 
@@ -1110,13 +1123,6 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     if not keep_story:
         await session.execute(delete(StoryBeat))
         await session.execute(delete(LoreEcho))
-        # Книга обещаний — часть канона: полный сброс её тоже стирает.
-        from app.models import WatcherState
-        from app.promises import PROMISE_KEY
-
-        await session.execute(
-            delete(WatcherState).where(WatcherState.key == PROMISE_KEY)
-        )
         # Полный сброс стирает и план Хозяина Ошибки: новый мир — новый план.
         from app.models import WatcherState
         from app.season import VILLAIN_KEY
@@ -1344,13 +1350,6 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             vote_counts=counts_json,
         )
     )
-    # Книга обещаний: последствие победителя живёт в мире 2–3 дня.
-    try:
-        from app.promises import record_promise
-
-        await record_promise(session, round_row.day_index, winning_card.consequence)
-    except Exception:
-        logger.warning("Обещание дня %s не записано", round_row.day_index, exc_info=True)
     # Эха обычно уже рождены в close_voting (см. комментарий там); здесь
     # страховка для путей, миновавших закрытие голосования (/advance и legacy).
     if not await _echoes_already_spawned(session, round_row.day_index):

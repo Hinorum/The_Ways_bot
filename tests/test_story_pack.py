@@ -4,60 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.promises import due_promises, promise_block, record_promise
 from app.relations import npc_focus_line
 from app.season import run_position
 
 
 def _utc(*args):
     return datetime(*args, tzinfo=timezone.utc)
-
-
-# ---------- Книга обещаний ----------
-
-
-async def test_promises_live_three_days_then_pruned(session: AsyncSession) -> None:
-    await record_promise(session, 10, "Мир обещал тёплый свет в Нулевом Блоке.")
-    await record_promise(session, 11, "Лайнер остался должен стае одну сделку.")
-
-    live = await due_promises(session, 12)
-    assert [i["text"] for i in live] == [
-        "Мир обещал тёплый свет в Нулевом Блоке.",
-        "Лайнер остался должен стае одну сделку.",
-    ]
-    assert all(not i["fulfilled_today"] for i in live)
-
-    # День 13: запись дня 10 выходит из TTL, остаётся только вчерашняя.
-    live = await due_promises(session, 13)
-    assert [i["text"] for i in live] == ["Лайнер остался должен стае одну сделку."]
-    # День 14 — протухло всё.
-    assert await due_promises(session, 14) == []
-
-
-async def test_promise_fulfilled_marks_today(session: AsyncSession) -> None:
-    from app.promises import mark_fulfilled_for_sources
-
-    await record_promise(session, 30, "Канон обещал лишнюю метку на ошейнике.")
-    # Эхо родом из дня 30 всплыло на день 31 → обещание исполняется сегодня.
-    changed = await mark_fulfilled_for_sources(session, {30}, today=31)
-    assert changed == 1
-    live = await due_promises(session, 31)
-    assert len(live) == 1
-    assert live[0]["fulfilled_today"] is True
-    block = promise_block(live)
-    assert "ИСПОЛНЕНО СЕГОДНЯ" in block
-
-
-async def test_promise_block_format(session: AsyncSession) -> None:
-    assert promise_block([]) is None
-    await record_promise(session, 20, "Канон обещал лишнюю метку на ошейнике.")
-    live = await due_promises(session, 20)
-    block = promise_block(live)
-    assert block is not None
-    assert "ОБЕЩАНИЯ МИРА" in block and "лишнюю метку" in block
-    assert "не пересказывай список" in block
 
 
 # ---------- Фокус-день NPC ----------

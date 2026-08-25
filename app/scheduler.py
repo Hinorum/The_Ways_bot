@@ -85,18 +85,10 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
                 else f"до Дня Первого Лая {total - run_day} дн."
             )
             chapter_excerpt = (round_row.chapter_text or "")[:700]
-            promises = []
-            try:
-                from app.promises import due_promises
-
-                promises = await due_promises(session, day_index)
-            except Exception:
-                pass
             intrigue = day_index % 3 == 0
-            promise_text = (promises[0] or {}).get("text") if promises else None
             text = await _compose_whisper(
                 day_index, season_hint, chapter_excerpt,
-                intrigue=intrigue, promise=promise_text,
+                intrigue=intrigue,
             )
             session.add(WatcherState(key=marker, value="1"))
             await session.commit()
@@ -112,7 +104,6 @@ async def _compose_whisper(
     season_hint: str,
     chapter_excerpt: str = "",
     intrigue: bool = False,
-    promise: str | None = None,
 ) -> str:
     """Микросцена вечера: нейротекст с офлайн-фолбэком. Не раскрывает ни эхи,
     ни расклад голосов — только продолжает утреннюю сцену одной репликой."""
@@ -161,12 +152,6 @@ async def _compose_whisper(
             "закрытием развилки."
         )
     )
-    promise_note = (
-        f"Учти обещание мира: «{promise}». "
-        if promise
-        else ""
-    )
-
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
         {
@@ -180,7 +165,6 @@ async def _compose_whisper(
                     else ""
                 )
                 + task
-                + promise_note
                 + "Без цифр голосов, без намёков на текущий расклад. "
                 "Ответь чистым текстом, без JSON."
             ),

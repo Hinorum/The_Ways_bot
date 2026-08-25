@@ -408,7 +408,6 @@ async def generate_chapter(
     salt: str = "",
     alignment_block: str | None = None,
     tint_lines: list[str] | None = None,
-    promise_block: str | None = None,
     focus_line: str | None = None,
 ) -> dict:
     authored = compose_chapter(
@@ -423,7 +422,6 @@ async def generate_chapter(
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
-        promise_block=promise_block,
         focus_line=focus_line,
     )
     return neural or authored
@@ -512,7 +510,6 @@ def _build_story_prompt(
     sealed: bool = False,
     pending_outcome: bool = False,
     alignment_block: str | None = None,
-    promise_block: str | None = None,
     focus_line: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
@@ -583,7 +580,6 @@ def _build_story_prompt(
         f"{law_line}"
         f"{season_text}"
         f"{align_text}"
-        f"{promise_block or ""}"
         f"{focus_line + chr(10) if focus_line else ""}"
         f"{villain_text}"
         f"{echo_block}"
@@ -674,14 +670,13 @@ async def _free_story_llm(
     sealed: bool = False,
     pending_outcome: bool = False,
     alignment_block: str | None = None,
-    promise_block: str | None = None,
     focus_line: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
-        alignment_block=alignment_block, promise_block=promise_block,
+        alignment_block=alignment_block,
         focus_line=focus_line,
     )
     messages = [

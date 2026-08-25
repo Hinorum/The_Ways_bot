@@ -96,17 +96,6 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
                     status="dormant",
                 )
             )
-    # Книга обещаний: если всплывшее эхо родом из дня с обещанием —
-    # обещание начинает исполняться (видно в промпте как «ИСПОЛНЕНО СЕГОДНЯ»).
-    try:
-        from app.promises import mark_fulfilled_for_sources
-
-        source_days = {int(e.source_day) for e in surfaced}
-        await mark_fulfilled_for_sources(session, source_days, day_index)
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "Отметка исполнения обещаний не удалась", exc_info=True
-        )
     return surfaced
 
 

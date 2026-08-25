@@ -1602,6 +1602,51 @@ async def _admin_panel_text(session=None) -> str:
 
         nano, bets = get_cached_pot(int(rnd.get("day_index", 0)))
         lines.append(f"💰 Банк дня: {nano / 1e9:.2f} Gram · ставок {bets}")
+        # Метрики суток: явка вчера, всплывшие эха, оставшиеся заглушки.
+        try:
+            from app.models import LoreEcho as _LE
+            from app.models import Vote as _Vote
+            from app.models import WatcherState as _WS
+
+            last_closed = (
+                await session.execute(
+                    select(Round.id)
+                    .where(Round.status == RoundStatus.CLOSED)
+                    .order_by(Round.day_index.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            votes_yesterday = 0
+            if last_closed is not None:
+                votes_yesterday = (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(_Vote)
+                        .where(_Vote.round_id == last_closed)
+                    )
+                ).scalar_one()
+            surfaced_recent = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(_LE)
+                    .where(
+                        _LE.status == "surfaced",
+                        _LE.surfaced_day >= (rnd.get("day_index") or 1) - 3,
+                    )
+                )
+            ).scalar_one()
+            stubs_left = (
+                await session.execute(
+                    select(func.count()).select_from(_WS).where(
+                        _WS.key.like("img_stubs:%")
+                    )
+                )
+            ).scalar_one()
+            lines.append(f"📈 Вчера голосов: {votes_yesterday} · эхов за 3 дня: {surfaced_recent}")
+            if stubs_left:
+                lines.append(f"🖼 Заглушек картинок в шлифовке: {stubs_left}")
+        except Exception:
+            logger.warning("Метрики суток для пульта не собраны", exc_info=True)
         try:
             anchor = get_cached_anchor()
             run_day, total = run_position(
