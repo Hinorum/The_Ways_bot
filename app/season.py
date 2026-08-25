@@ -145,6 +145,14 @@ def act_line(run_day: int, total: int) -> str:
     return f"Сезон: акт {act}. {tone} {tail}"
 
 
+def act_line_short(run_day: int, total: int) -> str:
+    """Короткая строка акта для пульта/статусов без тонального абзаца."""
+    act = 3 if crisis_act(run_day, total) else act_number(run_day)
+    left = run_days_left(run_day, total)
+    tail = "финал сегодня" if left == 0 else f"до Лая {left} дн."
+    return f"Акт {act} · {tail}"
+
+
 def tag_balance_line(balance: dict[str, int]) -> str:
     parts = [f"{name}: {balance.get(tag, 0)}" for tag, name in
              (("risk", "риск"), ("care", "забота"), ("cunning", "хитрость"))]

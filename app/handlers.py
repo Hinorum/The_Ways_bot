@@ -684,6 +684,33 @@ async def _stake_view_safe(user) -> str:
         )
 
 
+def _win_calc_text() -> str:
+    """Формула выигрыша по текущим процентам + три примера с цифрами."""
+    pool_pct = (
+        100
+        - settings.owner_rake_pct
+        - settings.leaderboard_rake_pct
+        - settings.weekly_pot_pct
+    )
+    # Пример 1: банк 10 G, на верный путь 6 G двумя игроками (4 G и 2 G).
+    pool1 = 10 * pool_pct / 100
+    # Пример 2: банк 5 G, верный путь собрал 0.5 G одного игрока.
+    pool2 = 5 * pool_pct / 100
+    coef2 = pool2 / 0.5
+    return (
+        "\n\n🧮 Как считается выигрыш\n"
+        f"Фонд дня = все ставки. Пул призов = {pool_pct:g}% фонда "
+        "(остаток — копилки недели/месяца и поддержка). Пул делится между "
+        "поставившими на верный путь пропорционально их ставкам.\n"
+        f"Пример 1: банк 10 G, на верный путь поставлено 6 G двумя игроками "
+        f"(4 G и 2 G) → пул {pool1:.2f} G: первый получает {pool1 * 4 / 6:.2f} G, "
+        f"второй {pool1 * 2 / 6:.2f} G.\n"
+        f"Пример 2: банк 5 G, верный путь собрал всего 0.5 G одного игрока → "
+        f"он забирает {pool2:.2f} G (коэффициент ×{coef2:.1f} к своей ставке).\n"
+        "Пример 3: на верный путь не поставил никто — все ставки возвращаются целиком."
+    )
+
+
 async def _wallet_view_text(user) -> str:
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
@@ -907,7 +934,7 @@ async def _stake_view_text(user) -> str:
                     )
                 elif await get_vote(session, round_row.id, player.id) is not None:
                     status = f"\n\n{hint_mark('vote-first')} Ставки нет, но голос уже оставлен. Перевод засчитается в этот же день, если успеет до закрытия."
-    return f"{head}{status}{_ECONOMY_TEXT}\n\n{_DYOR_TEXT}"
+    return f"{head}{status}{_ECONOMY_TEXT}{_win_calc_text()}\n\n{_DYOR_TEXT}"
 
 
 def _stake_pay_keyboard() -> InlineKeyboardMarkup | None:
@@ -1499,6 +1526,116 @@ async def cmd_treasury(message: Message) -> None:
     except Exception as exc:
         logger.exception("Отчёт /treasury не собран")
         await message.answer(f"Отчёт не собрался: {exc}")
+
+
+# ---------- Пульт хранителя (/panel) ----------
+
+_PANEL_FOOTER = (
+    "\n\n🕹 <b>Управление</b> (в личке):\n"
+    "/advance — закрыть день досрочно и открыть следующий\n"
+    "/today — превью поста игрока · /lore — канон\n"
+    "/payouts — очередь выплат (причина у каждой строки)\n"
+    "/payout &lt;id&gt; retry|spam — ручной разбор долга\n"
+    "/treasury — казначей: баланс и пара ключей\n"
+    "/revenue — касса (Stars/Gram) · /health — снимок JSON\n"
+    "/resetgame confirm [keepstory] — полный сброс ⚠️\n"
+    "Картинки-заглушки дорисовываются сами через 15 мин после анонса."
+)
+
+
+async def _admin_panel_text(session=None) -> str:
+    """Сводка состояния игры + подсказки по командам, одним сообщением."""
+    from app.ops import snapshot
+    from app.season import act_line_short, get_cached_anchor, run_position
+
+    snap = await snapshot()
+    lines = ["🎛 <b>ПУЛЬТ ХРАНИТЕЛЯ</b>"]
+    rnd = snap.get("round") or {}
+    closing = str(rnd.get("voting_ends_at", ""))[11:16]
+    lines.append(
+        f"День {rnd.get('day_index')} · {rnd.get('status')} · закрытие {closing} UTC"
+    )
+    if settings.ton_enabled:
+        from app.rounds import get_cached_pot
+
+        nano, bets = get_cached_pot(int(rnd.get("day_index", 0)))
+        lines.append(f"💰 Банк дня: {nano / 1e9:.2f} Gram · ставок {bets}")
+        try:
+            anchor = get_cached_anchor()
+            run_day, total = run_position(
+                anchor,
+                datetime.fromisoformat(str(rnd.get("voting_ends_at")))
+                if rnd.get("voting_ends_at")
+                else datetime.now(timezone.utc),
+            )
+            lines.append(act_line_short(run_day, total))
+        except Exception:
+            pass
+    queue = snap.get("payout_queue")
+    oldest = snap.get("oldest_payout_age")
+    dead = snap.get("dead_letter_payouts")
+    oldest_note = f", старейшая {int(oldest // 60)} мин" if oldest else ""
+    lines.append(f"💸 Выплаты: в очереди {queue}{oldest_note} · failed {dead}")
+    if settings.ton_enabled:
+        lines.append(
+            f"👀 Watcher: {snap.get('watcher_source') or '—'}, "
+            f"пульс {int(snap.get('watcher_beat_age') or 0)} с"
+        )
+    # Топ неотправленного — прямо сюда, чтобы не ходить в /payouts за мелочами.
+    try:
+        rows = (
+            await session.execute(
+                select(Payout)
+                .where(Payout.status.notin_(["sent", "dismissed"]))
+                .order_by(Payout.id.asc())
+                .limit(3)
+            )
+        ).scalars().all() if session is not None else []
+        for row in rows:
+            reason = f" — {row.last_error[:60]}" if getattr(row, "last_error", None) else ""
+            lines.append(
+                f"  #{row.id} {row.kind} {from_nano(row.amount_nanotons):.2f} G "
+                f"{row.status}{reason}"
+            )
+    except Exception:
+        pass
+    tick_age = snap.get("last_tick_age")
+    if tick_age is not None and tick_age > 120:
+        lines.append(f"⚠️ Тик отстаёт: {int(tick_age)} с — проверь логи.")
+    return "\n".join(lines) + _PANEL_FOOTER
+
+
+def _panel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:view")]]
+    )
+
+
+@router.message(Command("panel"))
+async def cmd_panel(message: Message) -> None:
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Пульт только для хранителя игры.")
+        return
+    async with SessionLocal() as session:
+        text = await _admin_panel_text(session)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard())
+
+
+@router.callback_query(F.data == "panel:view")
+async def on_panel_view(callback: CallbackQuery) -> None:
+    if callback.from_user.id not in settings.admin_id_set:
+        await callback.answer("Пульт только для хранителя.", show_alert=True)
+        return
+    try:
+        async with SessionLocal() as session:
+            text = await _admin_panel_text(session)
+        if callback.message is not None:
+            await callback.message.edit_text(
+                text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard()
+            )
+        await callback.answer("Обновлено.")
+    except Exception as exc:
+        await callback.answer(f"Не обновилось: {exc}", show_alert=True)
 
 
 @router.message(Command("revenue"))

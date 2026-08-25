@@ -270,6 +270,19 @@ async def tick(bot: Bot | None = None) -> None:
         previous = await get_latest_round(session)
         current = await ensure_current_round(session)
 
+        # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
+        from app.rounds import get_run_anchor, refresh_round_pot_cache
+
+        try:
+            await get_run_anchor(session)
+        except Exception:
+            logger.exception("Якорь забега не прочитан (кэш останется прежним)")
+        if current.status == RoundStatus.OPEN and settings.ton_enabled:
+            try:
+                await refresh_round_pot_cache(session, current)
+            except Exception:
+                logger.exception("Банк дня не обновлён (кэш останется прежним)")
+
         # Первый запуск или только что созданный день — анонсим без итогов.
         # claim_announcement гарантирует ровно один пост на день, даже если
         # после деплоя секунду работают два процесса.

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, WinRule, RULE_PHRASES
 from app.rounds import pick_winner
+from app.stakes import current_network
 from app.ton_utils import from_nano
 from app.weeks import iso_week_key
 
@@ -188,6 +189,10 @@ def format_results(round_row: Round) -> str:
         f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
         f"🕯 Архивариус вскрывает урну: {reveal}.",
     ]
+    total_votes = sum(counts.values())
+    if total_votes:
+        word_v = _votes_word(total_votes)
+        lines.append(f"🗳 Проголосовало: {total_votes} {word_v}")
     # «Канон на волоске»: сколько голосов отделяло мир от другого исхода.
     margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     if margin is not None:
@@ -226,6 +231,19 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
     raw = json.loads(round_row.vote_counts_json or "{}")
     counts = {int(key): int(value) for key, value in raw.items()}
     players = sum(counts.values())
+    # Ставки по путям: сколько денег стояло за каждый вариант (по голосам
+    # игроков). Победившему пути — отдельная строка с долей банка.
+    path_stakes_rows = await session.execute(
+        select(Vote.card_position, func.coalesce(func.sum(Stake.amount_nanotons), 0))
+        .join(Stake, Stake.player_id == Vote.player_id)
+        .where(
+            Vote.round_id == round_row.id,
+            Stake.round_id == round_row.id,
+            Stake.status == "confirmed",
+            Stake.network == current_network(),
+        )
+        .group_by(Vote.card_position)
+    )
     stats: dict = {
         "players": players,
         "counts": counts,
@@ -236,7 +254,16 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         "board_today": 0,
         "bank_total": 0,
         "refunded": False,
+        "path_stakes": {int(p): int(v) for p, v in path_stakes_rows.all()},
     }
+    stats["winner_stake"] = (
+        stats["path_stakes"].get(round_row.winner_card, 0)
+        if round_row.winner_card is not None
+        else 0
+    )
+    stats["winner_share_pct"] = (
+        round(stats["winner_stake"] * 100 / stats["pot"]) if stats["pot"] else None
+    )
     if not players and not stats["pot"]:
         return stats
 
@@ -263,8 +290,6 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         stats["board_today"] = board_today
 
     if round_row.winner_card is not None:
-        from app.stakes import current_network
-
         winners_subq = select(Vote.player_id).where(
             Vote.round_id == round_row.id,
             Vote.card_position == round_row.winner_card,
@@ -297,6 +322,21 @@ def format_economics(stats: dict) -> str:
             f"{('I', 'II', 'III')[pos]} {percents.get(pos, 0)}%" for pos in range(3)
         )
         lines.append(f"📊 Пути: {spread}")
+    path_stakes = stats.get("path_stakes") or {}
+    if any(path_stakes.values()):
+        parts = " · ".join(
+            f"{('I', 'II', 'III')[pos]} {from_nano(path_stakes.get(pos, 0)):.2f}"
+            for pos in range(3)
+        )
+        lines.append(f"💸 Ставки на пути: {parts} Gram")
+        winner_stake = int(stats.get("winner_stake") or 0)
+        share = stats.get("winner_share_pct")
+        if winner_stake:
+            winner_pos = ("I", "II", "III")[int(stats.get("winner_card") or 0)] if stats.get("winner_card") is not None else ""
+            share_note = f" ({share}% банка)" if share is not None else ""
+            lines.append(
+                f"🎯 На путь {winner_pos} поставлено {from_nano(winner_stake):.2f} Gram{share_note}"
+            )
     if stats["pot"] <= 0:
         return "\n".join(lines)
     ton = from_nano

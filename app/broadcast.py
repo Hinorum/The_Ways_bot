@@ -81,9 +81,16 @@ def status_text(round_row: Round) -> str:
         f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
+    bank_line = ""
+    if settings.ton_enabled:
+        from app.rounds import get_cached_pot
+
+        nano, bets = get_cached_pot(round_row.id)
+        if nano or bets:
+            bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram · ставок: {bets}"
     text = (
         f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 3200)}\n\n"
-        f"{cards}\n\n{phase}\n"
+        f"{cards}\n\n{phase}{bank_line}\n"
         f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
         f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
     )
