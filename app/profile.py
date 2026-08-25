@@ -16,6 +16,8 @@ from aiogram.types import (
     BotCommandScopeAllPrivateChats,
 )
 
+from app.config import settings
+
 # «О боте» в профиле — не больше 120 символов.
 BOT_ABOUT = (
     "Ведущий «Эха Стаи»: каждый день — три пути и один канон. "
@@ -25,33 +27,43 @@ BOT_ABOUT = (
 # Приветственный экран пустого чата («Что умеет этот бот?»), лимит 512.
 BOT_DESCRIPTION = (
     "Ты — голос стаи потерянных собак в сети глючных порталов.\n\n"
-    "Каждое утро объявляется закон дня, нейросеть пишет главу — "
-    "и стая выбирает один из трёх путей. Победивший путь становится каноном: "
-    "завтрашняя глава вырастет из этого выбора.\n\n"
-    "Передумал — смени путь платно (/change). Веришь в расклад — ставь Gram (/wallet).\n"
+    "Каждое утро Архивариус выносит три тропы и объявляет закон дня: "
+    "большинство, меньшинство или середина. Один выбор на всех — "
+    "победивший путь становится каноном, и завтрашняя глава вырастет из него.\n\n"
+    "Передумал — смени путь (/change). Веришь в расклад — ставь Gram (/wallet).\n"
     "Нажми START: Первый Лай уже ждёт."
 )
 
-# Личный чат: полный список. /advance хранителя сюда не попадает.
-PRIVATE_COMMANDS = [
-    BotCommand(command="start", description="Открыть Эхо Стаи"),
-    BotCommand(command="today", description="Карты дня"),
-    BotCommand(command="lore", description="Канон прошлых дней"),
-    BotCommand(command="score", description="Твои Следы"),
-    BotCommand(command="calling", description="Призвание твоей собаки"),
-    BotCommand(command="best", description="Бестиарий Сети"),
-    BotCommand(command="stake", description="Как поставить Gram на путь"),
-    BotCommand(command="wallet", description="Привязать кошелёк Gram"),
-    BotCommand(command="top", description="Копилка месяца и лидеры"),
-    BotCommand(command="change", description="Сменить путь (⭐ или Gram)"),
-]
 
-# Группы и каналы: только то, что там уместно.
-GROUP_COMMANDS = [
-    BotCommand(command="today", description="Карты дня"),
-    BotCommand(command="lore", description="Канон прошлых дней"),
-    BotCommand(command="stake", description="Как поставить Gram на путь"),
-]
+def _build_commands() -> tuple[list[BotCommand], list[BotCommand]]:
+    """Меню отражает включённые механики: без ставок — без кошелька и /top."""
+    private = [
+        BotCommand(command="start", description="Открыть Эхо Стаи"),
+        BotCommand(command="today", description="Карты дня"),
+        BotCommand(command="lore", description="Канон прошлых дней"),
+        BotCommand(command="score", description="Твои Следы"),
+        BotCommand(command="calling", description="Призвание твоей собаки"),
+        BotCommand(command="best", description="Бестиарий Сети"),
+    ]
+    if settings.revote_enabled:
+        private.append(BotCommand(command="change", description="Сменить путь (⭐ или Gram)"))
+    if settings.ton_enabled:
+        private += [
+            BotCommand(command="stake", description="Как поставить Gram на путь"),
+            BotCommand(command="wallet", description="Привязать кошелёк Gram"),
+            BotCommand(command="top", description="Копилки и лидеры"),
+        ]
+    group = [
+        BotCommand(command="today", description="Карты дня"),
+        BotCommand(command="lore", description="Канон прошлых дней"),
+    ]
+    if settings.ton_enabled:
+        group.append(BotCommand(command="stake", description="Как поставить Gram"))
+    return private, group
+
+
+# Личный чат: полный список. /advance хранителя сюда не попадает.
+PRIVATE_COMMANDS, GROUP_COMMANDS = _build_commands()
 
 
 async def apply_profile(bot: Bot) -> None:

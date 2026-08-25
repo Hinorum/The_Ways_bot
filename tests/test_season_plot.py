@@ -227,7 +227,7 @@ def test_status_text_hides_law_on_sealed_day() -> None:
         for i in range(3)
     ]
     text = status_text(round_row)
-    assert "ЗАПЕЧАТАН" in text and "deadbeef00…" in text
+    assert "запечатан архивом до итогов" in text and "deadbeef00…" in text
     assert "собравшая меньше всех голосов" not in text
 
 

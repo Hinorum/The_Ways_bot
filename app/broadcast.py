@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiogram import Bot
@@ -57,6 +58,10 @@ def _clamp(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip(" ,.;:") + "…"
 
 
+def _utc(value: datetime) -> datetime:
+    return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
+
+
 def status_text(round_row: Round) -> str:
     from app.models import RULE_PHRASES
 
@@ -66,13 +71,13 @@ def status_text(round_row: Round) -> str:
         if sealed:
             commitment = round_row.rule_commitment.split(":")[0][:12]
             phase = (
-                "🗝 Закон дня: ЗАПЕЧАТАН архивом до итогов. "
+                "🗝 Закон дня запечатан архивом до итогов. "
                 f"Обязательство: {commitment}…"
             )
         else:
             phase = f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
     elif round_row.status.value == "tallying":
-        phase = "⏳ Голосование закрыто. Идёт час подсчёта."
+        phase = "⏳ Подсчёт: итоги через мгновение."
     else:
         phase = "🌙 День закрыт."
     # Описания путей живут в подписях фото (лимит подписи 1024), поэтому
@@ -88,11 +93,20 @@ def status_text(round_row: Round) -> str:
         nano, _bets = get_cached_pot(round_row.id)
         if nano:
             bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram"
+    # Бесшовные сутки: подсчёт мгновенный, оба времени совпадают — хватит
+    # одного дедлайна. Легаси-раунды с зазором показывают обе строки.
+    voting_at = _utc(round_row.voting_ends_at)
+    tally_at = _utc(round_row.tally_ends_at)
+    if tally_at - voting_at > timedelta(minutes=5):
+        deadline = (
+            f"🗳 Голосование до: {voting_at:%H:%M} UTC · "
+            f"🏁 Итоги и новый день: {tally_at:%H:%M} UTC"
+        )
+    else:
+        deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
     text = (
         f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 3200)}\n\n"
-        f"{cards}\n\n{phase}{bank_line}\n"
-        f"🗳 Голосование до: {round_row.voting_ends_at:%H:%M} UTC · "
-        f"🏁 Итоги и новый день: {round_row.tally_ends_at:%H:%M} UTC"
+        f"{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
     season_line = _season_status_line(round_row)
     if season_line:
@@ -395,29 +409,25 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
 # данные (карты дня видны всем), никаких цифр и механики.
 _PERSONAL_ECHO_TEMPLATES = (
     (
-        "Стая пошла иначе — за «{winner}». Твоя тропа «{title}» никуда не делась: "
-        "{consequence} Такие тропы мир помнит — иногда они всплывают там, где их "
-        "не ждут. Новая развилка уже открыта: один выбор на всех."
+        "Стая ушла за «{winner}», но твоя тропа «{title}» никуда не делась: "
+        "{consequence} Такие тропы мир помнит — они всплывают там, где их "
+        "не ждут. Новая развилка открыта."
     ),
     (
-        "Ты звал стаю на «{title}», но она ушла за «{winner}». Несостоявшийся путь "
-        "остался приметой мира: {consequence} Вечером станет видно, чья дорога "
-        "была дальновиднее. Сегодняшние карты уже ждут."
+        "Ты звал стаю на «{title}» — она ушла за «{winner}». Несостоявшийся "
+        "путь остался приметой мира: {consequence} Сегодняшние карты уже ждут."
     ),
     (
-        "«{title}» — твой вчерашний путь — не стал каноном: стая выбрала "
-        "«{winner}». Но невыбранное здесь не исчезает: {consequence} Мир запомнил "
-        "и это. Загляни на новую развилку, когда сможешь."
+        "«{title}» не стал каноном — стая выбрала «{winner}». Но невыбранное "
+        "здесь не исчезает: {consequence} Мир запомнил и это."
     ),
     (
-        "Стая свернула к «{winner}», а твоя тропа «{title}» осталась тлеть на "
-        "обочине: {consequence} Здесь нет неверных дорог — есть недожитые. "
-        "Новая развилка открыта."
+        "Стая свернула к «{winner}», а твоя тропа «{title}» тлеет на обочине: "
+        "{consequence} Здесь нет неверных дорог — есть недожитые."
     ),
     (
         "Вчера ты был за «{title}», стая — за «{winner}». След твоего пути "
-        "вплетён в мир: {consequence} Через несколько дней его можно узнать на "
-        "тропе. А пока — новый день и новые карты."
+        "вплетён в мир: {consequence} Скоро его можно узнать на тропе."
     ),
 )
 

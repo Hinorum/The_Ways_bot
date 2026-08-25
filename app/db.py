@@ -161,4 +161,7 @@ async def init_db() -> None:
             await conn.execute(text("UPDATE rounds SET status = lower(status) WHERE status = upper(status)"))
             await conn.execute(text("UPDATE rounds SET win_rule = lower(win_rule) WHERE win_rule = upper(win_rule)"))
         elif conn.dialect.name == "sqlite":
+            # WAL: читатели не блокируют писателя и наоборот — фоновые задачи
+            # (диспетчер выплат, преген) перестают ронять тик «database is locked».
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.run_sync(_ensure_sqlite_columns)

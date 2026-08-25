@@ -47,10 +47,11 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     )
     await h.cmd_start(message)
     text = message.answer.call_args_list[0].args[0]
-    # Нарративный старт: те же факты — голосом Ведущего.
-    assert "23 часа на раздумья" in text and "час тайны урны" in text
-    assert "ровно через сутки" in text
-    assert "97%" in text and "2%" in text and "0,5%" in text
+    # Нарративный старт под бесшовные сутки: итоги приходят сами,
+    # без «часа тайны урны» из прежней сетки.
+    assert "приходят сами" in text
+    assert "час тайны урны" not in text
+    assert "97%" in text
     assert "/top" in text
     assert "не отвечают за утраченные средства" in text
     assert "сам решаешь" in text

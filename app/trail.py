@@ -116,11 +116,11 @@ def trail_tint_line(stats: dict | None) -> str | None:
 
 
 def trail_line(stats: dict) -> str:
-    """Строка для /score: клетка, проценты, объём выборки."""
+    """Строка для /score: клетка, проценты с расшифровкой, объём выборки."""
     name = trail_name(stats["order"], stats["moral"]) or "Стая сама по себе"
     hor = round(stats["conformity"] * 100)
     heart = round((stats["heart_share"] + 1 - stats["fang_share"]) * 50)
     return (
-        f"🐾 Твой След: «{name}» — хор {hor}%, сердце {heart}% "
+        f"🐾 Твой След: «{name}» — со стаей {hor}%, забота {heart}% "
         f"(по {stats['total']} голосам)."
     )

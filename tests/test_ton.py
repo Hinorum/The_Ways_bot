@@ -177,17 +177,18 @@ async def test_finalize_payouts_proportional_and_rake(
     board_cut = pot * 50 // 10_000      # 0,5%
     weekly_cut = pot * 200 // 10_000    # 2% — копилка недели
     prize_pool = pot - house - board_cut - weekly_cut
+    fee = to_nano(settings.payout_fee_gram)  # газ сети: один перевод — один вычет
     assert round_row.pot_nanotons == pot
     assert round_row.rake_nanotons == house + board_cut
-    # Игрок 1 — единственный ставивший на верный путь: весь призовой фонд.
-    assert by_kind_player[("prize", 1)]["amount_nanotons"] == prize_pool
+    # Игрок 1 — единственный ставивший на верный путь: весь призовой фонд минус газ.
+    assert by_kind_player[("prize", 1)]["amount_nanotons"] == prize_pool - fee
     assert by_kind_player[("prize", 1)]["dest_address"] == "wallet-1"
     # Игрок 3 проиграл — строки выплаты нет, ставка сгорает.
     assert ("prize", 3) not in by_kind_player
     # Микровыплат угадавшим без ставки больше нет — их 2% капает в копилку недели.
     assert all(kind != "bonus" for kind, _pid in by_kind_player)
-    # Консервация фонда: приз + рейк + копилка недели = весь пул.
-    assert sum(row["amount_nanotons"] for row in payouts) + weekly_cut == pot
+    # Консервация фонда: приз (чистыми) + рейк + копилка недели + газ = весь пул.
+    assert sum(row["amount_nanotons"] for row in payouts) + weekly_cut + fee == pot
     # Доли казны уходят хранителю без игрока.
     assert by_kind_player[("rake", None)]["dest_address"] == "keeper-wallet"
     assert by_kind_player[("leaderboard", None)]["amount_nanotons"] == board_cut
@@ -227,7 +228,9 @@ async def test_finalize_routes_free_pool_without_recipients(
     payouts = list((await session.execute(Payout.__table__.select())).mappings())
     by_kind = {row["kind"]: row for row in payouts}
     assert "bonus" not in by_kind
-    assert by_kind["prize"]["amount_nanotons"] == pot - pot * 50 // 10_000 - pot * 50 // 10_000 - weekly_cut
+    assert by_kind["prize"]["amount_nanotons"] == (
+        pot - pot * 50 // 10_000 - pot * 50 // 10_000 - weekly_cut - to_nano(settings.payout_fee_gram)
+    )
     assert created == 3  # приз + рейк + копилка месяца
     weeks = list((await session.execute(stakes_mod.WeeklyPot.__table__.select())).mappings())
     assert len(weeks) == 1 and weeks[0]["nanotons"] == weekly_cut
@@ -334,7 +337,9 @@ async def test_networks_are_isolated(session: AsyncSession, monkeypatch: pytest.
     assert all(row["network"] == "mainnet" for row in payouts)
     pot = to_nano(5)
     by_kind_player = {(row["kind"], row["player_id"]): row for row in payouts}
-    assert by_kind_player[("prize", 1)]["amount_nanotons"] == pot - pot * 50 // 10_000 * 2 - pot * 200 // 10_000
+    assert by_kind_player[("prize", 1)]["amount_nanotons"] == (
+        pot - pot * 50 // 10_000 * 2 - pot * 200 // 10_000 - to_nano(settings.payout_fee_gram)
+    )
     assert all(kind != "bonus" for kind, _pid in by_kind_player)
     # Фонд посчитан только по активной сети.
     assert round_row.pot_nanotons == to_nano(5)
@@ -355,7 +360,9 @@ async def test_networks_are_isolated(session: AsyncSession, monkeypatch: pytest.
             await session.execute(Payout.__table__.select().order_by(Payout.id))
         ).mappings()
     }
-    assert test_rows[("prize", 2)]["amount_nanotons"] == test_pot - test_pot * 50 // 10_000 * 2 - test_pot * 200 // 10_000
+    assert test_rows[("prize", 2)]["amount_nanotons"] == (
+        test_pot - test_pot * 50 // 10_000 * 2 - test_pot * 200 // 10_000 - to_nano(settings.payout_fee_gram)
+    )
     # Копилка недели накопила долю обеих сетей одного дня.
     weeks = list((await session.execute(stakes_mod.WeeklyPot.__table__.select())).mappings())
     assert len(weeks) == 1

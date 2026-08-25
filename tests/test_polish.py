@@ -504,7 +504,7 @@ async def test_reset_game_keep_story_preserves_canon(session, monkeypatch) -> No
 
 
 async def test_results_message_shows_day_economics(session) -> None:
-    """Итоги показывают банк, явку, проценты путей, коэффициент и копилку."""
+    """Итоги показывают явку, банк, коэффициент и копилки — без дублей цифр."""
     from app.broadcast import results_message
     from app.config import settings
     from app.models import LeaderboardPot, Payout, Player, Stake, Vote
@@ -554,11 +554,14 @@ async def test_results_message_shows_day_economics(session) -> None:
     await session.commit()
 
     text = await results_message(rnd, session)
-    assert "Банк дня: 3.00 Gram · Играло: 15" in text
-    assert "I 13% · II 60% · III 27%" in text
+    # Явка — один раз в основных итогах; в экономике дубля больше нет.
+    assert "Проголосовало: 15" in text
+    assert "Играло" not in text
+    assert "Банк дня: 3.00 Gram" in text
+    assert "📊 Пути:" not in text
     assert "×2.90" in text
-    assert "В копилку месяца ушло: 0.02 Gram" in text
-    assert "всего в банке месяца: 1.34 Gram" in text
+    assert "Месяц: ушло 0.02 Gram" in text
+    assert "в банке месяца 1.34 Gram" in text
 
 
 async def test_results_message_refund_day_has_no_multiplier(session) -> None:

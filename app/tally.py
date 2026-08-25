@@ -305,23 +305,21 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         winning_total = int(staked_winners.scalar_one())
         if winning_total > 0 and prize_sum > 0:
             stats["multiplier"] = prize_sum / winning_total
-        elif stats["pot"] > 0 and prize_sum == 0:
+        elif stats["pot"] > 0 and prize_sum == 0 and stats["week_today"] == 0:
+            # Настоящий возврат: на верный путь не ставил никто. Если же
+            # week_today > 0, призовые сгорели в газ сети и ушли в копилку
+            # недели — это не возврат, и строка про возврат не показывается.
             stats["refunded"] = True
     return stats
 
 
 def format_economics(stats: dict) -> str:
-    """Текстовый блок экономики дня; без банка показывает только явку."""
+    """Текстовый блок экономики дня; без банка показывает только ставки.
+
+    Явка и счёт путей уже есть в основном тексте итогов — здесь только
+    деньги, чтобы одна цифра не встречалась в посте дважды.
+    """
     lines: list[str] = []
-    if stats["players"]:
-        percents = {
-            pos: round(count * 100 / stats["players"])
-            for pos, count in stats["counts"].items()
-        }
-        spread = " · ".join(
-            f"{('I', 'II', 'III')[pos]} {percents.get(pos, 0)}%" for pos in range(3)
-        )
-        lines.append(f"📊 Пути: {spread}")
     path_stakes = stats.get("path_stakes") or {}
     if any(path_stakes.values()):
         parts = " · ".join(
@@ -340,19 +338,19 @@ def format_economics(stats: dict) -> str:
     if stats["pot"] <= 0:
         return "\n".join(lines)
     ton = from_nano
-    lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram · Играло: {stats['players']}")
+    lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram")
     if stats["refunded"]:
-        lines.append("🎯 Коэффициент недоступен: все ставки возвращены игрокам")
+        lines.append("🎯 На верный путь не поставил никто — все ставки возвращены игрокам")
     elif stats["multiplier"] is not None:
         lines.append(f"🎯 Коэффициент верного пути: ×{stats['multiplier']:.2f}")
     if stats["week_today"] > 0 or stats["week_total"] > 0:
         lines.append(
-            f"🗓 В копилку недели ушло: {ton(stats['week_today']):.2f} Gram"
-            f" · всего в банке недели: {ton(stats['week_total']):.2f} Gram"
+            f"🗓 Неделя: ушло {ton(stats['week_today']):.2f} Gram"
+            f" · в банке недели {ton(stats['week_total']):.2f} Gram"
         )
     if stats["board_today"] > 0 or stats["bank_total"] > 0:
         lines.append(
-            f"🏆 В копилку месяца ушло: {ton(stats['board_today']):.2f} Gram"
-            f" · всего в банке месяца: {ton(stats['bank_total']):.2f} Gram"
+            f"🏆 Месяц: ушло {ton(stats['board_today']):.2f} Gram"
+            f" · в банке месяца {ton(stats['bank_total']):.2f} Gram"
         )
     return "\n".join(lines)

@@ -3,16 +3,22 @@
 Механика: ставка не меняет вес голоса (правила majority/minority/median
 остаются честными), а участвует в фонде дня. После подсчёта фонд делится так:
 
-- 97% — поставившим на верный путь, пропорционально ставкам;
+- 97% — поставившим на верный путь, пропорционально ставкам. Из этой части
+  ЗАРАНЕЕ вычитается газ сети (~payout_fee_gram на каждый перевод), поэтому
+  победитель получает приз «чистыми», а казначей не платит за чужие транзы;
 - 2% — копилка недели: каждый день капает сюда, в понедельник сумму делят
   топ-3 недели по числу верных ответов (см. app/leaderboard.py);
 - 0,5% — хранителю игры;
 - 0,5% — в копилку месяца: в конце месяца её забирает игрок (игроки)
   с максимумом верных ответов (/top).
 
+Доли меньше min_payout_gram не превращаются в дохлые переводы: они капают
+в копилку недели и видны в строке недели поста итогов. Если комиссии съели
+призовой пул целиком (экзотика: много микоставок), весь пул уходит туда же.
+
 Если на победивший путь не поставлено ни одной подтвержденной ставки —
-все ставки возвращаются полностью, без рейка и копилок. Отклонённые
-лимитами и неподтверждённые ставки возвращаются всегда.
+все ставки возвращаются полностью, без рейка, копилок и вычета газа.
+Отклонённые лимитами и неподтверждённые ставки возвращаются всегда.
 
 Сети изолированы: каждая ставка и выплата помечена network (mainnet/testnet),
 финализация и watcher работают только со ставками активной сети — тестнет
@@ -216,22 +222,45 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             weekly_cut = pot * weekly_bp // 10_000
             prize_pool = pot - house_cut - board_cut - weekly_cut
 
-            shares = split_pot(prize_pool, [(s.player_id, s.amount_nanotons) for s in winning_stakes])
-            share_by_player = dict(shares)
-            for stake in confirmed:
-                share = share_by_player.get(stake.player_id)
-                if share is None:
-                    continue  # Проигравший не получает ничего: ставка сгорает в фонд.
-                if share <= 0:
-                    # Пыльная доля (возможна только при экзотических процентах):
-                    # пустой on-chain перевод не создаём — строка-фантом вечно
-                    # висела бы в очереди и блокировала /resetgame.
-                    logger.warning(
-                        "Ставка игрока %s дала нулевую долю (%d из %d) — перевод пропущен",
-                        stake.player_id, share, prize_pool,
-                    )
-                    continue
-                created += await add_payout(stake, "prize", share)
+            # Газ сети платят победители — пропорционально доле: из пула
+            # заранее вычитается комиссия каждого перевода, остаток делится
+            # как раньше. Казначей не финансирует чужие переводы из остатка,
+            # а очередь не встаёт на середине дня с «недостаточно средств».
+            fee_nano = to_nano(settings.payout_fee_gram)
+            min_payout_nano = to_nano(settings.min_payout_gram)
+            net_pool = prize_pool - fee_nano * len(winning_stakes)
+
+            dust_to_week = 0  # микродоли и (при вырождении) весь пул
+            if net_pool < min_payout_nano:
+                # Комиссии съели весь призовой фонд: раздавать нечего.
+                # Деньги не оседают в казне молча — капают в копилку недели.
+                dust_to_week = prize_pool
+                logger.warning(
+                    "День %s: газ сети съел призовой пул (%d нанотонов на %d переводов) — "
+                    "пул ушёл в копилку недели",
+                    round_row.day_index, prize_pool, len(winning_stakes),
+                )
+            else:
+                shares = split_pot(net_pool, [(s.player_id, s.amount_nanotons) for s in winning_stakes])
+                share_by_player = dict(shares)
+                for stake in confirmed:
+                    share = share_by_player.get(stake.player_id)
+                    if share is None:
+                        continue  # Проигравший не получает ничего: ставка сгорает в фонд.
+                    if share <= 0:
+                        # Пыльная доля (возможна только при экзотических процентах):
+                        # пустой on-chain перевод не создаём — строка-фантом вечно
+                        # висела бы в очереди и блокировала /resetgame.
+                        logger.warning(
+                            "Ставка игрока %s дала нулевую долю (%d из %d) — перевод пропущен",
+                            stake.player_id, share, prize_pool,
+                        )
+                        continue
+                    if share < min_payout_nano:
+                        # Микровыплата: комиссия съела бы большую её часть.
+                        dust_to_week += share
+                        continue
+                    created += await add_payout(stake, "prize", share)
             if house_cut > 0:
                 created += await add_treasury_payout("rake", house_cut)
             if board_cut > 0:
@@ -244,16 +273,17 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                     session.add(LeaderboardPot(month=month, nanotons=board_cut))
                 else:
                     pot_row.nanotons += board_cut
-            if weekly_cut > 0:
+            week_total_cut = weekly_cut + dust_to_week
+            if week_total_cut > 0:
                 week = iso_week_key(round_row.opens_at)
                 week_row = (await session.execute(
                     select(WeeklyPot).where(WeeklyPot.week == week)
                 )).scalar_one_or_none()
                 if week_row is None:
-                    session.add(WeeklyPot(week=week, nanotons=weekly_cut))
+                    session.add(WeeklyPot(week=week, nanotons=week_total_cut))
                 else:
-                    week_row.nanotons += weekly_cut
-                round_row.weekly_nanotons = weekly_cut
+                    week_row.nanotons += week_total_cut
+                round_row.weekly_nanotons = week_total_cut
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = house_cut + board_cut
 

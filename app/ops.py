@@ -29,11 +29,15 @@ ALERT_WATCHER_KEY = "alert_watcher_ts"
 ALERT_QUEUE_KEY = "alert_queue_ts"
 ALERT_DEAD_KEY = "alert_dead_ts"
 ALERT_TICK_KEY = "alert_tick_ts"
+ALERT_BALANCE_KEY = "alert_balance_ts"
 _ALERT_COOLDOWN = timedelta(hours=1)
 _WATCHER_STALE_AFTER = timedelta(minutes=30)
 _QUEUE_OLD_AFTER = timedelta(minutes=30)
 # Тики идут каждые 15 секунд: тишина дольше пары минут — процесс болен.
 _TICK_STALE_AFTER = timedelta(minutes=5)
+# Допуск сверки баланса казначея с БД: сгоревший газ исходящих переводов
+# и мелкий ручной вывод не должны будить админа ложной тревогой.
+_BALANCE_TOLERANCE_NANO = 50_000_000  # 0.05 Gram
 
 
 def _now() -> datetime:
@@ -232,4 +236,96 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
                     f"{', '.join(str(row_id) for row_id, _r in dead[:10])}{reason_note}. "
                     "Разбор: /payouts → /payout <id> retry|spam перед сбросом игры.",
                 )
+        # 4. Сверка баланса казначея с учётом БД. Две беды разного рода:
+        #    дефицит под очередь (пополни — и всё уйдёт само) и расхождение
+        #    с ожиданиями (ручной вывод, потерянные средства, чужой доступ).
+        if settings.ton_enabled and settings.active_treasury_address:
+            balance_note = await _treasury_balance_anomaly(session)
+            if balance_note is not None:
+                problems.append(balance_note)
+                if await _throttled(session, ALERT_BALANCE_KEY):
+                    await notify_admins(bot, f"⚠️ Казначей: {balance_note}. Детали: /treasury и /payouts.")
     return problems
+
+
+async def _treasury_balance_anomaly(session) -> str | None:
+    """Сравнивает баланс цепочки с ожиданиями БД. None — всё сходится.
+
+    Ожидаемый остаток = подтверждённые ставки + revote-переводы − все
+    выплаты (sent уже ушли, pending/sending ещё уйдут). Допуск покрывает
+    сгоревший газ исходящих переводов; Income не размечен сетью, поэтому
+    при активном тестнет-контуре сверка отключена — метки смешались бы.
+    """
+    from app.models import Income, Stake
+    from app.ton_pay import fetch_account_state
+
+    try:
+        balance, _status, _source = await fetch_account_state()
+    except Exception as exc:
+        logger.warning("Баланс казначея для сверки не прочитан: %s", exc)
+        return None
+    if balance is None:
+        return None
+    network = "testnet" if settings.is_testnet else "mainnet"
+    unpaid = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Payout.amount_nanotons), 0)).where(
+                    Payout.status.in_(["pending", "sending"]),
+                    Payout.network == network,
+                )
+            )
+        ).scalar_one()
+    )
+    sent = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Payout.amount_nanotons), 0)).where(
+                    Payout.status == "sent", Payout.network == network,
+                )
+            )
+        ).scalar_one()
+    )
+    sent_count = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(Payout).where(
+                    Payout.status == "sent", Payout.network == network,
+                )
+            )
+        ).scalar_one()
+    )
+    staked = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Stake.amount_nanotons), 0)).where(
+                    Stake.status == "confirmed", Stake.network == network,
+                )
+            )
+        ).scalar_one()
+    )
+    revotes = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
+                    Income.kind == "ton",
+                )
+            )
+        ).scalar_one()
+    )
+    expected = staked + revotes - sent - unpaid
+    # Газ сгорает на каждом исходящем переводе; допуск = база + запас по числу.
+    from app.ton_utils import to_nano
+
+    tolerance = _BALANCE_TOLERANCE_NANO + sent_count * 2 * to_nano(settings.payout_fee_gram)
+    if balance < unpaid:
+        return (
+            f"баланса {balance / 1e9:.4f} Gram не хватит на очередь выплат "
+            f"({unpaid / 1e9:.4f} Gram) — пополни казначея"
+        )
+    if balance + tolerance < expected:
+        return (
+            f"баланс {balance / 1e9:.4f} Gram ниже ожиданий БД "
+            f"(~{expected / 1e9:.4f} Gram): ручной вывод или пропажа средств?"
+        )
+    return None

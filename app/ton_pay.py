@@ -33,7 +33,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Payout, Round, RoundStatus
 from app.stakes import finalize_day_payouts
-from app.ton_utils import friendly_address, from_nano, normalize_address
+from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +430,34 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 and settings.owner_wallet_address
             ):
                 payout.dest_address = normalize_address(settings.owner_wallet_address)
+        # Предохранитель баланса: не вещаем переводы, которые сеть отвергнет
+        # из-за нехватки средств на казначее. Fail-fast с понятной причиной:
+        # статус остаётся pending, попытки НЕ сгорают — после пополнения
+        # очередь уйдёт сама, без ручного retry и без мёртвых писем.
+        sendable = [payout for payout in payouts if payout.dest_address]
+        if (
+            sendable
+            and settings.active_treasury_address
+            and settings.active_treasury_mnemonic
+        ):
+            try:
+                balance, _status, _source = await fetch_account_state()
+            except Exception as exc:
+                logger.warning("Баланс казначея перед циклом не прочитан: %s", exc)
+                balance = None
+            if balance is not None:
+                fee_nano = to_nano(settings.payout_fee_gram)
+                needed = sum(p.amount_nanotons for p in sendable) + fee_nano * len(sendable)
+                if balance < needed:
+                    reason = (
+                        f"казначей подкачан: нужно {needed / 1e9:.4f} Gram (с газом), "
+                        f"есть {balance / 1e9:.4f} — пополни баланс, очередь уйдёт сама"
+                    )
+                    logger.warning("Диспетчер: %s", reason)
+                    for payout in sendable:
+                        payout.last_error = reason[:200]
+                    await session.commit()
+                    return 0
         # Фиксируем «взятые в работу» ДО вещания: падение сервиса между
         # broadcast и коммитом не приведёт к повторной отправке.
         for payout in payouts:
