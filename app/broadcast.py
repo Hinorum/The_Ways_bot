@@ -85,9 +85,9 @@ def status_text(round_row: Round) -> str:
     if settings.ton_enabled:
         from app.rounds import get_cached_pot
 
-        nano, bets = get_cached_pot(round_row.id)
-        if nano or bets:
-            bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram · ставок: {bets}"
+        nano, _bets = get_cached_pot(round_row.id)
+        if nano:
+            bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram"
     text = (
         f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 3200)}\n\n"
         f"{cards}\n\n{phase}{bank_line}\n"

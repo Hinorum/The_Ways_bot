@@ -139,6 +139,26 @@ async def test_no_bot_no_broadcast() -> None:
     assert await announce_new_day(None, SimpleNamespace(day_index=1)) == []
 
 
+def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None:
+    """Банк дня в посте — только сумма, без числа ставок."""
+    from app import rounds as rounds_mod
+    from app.broadcast import status_text
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    round_row = _round(9400, tmp_path)
+    rounds_mod._POT_CACHE[round_row.id] = (1_250_000_000, 3)
+    try:
+        text = status_text(round_row)
+        assert "Банк дня: 1.25 Gram" in text
+        assert "ставок" not in text
+    finally:
+        rounds_mod._POT_CACHE.pop(round_row.id, None)
+
+    # Пустой банк — строки нет вовсе.
+    text = status_text(round_row)
+    assert "Банк дня" not in text
+
+
 def test_status_hides_descriptions_and_captions_carry_them(tmp_path) -> None:
     """Описания путей переехали в подписи фото: пост дня остаётся главе."""
     from app.broadcast import day_media_group, status_text
