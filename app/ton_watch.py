@@ -647,6 +647,10 @@ async def _collect_transfers(since: int) -> tuple[list[Transfer], bool, str]:
     merged = _merge_unique([primary, fallback])
     if fallback_complete:
         return merged, True, "toncenter"
+    logger.error(
+        "ОБА индексатора тестнета недоступны: переводы не читаются! "
+        "Проверь TonAPI/Toncenter или перезапусти сервис."
+    )
     return merged, False, "none"
 
 
