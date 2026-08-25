@@ -381,6 +381,33 @@ async def _dm_stake(bot: Bot | None, player_id: int, text: str) -> None:
         logger.info("Сообщение игроку %s не доставлено: %s", player_id, exc)
 
 
+async def _ledger_incoming(
+    session, transfer: Transfer, player_id: int | None, round_id: int | None, result: str
+) -> None:
+    """Каждый входящий перевод казначея — в журнал доходов (/incoming).
+
+    Аудит «откуда деньги»: сумма, момент, хеш, хвост адреса отправителя и
+    чем перевод стал (ставка / возврат / оплата смены). Идемпотентно по
+    unit_ref (=tx_hash): повторный проход watcher'а не плодит строк.
+    """
+    existing = await session.execute(
+        select(Income.id).where(Income.unit_ref == transfer.tx_hash).limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+    session.add(
+        Income(
+            kind="ton",
+            amount_nanotons=transfer.value_nanotons,
+            round_id=round_id,
+            player_id=player_id,
+            unit_ref=transfer.tx_hash,
+            note=f"in:{result};src:…{transfer.source[-10:]}"[:200],
+        )
+    )
+    await session.commit()
+
+
 async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
     async with SessionLocal() as session:
@@ -390,7 +417,9 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         player = player_result.scalar_one_or_none()
         if player is None:
             # Деньги от неопознанного кошелька нельзя оставить в казнее молча.
-            return await _stash_refund(session, transfer, None)
+            result = await _stash_refund(session, transfer, None)
+            await _ledger_incoming(session, transfer, None, None, result)
+            return result
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)
@@ -401,6 +430,10 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     player.id,
                     f"↩️ Оплата {from_nano(transfer.value_nanotons):g} Gram возвращается: "
                     + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
+                )
+            if status != "duplicate_tx":
+                await _ledger_incoming(
+                    session, transfer, player.id, revote_round_id, f"revote:{status}"
                 )
             return status
         round_result = await session.execute(
@@ -439,6 +472,10 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     await _dm_stake(
                         bot, player.id, f"✅ Ставка {amount} Gram на день {round_row.day_index} принята."
                     )
+        if result != "duplicate_tx":
+            await _ledger_incoming(
+                session, transfer, player.id, round_row.id, f"stake:{result}"
+            )
     return result
 
 

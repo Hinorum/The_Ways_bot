@@ -1585,7 +1585,8 @@ _PANEL_FOOTER = (
     "\n\n🕹 <b>Управление</b> (в личке):\n"
     "/advance — закрыть день досрочно и открыть следующий\n"
     "/today — превью поста игрока · /lore — канон\n"
-    "/payouts — очередь выплат (причина у каждой строки)\n"
+    "/incoming — журнал входящих переводов казначея\n"
+    "/stakes — ставки дня · /payouts — очередь выплат (причина у каждой строки)\n"
     "/payout &lt;id&gt; retry|spam — ручной разбор долга\n"
     "/treasury — казначей: баланс и пара ключей\n"
     "/revenue — касса (Stars/Gram) · /health — снимок JSON\n"
@@ -1837,6 +1838,51 @@ async def _revenue_text() -> str:
         f"{money_mark('revenue')} Касса игры\n"
         f"{_block('Месяц', month_rows)}\n{_block('Всего', total_rows)}"
     )
+
+
+@router.message(Command("incoming"))
+async def cmd_incoming(message: Message) -> None:
+    """Журнал входящих переводов казначея: откуда, сколько, чем стало.
+
+    Только для хранителя. Источник — Income-леджер, куда watcher пишет
+    каждый поступивший перевод (идемпотентно по хешу транзакции).
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    from app.models import Income
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Income, Player.username, Player.first_name)
+                .join(Player, Player.id == Income.player_id, isouter=True)
+                .where(Income.kind == "ton")
+                .order_by(Income.id.desc())
+                .limit(15)
+            )
+        ).all()
+    if not rows:
+        await message.answer("Входящих переводов в журнале пока нет.")
+        return
+    lines = ["🧾 Входящие переводы казначея (последние 15):"]
+    for income, username, first_name in rows:
+        who = (
+            (f"@{username}" if username else (first_name or f"id{income.player_id}"))
+            if income.player_id
+            else "неизвестный кошелёк"
+        )
+        stamp = income.created_at
+        if stamp is not None:
+            stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+            when = f"{stamp:%d.%m %H:%M} UTC"
+        else:
+            when = "—"
+        lines.append(
+            f"#{income.id} · {when} · {from_nano(income.amount_nanotons):g} Gram · {who}\n"
+            f"   {income.note} · tonscan.org/tx/{income.unit_ref}"
+        )
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("stakes"))
