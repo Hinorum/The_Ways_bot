@@ -681,8 +681,14 @@ async def watch_once(bot: Bot | None = None) -> None:
     for transfer in transfers:  # по возрастанию utime — старые раньше новых
         try:
             status = await process_transfer(transfer, bot=bot)
-            if status not in ("duplicate_tx", "refund_duplicated"):
-                logger.info("Перевод %s: %s", transfer.tx_hash[:16], status)
+            logger.info(
+                "Перевод %s от %s: %s (%.4f Gram, utime %d)",
+                transfer.tx_hash[:16],
+                transfer.source[-10:] if transfer.source else "???",
+                status,
+                transfer.value_nanotons / 1e9,
+                transfer.utime,
+            )
         except Exception as exc:
             # Курсор дальше не двигаем: незакрытый перевод попадёт в следующий цикл.
             logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
@@ -692,6 +698,11 @@ async def watch_once(bot: Bot | None = None) -> None:
         await confirm_aged_pending(bot)
     except Exception:
         logger.exception("Подтверждение отложенных ставок упало (не мешает циклу)")
+    if transfers:
+        logger.info(
+            "Цикл watcher: найдено %d переводов, курсор %d → %d (источник %s)",
+            len(transfers), since, processed_through, source,
+        )
     if processed_through > since or api_ok:
         async with SessionLocal() as session:
             if processed_through > since:

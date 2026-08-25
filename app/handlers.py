@@ -1830,6 +1830,45 @@ async def _revenue_text() -> str:
     )
 
 
+@router.message(Command("stakes"))
+async def cmd_stakes(message: Message) -> None:
+    """Все ставки текущего и вчерашнего дня: статус каждой."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    async with SessionLocal() as session:
+        latest = (
+            await session.execute(
+                select(Round).order_by(Round.day_index.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if latest is None:
+            await message.answer("Дней ещё нет.")
+            return
+        rows = (
+            await session.execute(
+                select(Stake, Player.username, Player.first_name)
+                .join(Player, Player.id == Stake.player_id)
+                .where(Stake.round_id == latest.id)
+                .order_by(Stake.id.asc())
+                .limit(30)
+            )
+        ).all()
+    if not rows:
+        await message.answer(f"Ставок за день {latest.day_index} нет.")
+        return
+    lines = [f"Ставки дня {latest.day_index} ({latest.status.value}):"]
+    for stake, username, first_name in rows:
+        who = username or first_name or f"игрок {stake.player_id}"
+        state = {"confirmed": "✅", "pending": "⏳", "rejected": "↩️"}.get(
+            stake.status, stake.status
+        )
+        lines.append(
+            f"  {who}: {from_nano(stake.amount_nanotons):g} Gram {state}"
+        )
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("revenue"))
 async def cmd_revenue(message: Message) -> None:
     """Касса игры для хранителя: ledger доходов из Income.
