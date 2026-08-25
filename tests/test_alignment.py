@@ -15,18 +15,24 @@ from app.season import (
 )
 
 
-def test_start_position_is_never_neutral() -> None:
-    """Обе оси роллятся из ненулевого пула — требование «не начинать нейтралом»."""
-    for _ in range(50):
+def test_start_position_is_fully_random() -> None:
+    """Старт полностью случайный по диапазону: нейтраль возможна по рандому."""
+    for _ in range(200):
         order, moral = roll_axes()
-        assert order in (-2, -1, 1, 2)
-        assert moral in (-2, -1, 1, 2)
+        assert AXIS_MIN <= order <= AXIS_MAX
+        assert AXIS_MIN <= moral <= AXIS_MAX
     from datetime import datetime, timezone as _tz
 
-    rolled = [
-        default_anchor(datetime(2026, 8, 24, tzinfo=_tz.utc)) for _ in range(20)
-    ]
-    assert all(a["order_axis"] != 0 and a["moral_axis"] != 0 for a in rolled)
+    # Статистически: на 100 роллах ноль обязан выпасть хотя бы раз на ось
+    # (вероятность пропуска ~ (4/5)^100 ≈ 2e-10).
+    zeros = {axis: False for axis in ("order_axis", "moral_axis")}
+    for _ in range(100):
+        anchor = default_anchor(datetime(2026, 8, 24, tzinfo=_tz.utc))
+        if anchor["order_axis"] == 0:
+            zeros["order_axis"] = True
+        if anchor["moral_axis"] == 0:
+            zeros["moral_axis"] = True
+    assert all(zeros.values())
 
 
 def test_labels_cover_all_nine_combinations() -> None:
