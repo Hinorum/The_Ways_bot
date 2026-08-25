@@ -246,3 +246,45 @@ async def test_income_revotes_counted_in_expected_float(monkeypatch) -> None:
             assert not any("казначей" in p for p in problems)
         finally:
             await _cleanup(db, 832)
+
+async def test_treasury_diag_shows_watcher_aim_and_cursor(monkeypatch) -> None:
+    """/treasury отвечает: куда смотрит watcher, курсор, жив ли цикл."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    from app.db import SessionLocal
+    from app.models import WatcherState
+    from app.ton_pay import treasury_diagnostics
+    from app.ton_watch import BEAT_KEY, CURSOR_KEY, SOURCE_KEY
+
+    async with SessionLocal() as db:
+        now = _dt.now(timezone.utc)
+        db.add(WatcherState(key=CURSOR_KEY, value=str(int((now - _td(seconds=30)).timestamp()))))
+        db.add(WatcherState(key=BEAT_KEY, value=(now - _td(seconds=25)).isoformat()))
+        db.add(WatcherState(key=SOURCE_KEY, value="tonapi"))
+        await db.commit()
+        try:
+            text = await treasury_diagnostics()
+            assert "Watcher:" in text
+            assert "смотрит на: EQaaaaaa" in text and "(mainnet)" in text
+            assert "с назад" in text and "источник tonapi" in text
+        finally:
+            for key in (CURSOR_KEY, BEAT_KEY, SOURCE_KEY):
+                row = await db.get(WatcherState, key)
+                if row is not None:
+                    await db.delete(row)
+            await db.commit()
+
+    # Курсор в будущем — диагностикa обязана кричать.
+    async with SessionLocal() as db:
+        future = int((_dt.now(timezone.utc) + _td(minutes=10)).timestamp())
+        db.add(WatcherState(key=CURSOR_KEY, value=str(future)))
+        db.add(WatcherState(key=BEAT_KEY, value=(_dt.now(timezone.utc) - _td(seconds=5)).isoformat()))
+        await db.commit()
+        try:
+            text = await treasury_diagnostics()
+            assert "курсор В БУДУЩЕМ" in text
+        finally:
+            row = await db.get(WatcherState, CURSOR_KEY)
+            if row is not None:
+                await db.delete(row)
+                await db.commit()

@@ -31,7 +31,7 @@ from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Payout, Round, RoundStatus
+from app.models import Payout, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
 from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
 
@@ -676,7 +676,52 @@ async def treasury_diagnostics() -> str:
         dead = (
             await session.execute(select(func.count()).select_from(Payout).where(Payout.status == "failed"))
         ).scalar_one()
+        # Глазами watcher'а: куда смотрит, когда последний раз видел цепочку
+        # и где стоит курсор. Одна команда отвечает на «почему не видно пополнений».
+        from app.ton_watch import BEAT_KEY, CURSOR_KEY, SOURCE_KEY
+
+        beat_iso = None
+        source = None
+        cursor_raw = None
+        for key, slot in ((BEAT_KEY, "b"), (SOURCE_KEY, "s"), (CURSOR_KEY, "c")):
+            row = await session.get(WatcherState, key)
+            if row is not None:
+                if slot == "b":
+                    beat_iso = row.value
+                elif slot == "s":
+                    source = row.value
+                else:
+                    cursor_raw = row.value
     lines.append(f"Очередь выплат: ожидает {waiting} · failed {dead}")
     if waiting or dead:
         lines.append("Разбор: /payouts — причина видна у каждой строки.")
+    now = datetime.now(timezone.utc)
+    lines.append("Watcher:")
+    if not settings.active_treasury_address:
+        lines.append("  адрес не задан — смотреть не на что ⚠️")
+    else:
+        lines.append(f"  смотрит на: {settings.active_treasury_address[:8]}…{settings.active_treasury_address[-6:]} ({network})")
+    beat_age = None
+    if beat_iso:
+        try:
+            beat_moment = datetime.fromisoformat(beat_iso)
+            if beat_moment.tzinfo is None:
+                beat_moment = beat_moment.replace(tzinfo=timezone.utc)
+            beat_age = int((now - beat_moment).total_seconds())
+        except ValueError:
+            pass
+    lines.append(
+        f"  успешный цикл: {'never' if beat_age is None else f'{beat_age} с назад'}"
+        + (f" · источник {source}" if source else "")
+    )
+    if beat_age is not None and beat_age > 180:
+        lines.append("  ⚠️ циклы не проходят >3 мин: индексаторы недоступны или процесс спит")
+    if cursor_raw and cursor_raw.isdigit():
+        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=timezone.utc)
+        lag = int((now - cursor_dt).total_seconds())
+        lines.append(f"  курсор: {cursor_dt:%d.%m %H:%M} UTC ({lag:+d} с от текущего времени)")
+        if lag < -60:
+            lines.append("  ⚠️ курсор В БУДУЩЕМ: новые переводы отсекаются как «старые» — обнули ключ ton_watch_cursor_utime в watcher_state")
+    elif settings.ton_enabled:
+        lines.append("  курсора нет — стартует с отката 12 ч")
     return "\n".join(lines)
