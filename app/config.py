@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # голосование идёт до (day_open_hour_utc - 1):00 следующего дня,
     # час подсчёта — и сразу после него итоги вместе с новым днём.
     day_open_hour_utc: int = 11
+    # Час закрытия голосования (UTC): в этот же час — мгновенный подсчёт,
+    # итоги и запуск следующего дня (бесшовный переход без часа простоя).
+    day_close_hour_utc: int = 11
+    # Час прегенерации следующего дня (UTC): глава/арты готовятся заранее,
+    # чтобы на закрытии день открылся мгновенно.
+    pregen_hour_utc: int = 9
     database_url: str = "sqlite+aiosqlite:///./data/the_way.db"
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"

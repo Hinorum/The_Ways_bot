@@ -325,9 +325,19 @@ async def tick(bot: Bot | None = None) -> None:
                 await announce_new_day(bot, current)
 
         now = _now()
+        # Прегенерация следующего дня — в PREGEN_HOUR_UTC (за пару часов до
+        # закрытия): глава, арт-библия и картинки готовы заранее, поэтому
+        # на закрытии день откроется мгновенно.
+        if (
+            current.status == RoundStatus.OPEN
+            and now.hour == settings.pregen_hour_utc % 24
+            and now.minute < 15
+        ):
+            asyncio.create_task(_prepare_job(current.id))
         if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
+            # БЕСШОВНОЕ ЗАКРЫТИЕ: подсчёт мгновенный — не выходим из тика,
+            # а проваливаемся дальше к финализации в этом же проходе.
             await close_voting(session, current)
-            return
         # Вечерний привал: один раз за день, в настраиваемый час (прайм-тайм).
         if (
             current.status == RoundStatus.OPEN
@@ -341,8 +351,8 @@ async def tick(bot: Bot | None = None) -> None:
             if already is None:
                 asyncio.create_task(_micro_event_job(current.id, current.day_index))
         if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
-            # Час подсчёта — свободное окно: готовим следующий день заранее,
-            # чтобы в 11:00 UTC открыть его мгновенно из готовой заготовки.
+            # ЛЕГАСИ-окно (старые раунды с часом подсчёта): готовим следующий
+            # день и тизер. Новая сетка проходит здесь насквозь мгновенно.
             asyncio.create_task(_prepare_job(current.id))
             # Тизер ожидания: раз за день, сразу после закрытия голосования.
             from app.models import WatcherState
@@ -369,13 +379,25 @@ async def tick(bot: Bot | None = None) -> None:
                 from app.stakes import finalize_day_payouts
 
                 await finalize_day_payouts(session, finished)
+                # Вознаграждения победителям: мгновенный пинок диспетчера,
+                # деньги уходят в течение пары минут после итогов.
+                asyncio.create_task(_payout_dispatch_job())
             nxt, created = await create_next_round_detailed(session)
             if created:
                 await announce_new_day(bot, nxt, finished if closed_here else None)
-                # Заглушки картинок дорисовываются фоном через 15 минут.
-                asyncio.create_task(_image_upgrade_job(nxt.day_index))
             if closed_here and settings.personal_echo:
                 asyncio.create_task(_personal_echo_job(finished.id))
+
+
+async def _payout_dispatch_job() -> None:
+    """Немедленная отправка вознаграждений после вскрытия итогов."""
+    try:
+        from app.ton_pay import dispatch_pending_payouts
+
+        sent = await dispatch_pending_payouts(bot=_bot)
+        logger.info("Диспетчер выплат (kick): отправлено %d", sent)
+    except Exception:
+        logger.exception("Kick выплат не удался (ретраи продолжатся по расписанию)")
 
 
 async def _watch_job() -> None:
@@ -451,6 +473,18 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
         )
+    # Шлифовка картинок-заглушек: каждые 2 часа, окно 24 часа с момента дня.
+    from app.rounds import polish_stub_images
+
+    scheduler.add_job(
+        polish_stub_images,
+        "interval",
+        hours=2,
+        id="img-polish",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
     from app.style_review import run_weekly_review_and_notify
 

@@ -138,14 +138,12 @@ async def test_round_schedule_follows_utc_grid(session, monkeypatch) -> None:
         # Новый день открывается ровно на границе подсчёта предыдущего.
         assert created.opens_at == base_opens + timedelta(hours=24)
         # Закрытие голосования стоит на часовой сетке UTC.
-        close_hour = (settings.day_open_hour_utc - 1) % 24
+        close_hour = settings.day_close_hour_utc % 24
         assert created.voting_ends_at.minute == 0
         assert created.voting_ends_at.second == 0
         assert created.voting_ends_at.hour == close_hour
         assert created.voting_ends_at > created.opens_at
-        assert created.tally_ends_at == created.voting_ends_at + timedelta(
-            seconds=settings.tally_seconds
-        )
+        assert created.tally_ends_at == created.voting_ends_at
     finally:
         if was_created:
             for card in list(created.cards):

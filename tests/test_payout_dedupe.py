@@ -380,7 +380,8 @@ async def test_image_stub_roundtrip(session) -> None:
 
     await _record_image_stubs(session, 8_800, cover_stub=True, card_positions=[1, 2])
     first = await _pop_image_stubs(session, 8_800)
-    assert first == {"cover": True, "cards": [1, 2]}
+    assert first["cover"] is True and first["cards"] == [1, 2]
+    assert isinstance(first.get("ts"), int)
     # Повторное чтение — пусто: задача апгрейда не задвоится.
     assert await _pop_image_stubs(session, 8_800) is None
 

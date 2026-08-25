@@ -78,13 +78,16 @@ def _day_window(opens_at: datetime) -> tuple[datetime, datetime]:
     после создания/сброса, дальше дни идут строго по сетке 11:00 UTC даже
     после простоя бота.
     """
-    voting_ends_at = _next_hour_slot(opens_at, settings.day_open_hour_utc - 1)
+    # Бесшовный день: голосование закрывается в DAY_CLOSE_HOUR_UTC,
+    # подсчёт и итоги — сразу (секунды), новый день открывается следом
+    # из заготовки. TALLYING как час простоя больше не существует;
+    # поле tally_ends_at сохранено для совместимости схемы.
+    voting_ends_at = _next_hour_slot(opens_at, settings.day_close_hour_utc)
     if voting_ends_at - opens_at < timedelta(hours=6):
         # Открылись слишком близко к границе — короткий день никому не нужен,
         # переносим закрытие на следующие сутки (сетка сохраняется).
         voting_ends_at += timedelta(days=1)
-    tally_ends_at = voting_ends_at + timedelta(seconds=settings.tally_seconds)
-    return voting_ends_at, tally_ends_at
+    return voting_ends_at, voting_ends_at
 
 
 async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
@@ -611,6 +614,27 @@ async def _plan_and_render(
         await _record_image_stubs(
             session, day_index, cover_stub=not fetched[0], card_positions=stub_positions
         )
+    # Три исхода заранее: по варианту открывающего эха на каждый из
+    # возможных победивших путей. На закрытии голосования выбор мгновенный
+    # (без сетевого вызова) — переход дня бесшовный.
+    echo_variants: dict[str, str] = {}
+    for card in sorted(chapter.get('cards') or [], key=lambda c: c.get('position', 0)):
+        pos = int(card.get('position', 0))
+        try:
+            variant = await generate_opening_echo(
+                day_index=day_index - 1,
+                beat_title=str(card.get('title', '')),
+                beat_text=str(card.get('consequence', ''))[:300],
+                chapter_excerpt=str(chapter.get('text', ''))[:500],
+            )
+        except Exception:
+            variant = ""
+        if not variant:
+            from app.lore import offline_opening_echo
+
+            variant = offline_opening_echo(str(card.get('title', '')))
+        echo_variants[str(pos)] = variant
+
     return {
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,
@@ -624,6 +648,7 @@ async def _plan_and_render(
         "season": key,
         "cover_path": str(cover_path),
         "cards": cards_payload,
+        "echo_variants": echo_variants,
     }
 
 
@@ -715,7 +740,7 @@ _PREGEN_LOCK_TTL = 1800  # секунд: генерация дольше пол�
 # материализации — день честно генерируется заново по текущим правилам.
 # v2: двухфазная прегенерация — глава собирается до вскрытия итогов дня,
 # открывающее эхо дописывает patch_prepared_day после finish_tally.
-PREPARED_PAYLOAD_VERSION = 2
+PREPARED_PAYLOAD_VERSION = 3
 
 
 def place_seed_for(place: str | None) -> int | None:
@@ -738,7 +763,15 @@ async def _record_image_stubs(
 ) -> None:
     from app.models import WatcherState
 
-    payload = json.dumps({"cover": cover_stub, "cards": sorted(card_positions)})
+    import time as _time
+
+    payload = json.dumps(
+        {
+            "cover": cover_stub,
+            "cards": sorted(card_positions),
+            "ts": int(_time.time()),
+        }
+    )
     key = _stubs_key(day_index)
     row = await session.get(WatcherState, key)
     if row is None:
@@ -882,6 +915,21 @@ async def patch_prepared_day(session: AsyncSession, finished: Round) -> bool:
     if beat is None:
         # Итога ещё нет (патч вызван раньше finish_tally) — нечем вплетать.
         return False
+
+    # Бесшовный путь: вариант эха под фактического победителя собран заранее
+    # в прегенерации — выбор мгновенный, сетевой вызов не нужен.
+    variants = payload.get("echo_variants") or {}
+    preset = variants.get(str(finished.winner_card))
+    text = payload.get("chapter_text", "")
+    if preset:
+        opening = str(preset).strip()
+        if opening and not text.startswith(opening):
+            payload["chapter_text"] = f"{opening}\n\n{text}" if text else opening
+            prepared.payload = json.dumps(payload, ensure_ascii=False)
+            await session.commit()
+            logger.info("Заготовка дня %d: эхо победителя взято из готовых вариантов", next_index)
+            return True
+
     opening = await generate_opening_echo(
         day_index=finished.day_index,
         beat_title=beat.winning_title,
@@ -1344,3 +1392,45 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         return (loaded or round_row), False
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
 
+
+async def polish_stub_images() -> int:
+    """Шлифовка заглушек: повторные попытки в течение 24 часов после дня.
+
+    Маркеры img_stubs:* старше суток удаляются (окно вышло). Возвращает
+    число дней, отправленных на перерисовку.
+    """
+    import time as _time
+
+    from app.models import WatcherState
+
+    from app.db import SessionLocal
+
+    now_ts = int(_time.time())
+    targets: list[int] = []
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(WatcherState).where(WatcherState.key.like("img_stubs:%"))
+            )
+        ).scalars()
+        for row in list(rows):
+            try:
+                data = json.loads(row.value)
+                ts = int(data.get("ts", 0))
+            except Exception:
+                ts = 0
+            day = int(row.key.split(":", 1)[1])
+            if now_ts - ts > 86_400:
+                await session.delete(row)
+                continue
+            targets.append(day)
+        await session.commit()
+
+    upgraded_days = 0
+    for day in targets:
+        try:
+            await upgrade_stub_images(day)
+            upgraded_days += 1
+        except Exception:
+            logger.exception("Шлифовка картинок дня %d не удалась", day)
+    return upgraded_days

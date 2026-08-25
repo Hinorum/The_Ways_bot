@@ -7,11 +7,21 @@ from app.config import postgres_connect_args, settings
 from app.models import Base
 
 
+def _sqlite_connect_args() -> dict:
+    """SQLite: ждём освобождения записи до 30 с — фоновые задачи (тизер,
+    преген) и тик могут пересекаться в тестах и на слабых дисках."""
+    return {"timeout": 30}
+
+
 engine = create_async_engine(
     settings.async_database_url,
     echo=False,
     pool_pre_ping=True,
-    connect_args=postgres_connect_args(settings.database_url),
+    connect_args=(
+        _sqlite_connect_args()
+        if settings.async_database_url.startswith("sqlite")
+        else postgres_connect_args(settings.database_url)
+    ),
 )
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 

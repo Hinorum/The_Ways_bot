@@ -28,6 +28,21 @@ async def _global_db_schema():
 
 
 @pytest.fixture(autouse=True)
+def _offline_llm_by_default(monkeypatch):
+    """Тесты по умолчанию БЕЗ сети: любой незастабленный вызов модели
+    мгновенно «молчит» (None → офлайн-фолбэк). Тесты, проверяющие нейро-
+    путь, ставят свой стаб поверх этого."""
+    from unittest.mock import AsyncMock
+
+    from app import art_director, story
+
+    quiet = AsyncMock(return_value=None)
+    monkeypatch.setattr(story, "_chat_completion", quiet)
+    monkeypatch.setattr(art_director, "_chat_completion", quiet)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_rate_limits():
     """Рейт-лимиты хендлеров не должны перетекать между тестами."""
     from app import handlers

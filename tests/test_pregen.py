@@ -100,7 +100,7 @@ async def test_pregen_phase_one_waits_for_outcome(session) -> None:
 
 
 async def test_patch_applies_outcome_and_survives_materialization(session, monkeypatch) -> None:
-    """Фаза 2: после вскрытия итогов открывающее эхо встаёт перед сценой."""
+    """Фаза 2: готовый вариант эха под победителя ставится перед сценой."""
     from app import rounds as rounds_mod
 
     round_row = await _seed_tallying_day(session)
@@ -118,19 +118,21 @@ async def test_patch_applies_outcome_and_survives_materialization(session, monke
     round_row.epilogue_text = "Ночь прошла тревожно: кабель трещал во сне."
     await session.commit()
 
-    async def fake_opening(**kwargs):
-        assert kwargs["beat_title"] == "Кабель в зубах"
-        return "Утро пахло жжёной изоляцией: вчерашний кабель всё ещё держал."
+    async def explode(**kwargs):
+        raise AssertionError("готовые варианты не требуют сетевого вызова")
 
-    monkeypatch.setattr(rounds_mod, "generate_opening_echo", fake_opening)
+    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
+
+    payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
+    expected = payload_before["echo_variants"]["0"]
 
     assert await patch_prepared_day(session, round_row) is True
     patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"].startswith("Утро пахло жжёной изоляцией")
+    assert patched["chapter_text"].startswith(expected)
 
     created_round, created = await create_next_round_detailed(session)
     assert created is True
-    assert created_round.chapter_text.startswith("Утро пахло жжёной изоляцией")
+    assert created_round.chapter_text.startswith(expected)
 
 
 async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None:
@@ -148,9 +150,7 @@ async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None
 
 
 async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> None:
-    """Сеть молчит — эхо собирает офлайн-лор по названию победившего пути."""
-    from app import rounds as rounds_mod
-    from app.lore import offline_opening_echo
+    """Варианты эха уже офлайн (сеть молчала в прегене) — патч ставит их."""
 
     round_row = await _seed_tallying_day(session)
     assert await prepare_next_day(session, round_row.day_index) is True
@@ -165,13 +165,12 @@ async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> N
     )
     await session.commit()
 
-    async def silent(**kwargs):
-        return ""
+    payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
+    expected = payload_before["echo_variants"]["0"]  # вариант под winner_card=0
 
-    monkeypatch.setattr(rounds_mod, "generate_opening_echo", silent)
     assert await patch_prepared_day(session, round_row) is True
     patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"].startswith(offline_opening_echo("Кабель в зубах"))
+    assert patched["chapter_text"].startswith(expected)
 
 
 async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:
