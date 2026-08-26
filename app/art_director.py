@@ -34,12 +34,23 @@ ART_SYSTEM_PROMPT = (
     "ПОСЛЕ вчерашнего выбора стаи. Последствие канонического события — ядро "
     "композиции: то, что стая построила, сломала или разбудила вчера, видно "
     "в сцене сегодня. Ты не пишешь текст для игрока и не упоминаешь механику "
-    "игры: только изображение."
+    "игры: только изображение.\n"
+    "ЦВЕТОВАЯ СЕМАНТИКА СЕРИИ — держи изо дня в день, палитра через сюжет: "
+    "красное свечение — только приметы Хозяина Ошибки и чужого счёта; "
+    "мелково-белая отметка в форме апострофа — знак Еретика; "
+    "биолюминесцентная бирюза — порталы и живая сеть; "
+    "тёплое золото — миски, чудо и память стаи; "
+    "пыльно-серый — архив и папки Архивариуса."
 )
 
 _NEGATIVE_SUFFIX = (
     ", no text, no letters, no numbers, no typography, no watermark, no logo, "
     "no poster layout, no frames, no borders"
+    # Антидрейф стиля (уроки промпт-пака): free-модели уползают в фотореализм,
+    # 3D-рендер или аниме-скрин без явных запретов; руки/лишние конечности —
+    # типовые артефакты существ в кадре.
+    ", photorealistic, 3D render, realistic fur, anime screencap, glossy render, "
+    "human hands, extra limbs, deformed face, cluttered background"
 )
 
 # Вариативные приёмы: вращаются от сида, чтобы даже похожие дни смотрелись иначе.
@@ -145,7 +156,13 @@ def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
     return {
         "palette": palette,
         "lighting": lighting,
-        "motifs": ["glowing portal ring", "drifting digital particles"],
+        # Эмоциональное ядро серии — «круг света стаи» (аналог их костра
+        # под звёздами): тёплый островок среди глючных миров.
+        "motifs": [
+            "glowing portal ring",
+            "drifting digital particles",
+            "a small circle of campfire light around the pack under a starry sky",
+        ],
         "shots": shots,
     }
 

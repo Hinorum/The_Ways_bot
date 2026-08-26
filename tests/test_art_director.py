@@ -79,16 +79,40 @@ async def test_build_prompt_contains_negatives_and_varies(offline_llm) -> None:
     bible = await plan_day_art(CHAPTER)
     p0 = build_image_prompt(bible, "cover", seed=11)
     assert "no text" in p0 and "no poster layout" in p0
+    # Антидрейф стиля: free-модели уползают в фотореализм/аниме без запретов.
+    for guard in ("photorealistic", "3D render", "anime screencap", "human hands"):
+        assert guard in p0
     assert "rust" in p0 or "teal" in p0 or "ember" in p0
     # Вариативность от сида: другой день — другая киношная фактура.
     seeds = {build_image_prompt(bible, "cover", seed=s) for s in range(4)}
     assert len(seeds) == 4
 
 
+def test_art_system_prompt_carries_color_semantics() -> None:
+    """Палитра через сюжет: у каждого цвета мира — один хозяин."""
+    from app.art_director import ART_SYSTEM_PROMPT
+
+    for mark in (
+        "красное свечение",
+        "апострофа",
+        "биолюминесцентная бирюза",
+        "тёплое золото",
+        "пыльно-серый",
+    ):
+        assert mark in ART_SYSTEM_PROMPT, f"нет семантики: {mark}"
+
+
+async def test_offline_motifs_include_campfire_circle(offline_llm) -> None:
+    """Эмоциональное ядро серии — круг света стаи среди тёмных мотивов."""
+    bible = await plan_day_art(CHAPTER)
+    assert any("campfire light" in motif for motif in bible["motifs"])
+
+
 async def test_short_prompt_is_compact(offline_llm) -> None:
     bible = await plan_day_art(CHAPTER)
     short = short_image_prompt(bible, "cover", seed=5)
-    assert len(short.split()) < 60
+    # Сжатый, но с полным антидрейф-хвостом: сцена ~28 слов + запреты.
+    assert len(short.split()) < 85
 
 
 def test_abstract_fallbacks_have_no_text_layer(tmp_path: Path) -> None:
