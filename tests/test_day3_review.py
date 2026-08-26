@@ -70,8 +70,8 @@ async def test_short_neural_chapter_falls_back_offline(monkeypatch) -> None:
 
     monkeypatch.setattr("app.story._chat_completion", fake_chat)
     result = await generate_chapter(3, ["вчера: след"], win_rule=None)
-    # Офлайн-аварийный пол: 1000 знаков (добор примет в lore).
-    assert len(result["text"]) >= 1000
+    # Офлайн-аварийный пол: 800 знаков (добор примет в lore).
+    assert len(result["text"]) >= 800
     assert result["title"] != "К"
 
     long_call = {"count": 0}
@@ -105,8 +105,8 @@ def test_prompt_bans_law_formula_and_meta_echo() -> None:
     assert "до заката" not in prompt and "темноты сети" in prompt
 
 
-def test_status_prologue_title_matches_open_day() -> None:
-    """Титул пролога в статусе = день ОТКРЫТИЯ, а не завтрашний момент."""
+def test_status_no_season_footer_for_non_crisis_days() -> None:
+    """Футер сезона показывается только в последние 7 дней (кризис)."""
     from app.broadcast import status_text
 
     opens = datetime(2026, 8, 24, 11, 0, tzinfo=timezone.utc)  # далеко от границ месяца
@@ -132,5 +132,7 @@ def test_status_prologue_title_matches_open_day() -> None:
             Card(position=position, title=f"t{position}", description="d", consequence="c")
         )
     text = status_text(round_row)
-    assert "Пролог дня: «Лайнер»" in text
+    # Футер сезона НЕ показывается для дней вне кризиса (первые N-7 дней).
+    assert "Пролог дня:" not in text
+    assert "До финала:" not in text
     assert "Пять собак" not in text

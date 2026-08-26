@@ -65,7 +65,6 @@ def _utc(value: datetime) -> datetime:
 def status_text(round_row: Round) -> str:
     from app.models import RULE_PHRASES
 
-    mark = day_mark(str(round_row.id))
     sealed = bool(getattr(round_row, "sealed", False))
     if round_row.status.value == "open":
         if sealed:
@@ -106,7 +105,7 @@ def status_text(round_row: Round) -> str:
     else:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2600)}\n\n"
+        f"{_clamp(round_row.chapter_text, 2600)}\n\n"
         f"{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
     season_line = _season_status_line(round_row)
@@ -116,24 +115,20 @@ def status_text(round_row: Round) -> str:
 
 
 def _season_status_line(round_row: Round) -> str | None:
-    """Строка сезона в статусе дня: акты забега и дистанция до Первого Лая.
+    """Строка сезона в статусе дня: показывает обратный отсчёт только в кризисе.
 
     Якорь забега берётся из кэша season (обновляется при каждой генерации
     дня и тике), поэтому синхронный код обходится без БД.
     """
     try:
         from app.season import (
-            act_line,
-            alignment_label,
-            anchor_axes,
+            crisis_act,
             get_cached_anchor,
             is_run_finale,
+            run_days_left,
             run_position,
         )
 
-        # Позиция забега считается от ОТКРЫТИЯ дня (opens_at). Раньше брали
-        # voting_ends_at — завтрашний момент, и титул пролога показывал
-        # следующий день («Пять собак» на дне Лайнера).
         moment = round_row.opens_at or round_row.voting_ends_at
         if getattr(moment, "tzinfo", None) is None:
             from datetime import timezone as _tz
@@ -141,17 +136,12 @@ def _season_status_line(round_row: Round) -> str | None:
             moment = moment.replace(tzinfo=_tz.utc)
         cached = get_cached_anchor(moment)
         run_day, total = run_position(cached, moment)
-        order, moral = anchor_axes(cached)
-        mood = f" · 🎭 Нрав стаи: {alignment_label(order, moral)}"
         if is_run_finale(run_day, total):
-            return "🐺 Сегодня — День Первого Лая. Финал сезона." + mood
-        line = f"🌙 {act_line(run_day, total)}{mood}"
-        from app.prologue import prologue_title
-
-        title = prologue_title(run_day)
-        if title:
-            line += f" Пролог дня: «{title}»."
-        return line
+            return "🐺 Сегодня — День Первого Лая. Финал сезона."
+        if not crisis_act(run_day, total):
+            return None
+        left = run_days_left(run_day, total)
+        return f"🐺 До финала: {left} дн."
     except Exception:
         return None
 

@@ -295,7 +295,6 @@ def alignment_tints(order: int, moral: int, salt: str = "") -> list[str]:
     rng = _rng(f"align:{salt}:{order}:{moral}")
     tints: list[str] = []
     if order != 0:
-        pool = _ORDER_TINTS if order < 0 else _ORDER_TINTS  # заглушка симметрии ниже
         pool = _CHAOS_TINTS if order < 0 else _ORDER_TINTS
         tints.append(pool[rng.randrange(len(pool))])
     if moral != 0:

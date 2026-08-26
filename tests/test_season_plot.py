@@ -123,8 +123,8 @@ def test_story_prompt_forbids_invented_yesterday_on_empty_canon() -> None:
     assert "Отголосок вчера" in with_canon
 
 
-def test_status_line_shows_act_one_after_midmonth_reset() -> None:
-    """Сброс в кризисном календаре: пост дня показывает акт 1 забега."""
+def test_status_line_no_footer_for_non_crisis_days() -> None:
+    """Футер сезона НЕ показывается для дней вне кризиса (первые N-7 дней)."""
     from app.broadcast import status_text
     from app.season import set_run_anchor_cache
 
@@ -149,12 +149,11 @@ def test_status_line_shows_act_one_after_midmonth_reset() -> None:
             for i in range(3)
         ]
         text = status_text(round_row)
-        assert "акт 1" in text
-        # Отсчёт и пролог считаются от ОТКРЫТИЯ дня (день 1 арки 61 дн.):
-        # раньше брали момент закрытия — титул пролога уезжал на день вперёд.
-        assert "осталось 60 дн." in text
-        assert "Пролог дня: «Приход»" in text
-        assert "Нрав стаи" in text  # характер стаи теперь в статусе
+        # Футер НЕ показывается для дней вне кризиса.
+        assert "акт 1" not in text
+        assert "осталось" not in text
+        assert "Пролог дня:" not in text
+        assert "Нрав стаи" not in text
         assert "Кризис сезона" not in text
     finally:
         set_run_anchor_cache(None)
