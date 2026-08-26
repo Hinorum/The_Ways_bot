@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -141,20 +141,21 @@ async def confirm_stake(session: AsyncSession, tx_hash: str) -> bool:
 async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     """После finish_tally: создаёт выплаты призов/возвратов. Отправка — в ton_pay.
 
-    Работает только со ставками активной сети; идемпотентность — по наличию
-    выплат этой сети за раунд, поэтому mainnet и testnet финализируются
-    независимо.
+    Атомарный claim: UPDATE ... WHERE payouts_finalized = false гарантирует,
+    что при параллельном вызове (tick + ton-settle) только один поток пройдёт
+    дальше. Идемпотентность — по флагу round.payouts_finalized.
     """
-    if round_row.status != RoundStatus.CLOSED or round_row.payouts_finalized:
+    if round_row.status != RoundStatus.CLOSED:
         return 0
     network = current_network()
-    already = await session.execute(
-        select(Payout.id).where(Payout.round_id == round_row.id, Payout.network == network).limit(1)
+    claim = await session.execute(
+        update(Round)
+        .where(Round.id == round_row.id, Round.payouts_finalized.is_(False))
+        .values(payouts_finalized=True)
     )
-    if already.scalar_one_or_none() is not None:
-        round_row.payouts_finalized = True
-        await session.commit()
+    if claim.rowcount == 0:
         return 0
+    await session.commit()
 
     scope = [Stake.round_id == round_row.id, Stake.network == network]
     confirmed = list(
@@ -170,21 +171,29 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         .all()
     )
 
-    async def add_payout(stake: Stake, kind: str, amount: int) -> int:
-        dest = await _wallet_of(session, stake.player_id)
+    # Pre-load кошельков всех игроков одним запросом (eliminate N+1).
+    all_player_ids = {s.player_id for s in confirmed + stuck}
+    wallet_map: dict[int, str] = {}
+    if all_player_ids:
+        players_result = await session.execute(
+            select(Player.id, Player.wallet_address).where(Player.id.in_(all_player_ids))
+        )
+        wallet_map = {pid: addr for pid, addr in players_result.all()}
+
+    def add_payout(stake: Stake, kind: str, amount: int) -> int:
         session.add(
             Payout(
                 round_id=round_row.id,
                 player_id=stake.player_id,
                 kind=kind,
                 amount_nanotons=amount,
-                dest_address=dest or "",
+                dest_address=wallet_map.get(stake.player_id) or "",
                 network=network,
             )
         )
         return 1
 
-    async def add_treasury_payout(kind: str, amount: int) -> int:
+    def add_treasury_payout(kind: str, amount: int) -> int:
         """Доля казны без игрока: рейк хранителя или копилка месяца."""
         session.add(
             Payout(
@@ -216,7 +225,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
 
         if not winning_stakes:
             for stake in confirmed:
-                created += await add_payout(stake, "refund", stake.amount_nanotons)
+                created += add_payout(stake, "refund", stake.amount_nanotons)
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = 0
         else:
@@ -228,18 +237,12 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             weekly_cut = pot * weekly_bp // 10_000
             prize_pool = pot - house_cut - board_cut - weekly_cut
 
-            # Газ сети платят победители — пропорционально доле: из пула
-            # заранее вычитается комиссия каждого перевода, остаток делится
-            # как раньше. Казначей не финансирует чужие переводы из остатка,
-            # а очередь не встаёт на середине дня с «недостаточно средств».
             fee_nano = to_nano(settings.payout_fee_gram)
             min_payout_nano = to_nano(settings.min_payout_gram)
             net_pool = prize_pool - fee_nano * len(winning_stakes)
 
-            dust_to_week = 0  # микродоли и (при вырождении) весь пул
+            dust_to_week = 0
             if net_pool < min_payout_nano:
-                # Комиссии съели весь призовой фонд: раздавать нечего.
-                # Деньги не оседают в казне молча — капают в копилку недели.
                 dust_to_week = prize_pool
                 logger.warning(
                     "День %s: газ сети съел призовой пул (%d нанотонов на %d переводов) — "
@@ -252,25 +255,21 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                 for stake in confirmed:
                     share = share_by_player.get(stake.player_id)
                     if share is None:
-                        continue  # Проигравший не получает ничего: ставка сгорает в фонд.
+                        continue
                     if share <= 0:
-                        # Пыльная доля (возможна только при экзотических процентах):
-                        # пустой on-chain перевод не создаём — строка-фантом вечно
-                        # висела бы в очереди и блокировала /resetgame.
                         logger.warning(
                             "Ставка игрока %s дала нулевую долю (%d из %d) — перевод пропущен",
                             stake.player_id, share, prize_pool,
                         )
                         continue
                     if share < min_payout_nano:
-                        # Микровыплата: комиссия съела бы большую её часть.
                         dust_to_week += share
                         continue
-                    created += await add_payout(stake, "prize", share)
+                    created += add_payout(stake, "prize", share)
             if house_cut > 0:
-                created += await add_treasury_payout("rake", house_cut)
+                created += add_treasury_payout("rake", house_cut)
             if board_cut > 0:
-                created += await add_treasury_payout("leaderboard", board_cut)
+                created += add_treasury_payout("leaderboard", board_cut)
                 month = round_row.tally_ends_at.strftime("%Y-%m")
                 pot_row = (await session.execute(
                     select(LeaderboardPot).where(LeaderboardPot.month == month)
@@ -294,13 +293,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             round_row.rake_nanotons = house_cut + board_cut
 
     for stake in stuck:
-        created += await add_payout(stake, "refund", stake.amount_nanotons)
+        created += add_payout(stake, "refund", stake.amount_nanotons)
 
-    round_row.payouts_finalized = True
     await session.commit()
     return created
-
-
-async def _wallet_of(session: AsyncSession, player_id: int) -> str | None:
-    player = await session.get(Player, player_id)
-    return player.wallet_address if player else None

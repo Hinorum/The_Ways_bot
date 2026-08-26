@@ -445,6 +445,16 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
             except Exception as exc:
                 logger.warning("Баланс казначея перед циклом не прочитан: %s", exc)
                 balance = None
+            if balance is None:
+                reason = (
+                    "баланс казначея недоступен (оба индексатора молчат) — "
+                    "отправка приостановлена до восстановления связи"
+                )
+                logger.warning("Диспетчер: %s", reason)
+                for payout in sendable:
+                    payout.last_error = reason[:200]
+                await session.commit()
+                return 0
             if balance is not None:
                 fee_nano = to_nano(settings.payout_fee_gram)
                 needed = sum(p.amount_nanotons for p in sendable) + fee_nano * len(sendable)

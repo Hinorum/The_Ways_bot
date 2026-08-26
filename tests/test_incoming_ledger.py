@@ -75,7 +75,7 @@ async def test_unknown_sender_is_logged_with_source_tail(ton_on) -> None:
             ).scalar_one()
             assert row.kind == "ton"
             assert row.player_id is None
-            assert "in:refund_queued" in row.note
+            assert "in:unknown" in row.note
             assert STRANGER[-10:] in row.note  # откуда деньги — видно сразу
     finally:
         await _wipe([tx], [941])
