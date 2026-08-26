@@ -91,6 +91,21 @@ _CHARACTER_MOTIFS = {
         "faceless Error Master, a tall silhouette of counting hands and "
         "misplaced numbers hovering over a glitching portal"
     ),
+    # НейроГримёр Еретика: ветеран носит старый мир на себе — пальто из
+    # выцветших карт старой Стаи; знак присвоения (апостроф) читается даже
+    # в тени кадра; правила при нём как ошейник — он и закон в одном лице.
+    "еретик": (
+        "Heretic the Way-Leaver, lean wiry scarred stray dog in a patchwork "
+        "coat stitched from faded old maps, chalk-white apostrophe-shaped "
+        "mark over one narrowed eye, small slate rule-tags braided into his "
+        "collar"
+    ),
+    "свернувший с пути": (
+        "Heretic the Way-Leaver, lean wiry scarred stray dog in a patchwork "
+        "coat stitched from faded old maps, chalk-white apostrophe-shaped "
+        "mark over one narrowed eye, small slate rule-tags braided into his "
+        "collar"
+    ),
 }
 
 

@@ -11,7 +11,7 @@ import pytest
 
 from app.bestiary import BEASTIES
 from app.callings import CALLINGS, echo_tail, unlocked_callings
-from app.council import page_for_run_day
+from app.council import _COUNCIL_PAGES as council_pages, page_for_run_day
 from app.prologue import PROLOGUE_BEATS, prologue_block, prologue_title
 from app.relations import NPC_TITLES, NPC_WANTS, apply_winner_shift, default_relations
 from app.rounds import _GUEST_POOL, guest_blocks_for
@@ -104,6 +104,8 @@ def test_prologue_day5_introduces_heretic() -> None:
 
 
 def test_council_pages_cadence_and_rotation() -> None:
+    from app import council
+
     assert page_for_run_day(0) is None
     assert page_for_run_day(3) is None  # обычный привал
     first = page_for_run_day(7)
@@ -111,5 +113,33 @@ def test_council_pages_cadence_and_rotation() -> None:
     third = page_for_run_day(21)
     assert first and "НАЙДЕНА СТРАНИЦА" in first
     assert first != second != third  # страницы не повторяются подряд
-    total_pages = 5
+    total_pages = len(council._COUNCIL_PAGES)
     assert page_for_run_day(7 * (total_pages + 1)) == first  # цикл замкнулся
+
+
+def test_council_manifesto_is_page_six() -> None:
+    """Манифест Еретика отдан Совету: страница №6, единственная не от Совета."""
+    pages = [page for page in council_pages if "№6" in page]
+    assert pages and "Апостроф — мой" in pages[0]
+    assert "The Way’s" in pages[0]
+    assert "Старая Стая выбирала один сон на миллион" in pages[0]
+
+
+def test_cat_teases_season_two_soon() -> None:
+    """Кошачье ружьё не снято со стены: сезон второй — после техработ. SOON."""
+    description = BEASTIES["cat"][1]
+    assert "SOON" in description
+    assert "после технических работ" in description
+
+
+def test_heretic_has_neural_makeup_in_art_conveyor() -> None:
+    """НейроГримёр: силуэт Еретика стабилен в кадрах по обоим именам."""
+    from app.art_director import character_motifs_for
+
+    by_short = character_motifs_for("Еретик выцарапал новое правило на стене")
+    by_full = character_motifs_for("Свернувший с Пути молча показал тропу")
+    assert by_short == by_full and len(by_short) == 1
+    descriptor = by_short[0]
+    assert "Heretic the Way-Leaver" in descriptor
+    # Костюм-биография и знак присвоения читаются в кадре.
+    assert "old maps" in descriptor and "apostrophe-shaped" in descriptor
