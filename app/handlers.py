@@ -134,12 +134,15 @@ async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
     try:
         media = day_media_group(round_row)
-        if media:
+        if len(media) >= 2:
             await message.answer_media_group(media)
+        elif media:
+            # Один кадр дня: Telegram не принимает группу из одного вложения.
+            await message.answer_photo(photo=media[0].media, caption=media[0].caption)
     except Exception as exc:
         # Картинки — украшение, текст дня обязан дойти даже при сбое Telegram
         # или пропавших файлов: игрок должен видеть развилку и кнопки.
-        logger.warning("Медиа-группа дня %s не ушла (%s) — доставляем текст", round_row.day_index, exc)
+        logger.warning("Медиа дня %s не ушли (%s) — доставляем текст", round_row.day_index, exc)
     await message.answer(
         status_text(round_row),
         reply_markup=cards_keyboard(round_row.id, remember=await _remember_flag(round_row.day_index)),
@@ -1412,12 +1415,15 @@ async def track_chat(event: ChatMemberUpdated) -> None:
     logger.info("Чат %s (%s): статус бота %s, active=%s", chat.id, chat.type, status, active)
 
 
-def _patch_prepared_safe(session, round_row) -> None:
+async def _patch_prepared_safe(session, round_row) -> None:
     """Фаза 2 прегенерации для /advance: итог дня вплетается в заготовку.
 
-    Падение не роняет команду — день откроется заготовкой как есть."""
+    Падение не роняет команду — день откроется заготовкой как есть.
+    Латентный баг истории: функция была sync и звала async patch_prepared_day
+    без await, а вызывали её через await — каждый ручной /advance открытого
+    дня падал TypeError'ом уже ПОСЛЕ подсчёта, не открывая следующий день."""
     try:
-        patch_prepared_day(session, round_row)
+        await patch_prepared_day(session, round_row)
     except Exception:
         logger.exception("Патч заготовки итогом дня %s не удался", round_row.day_index)
 
@@ -1427,12 +1433,22 @@ async def cmd_advance(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
-    if await _game_paused_now():
-        await message.answer(f"{warn_mark('pause')} Игра на паузе — сначала /resume.")
-        return
+    # Стоп-кран не спорит с хранителем: явный /advance снимает паузу сам
+    # (инцидент: отказ «сначала /resume» выглядел как поломка кнопок).
+    changed, _delivered = await _set_paused_and_broadcast(message.bot, False)
+    if changed:
+        await message.answer(f"{ok_mark('go')} Пауза снята автоматически: выполняю /advance.")
     closed_here = False
     claimed = False
     async with SessionLocal() as session:
+        # Сначала дочитываем дни, застрявшие позади актуального (инцидент:
+        # сбой анонса оставлял день в TALLYING навсегда).
+        try:
+            from app.rounds import heal_stale_rounds
+
+            await heal_stale_rounds(session)
+        except Exception:
+            logger.warning("Лечение застрявших дней перед /advance не удалось", exc_info=True)
         round_row = await get_active_round(session)
         if round_row is None:
             round_row = await ensure_current_round(session)
@@ -1478,8 +1494,10 @@ async def cmd_advance(message: Message) -> None:
         # Ни одного подписанного чата — покажем всё прямо здесь.
         await message.answer(await results_message(round_row))
         media = day_media_group(nxt)
-        if media:
+        if len(media) >= 2:
             await message.answer_media_group(media)
+        elif media:
+            await message.answer_photo(photo=media[0].media, caption=media[0].caption)
         await message.answer(status_text(nxt), reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index)))
 
 
@@ -1491,9 +1509,11 @@ async def cmd_resetgame(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
-    if await _game_paused_now():
-        await message.answer(f"{warn_mark('pause')} Игра на паузе — сначала /resume.")
-        return
+    # Явный confirm снимает паузу сам: сброс под стоп-краном — осознанное
+    # действие хранителя, а не ошибка, которую надо блокировать.
+    changed, _delivered = await _set_paused_and_broadcast(message.bot, False)
+    if changed:
+        await message.answer(f"{ok_mark('go')} Пауза снята автоматически: выполняю сброс.")
     words = (message.text or "").lower().split()
     if "confirm" not in words:
         await message.answer(

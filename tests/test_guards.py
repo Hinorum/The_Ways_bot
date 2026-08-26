@@ -17,7 +17,14 @@ from app.ton_utils import to_nano
 
 def _message(user_id: int | None, text: str = "/resetgame") -> SimpleNamespace:
     from_user = None if user_id is None else SimpleNamespace(id=user_id)
-    return SimpleNamespace(from_user=from_user, answer=AsyncMock(), text=text)
+    # bot нужен: /advance и /resetgame теперь сами снимают паузу (broadcast).
+    return SimpleNamespace(
+        from_user=from_user,
+        answer=AsyncMock(),
+        text=text,
+        bot=AsyncMock(),
+        chat=SimpleNamespace(type="private"),
+    )
 
 
 @pytest.mark.parametrize("command", [cmd_resetgame, cmd_advance])

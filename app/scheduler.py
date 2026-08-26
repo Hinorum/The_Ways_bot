@@ -303,6 +303,18 @@ async def tick(bot: Bot | None = None) -> None:
         previous = await get_latest_round(session)
         current = await ensure_current_round(session)
 
+        # Самолечение: дни, застрявшие не-закрытыми позади актуального
+        # (сбой доставки анонса, гонка /advance), дочитываются сами —
+        # подсчёт и канон завершаются, ставки уходят в очередь выплат.
+        try:
+            from app.rounds import heal_stale_rounds
+
+            healed = await heal_stale_rounds(session)
+            if healed:
+                logger.warning("Вылечено застрявших дней: %d", healed)
+        except Exception:
+            logger.exception("Лечение застрявших дней упало (не мешает тику)")
+
         # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
         from app.rounds import get_run_anchor, refresh_round_pot_cache
 

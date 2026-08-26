@@ -324,8 +324,13 @@ async def _deliver_day(
             results_text = await results_message(finished)
         await bot.send_message(chat_id, results_text)
     media = day_media_group(round_row)
-    if media:
+    if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
+    elif media:
+        # Инцидент-регрессия: Telegram принимает mediaGroup только от двух
+        # вложений. Новый мир даёт один кадр дня — шлём обычным фото, иначе
+        # анонс падал ПОСЛЕ обложки и статус с кнопками голосования не уходил.
+        await bot.send_photo(chat_id, photo=media[0].media, caption=media[0].caption)
     await bot.send_message(
         chat_id,
         status_text(round_row),

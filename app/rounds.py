@@ -1178,6 +1178,54 @@ async def ensure_current_round(session: AsyncSession) -> Round:
     return await create_next_round(session)
 
 
+async def heal_stale_rounds(session: AsyncSession) -> int:
+    """Дочитывает дни, застрявшие не-закрытыми ПОЗАДИ актуального.
+
+    Инцидент: после сбоя доставки анонса день остался в TALLYING, а следующий
+    уже открылся — тик обрабатывает только актуальный день, и застрявший
+    висел вечно: без подсчёта, без канона, с замороженными ставками.
+
+    Для каждого такого дня по возрастанию: закрытие голосования → подсчёт →
+    очки → эпилог. Финализация ставок отдельного вызова не требует: как
+    только день получает CLOSED, его подхватывает settle_closed_rounds
+    (цикл обслуживания ≤2 мин). Возвращает число вылеченных дней.
+    """
+    latest = await get_latest_round(session)
+    if latest is None:
+        return 0
+    result = await session.execute(
+        select(Round)
+        .options(selectinload(Round.cards))
+        .where(
+            Round.day_index < latest.day_index,
+            Round.status.in_([RoundStatus.OPEN, RoundStatus.TALLYING]),
+        )
+        .order_by(Round.day_index.asc())
+    )
+    stale = list(result.scalars())
+    healed = 0
+    from app.tally import award_points
+
+    for round_row in stale:
+        day = round_row.day_index
+        try:
+            if round_row.status == RoundStatus.OPEN:
+                await close_voting(session, round_row)
+            finished, closed_here = await finish_tally(session, round_row)
+            if closed_here:
+                await award_points(session, finished)
+                try:
+                    await write_epilogue(session, finished)
+                except Exception:
+                    logger.warning("Эпилог вылеченного дня %s не удался", day, exc_info=True)
+                healed += 1
+                logger.info("Вылечен застрявший день %s: подсчёт завершён, ставки уйдут в очереди выплат", day)
+        except Exception as exc:
+            logger.exception("Лечение застрявшего дня %s не удалось (повторится)", day, exc)
+            await session.rollback()
+    return healed
+
+
 def public_round_view(round_row: Round) -> dict:
     """Counts stay secret while the round is open; the law is public from the start.
 

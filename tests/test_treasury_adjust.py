@@ -534,8 +534,13 @@ async def test_resume_allows_tick_to_open_day(ton_on, monkeypatch) -> None:
 # ---------- Пульт и команды поверх паузы ----------
 
 
-async def test_pause_commands_toggle_and_guard(admin_only, ton_on) -> None:
+async def test_pause_commands_toggle_and_guard(
+    admin_only, ton_on, monkeypatch, tmp_path
+) -> None:
     await _wipe_pause()
+    monkeypatch.setattr(settings, "use_free_images", False)
+    monkeypatch.setattr(settings, "use_free_story_llm", False)
+    monkeypatch.setattr(settings, "media_dir", str(tmp_path))
     try:
         outsider = make_message(1, "/pause")
         await cmd_pause(outsider)
@@ -551,16 +556,17 @@ async def test_pause_commands_toggle_and_guard(admin_only, ton_on) -> None:
         await cmd_pause(repeat)
         assert "уже на паузе" in repeat.answer.call_args.args[0]
 
+        # /advance под паузой больше не отказывает — снимает стоп-кран сам.
         advance_msg = make_message(ADMIN_ID, "/advance")
         await cmd_advance(advance_msg)
-        assert "/resume" in advance_msg.answer.call_args.args[0]
+        texts = [c.args[0] for c in advance_msg.answer.await_args_list if c.args]
+        joined = "\n".join(texts)
+        assert "Пауза снята автоматически" in joined
+        assert "сначала /resume" not in joined
 
         resume_msg = make_message(ADMIN_ID, "/resume")
         await cmd_resume(resume_msg)
-        assert "Пауза снята" in resume_msg.answer.call_args.args[0]
-        again = make_message(ADMIN_ID, "/resume")
-        await cmd_resume(again)
-        assert "и так идёт" in again.answer.call_args.args[0]
+        assert "и так идёт" in resume_msg.answer.call_args.args[0]
     finally:
         await _wipe_pause()
 
