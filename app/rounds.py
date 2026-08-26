@@ -21,7 +21,9 @@ from app.echoes import collect_due_echoes, spawn_echoes_from_round
 from app.lore import offline_opening_echo
 from app.models import (
     Card,
+    Income,
     LoreEcho,
+    MemoryHit,
     Payout,
     Player,
     PreparedDay,
@@ -1119,6 +1121,11 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     await session.execute(delete(Stake))
     await session.execute(delete(Vote))
     await session.execute(delete(RevoteGrant))
+    # Леджер доходов ссылается на дни FK (инцидент: DELETE FROM rounds падал
+    # ForeignKeyViolation по incomes_round_id_fkey, и сброс молча откатывался
+    # целиком). Память сети — личный счётчик по дням, тоже обнуляется.
+    await session.execute(delete(Income))
+    await session.execute(delete(MemoryHit))
     await session.execute(delete(Card))
     # Заготовки старого канона больше не имеют силы: мир переписан заново.
     await session.execute(delete(PreparedDay))

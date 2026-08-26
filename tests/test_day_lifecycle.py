@@ -232,3 +232,58 @@ async def test_announce_single_cover_uses_send_photo(monkeypatch, tmp_path) -> N
             if chat is not None:
                 await db.delete(chat)
             await db.commit()
+
+
+# ---------- Сброс игры: FK-полный wipe (инцидент incomes_round_id_fkey) ----------
+
+
+async def test_resetgame_wipes_income_and_memory_links(offline_all) -> None:
+    """Регрессия: Income.round_id держит FK на rounds — сброс падал
+    ForeignKeyViolation и молча откатывался целиком."""
+    from app.models import Income, MemoryHit, Player
+
+    player_id = 880_001
+    round_row = _round(900, RoundStatus.CLOSED, voting_in_minutes=-40)
+    round_row.winner_card = 0
+    async with SessionLocal() as db:
+        db.add(Player(id=player_id, username="reset_p"))
+        db.add(round_row)
+        await db.flush()
+        db.add(Income(kind="ton", amount_nanotons=1, round_id=round_row.id, unit_ref="r1"))
+        db.add(MemoryHit(player_id=player_id, round_id=round_row.id))
+        await db.commit()
+
+    message = _message("/resetgame confirm keepstory")
+    await cmd_resetgame(message)
+
+    texts = [c.args[0] for c in message.answer.await_args_list if c.args]
+    assert any("Игра обнулена" in t for t in texts)
+    async with SessionLocal() as db:
+        assert (await db.execute(select(Income))).scalars().all() == []
+        assert (await db.execute(select(MemoryHit))).scalars().all() == []
+        days = (
+            await db.execute(select(Round.day_index).order_by(Round.day_index.asc()))
+        ).scalars().all()
+    assert days and days[0] == 1
+    await _wipe([1])
+
+
+def test_every_round_foreign_key_table_is_wiped() -> None:
+    """Будущее-проф: любая новая таблица с FK на rounds обязана попасть в
+    reset_game, иначе сброс снова молча откатится по ForeignKeyViolation."""
+    import inspect
+
+    from app.models import Base
+
+    wiped = {"payouts", "stakes", "votes", "revote_grants", "cards", "incomes", "prepared_days"}
+    referencing: set[str] = set()
+    for table in Base.metadata.tables.values():
+        for fk in table.foreign_keys:
+            if fk.column.table.name == "rounds":
+                referencing.add(table.name)
+                assert table.name in wiped, (
+                    f"таблица {table.name} ссылается на rounds, но не стирается в reset_game"
+                )
+    source = inspect.getsource(__import__("app.rounds", fromlist=["reset_game"]).reset_game)
+    for name in ("Income", "MemoryHit"):
+        assert f"delete({name})" in source
