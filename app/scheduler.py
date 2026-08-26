@@ -86,9 +86,18 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
             )
             chapter_excerpt = (round_row.chapter_text or "")[:700]
             intrigue = day_index % 3 == 0
-            text = await _compose_whisper(
-                day_index, season_hint, chapter_excerpt,
-                intrigue=intrigue,
+            # ARG: каждую седьмую неделю забега вместо микросцены стая
+            # находит страницу Совета Хранителей (планы бота как канон).
+            from app.council import page_for_run_day
+
+            council_page = page_for_run_day(run_day)
+            text = (
+                council_page
+                if council_page is not None
+                else await _compose_whisper(
+                    day_index, season_hint, chapter_excerpt,
+                    intrigue=intrigue,
+                )
             )
             session.add(WatcherState(key=marker, value="1"))
             await session.commit()

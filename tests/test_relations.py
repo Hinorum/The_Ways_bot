@@ -17,12 +17,15 @@ from app.relations import (
 def test_shift_mapping_and_clamp() -> None:
     relations = default_relations()
     apply_winner_shift(relations, "care")
-    assert relations == {"liner": 1, "archivist": 1, "master": -1}
+    # Еретику тепло — не враг, но и не его дело: ноль.
+    assert relations == {"liner": 1, "archivist": 1, "master": -1, "heretic": 0}
     for _ in range(5):
         apply_winner_shift(relations, "cunning")
     assert relations["liner"] == 3  # +6 → кламп до 3
     assert relations["archivist"] == -3
     assert relations["master"] == 3
+    # Хитрость — ремесло Еретика: +5 → кламп до 3.
+    assert relations["heretic"] == 3
     # Неизвестный тег — пустой шаг.
     before = dict(relations)
     apply_winner_shift(relations, "dragon")
@@ -44,7 +47,8 @@ async def test_persist_and_load(session) -> None:
     await save_relations(session, {"liner": 2, "archivist": -1, "master": 0})
     await session.commit()
     loaded = await load_relations(session)
-    assert loaded == {"liner": 2, "archivist": -1, "master": 0}
+    # Еретик — четвёртое лицо канона: отсутствующий ключ сохраняется нулём.
+    assert loaded == {"liner": 2, "archivist": -1, "master": 0, "heretic": 0}
     row = await session.get(WatcherState, RELATION_KEY)
     assert row is not None
 
@@ -54,6 +58,8 @@ async def test_apply_round_result_commits_step(session) -> None:
     assert changed is True
     loaded = await load_relations(session)
     assert loaded["master"] == 1 and loaded["liner"] == -1 and loaded["archivist"] == 0
+    # Трещина мира — Еретик доволен.
+    assert loaded["heretic"] == 1
     # Неизвестный тег — шага нет.
     assert await apply_round_result(session, "dragon") is False
 

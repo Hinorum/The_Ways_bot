@@ -422,13 +422,15 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
 
 # ---------- Ротация гост-блоков промпта ----------
 
-_GUEST_POOL = ("villain", "promises", "echoes", "focus", "places", "distant")
+# "promises" (книга обещаний) удалена — её место в ротации заняла линия
+# Еретика: «Правила Еретика» объясняют механики мира как его изобретения.
+_GUEST_POOL = ("villain", "heretic", "echoes", "focus", "places", "distant")
 
 
 def guest_blocks_for(day_index: int) -> set[str]:
     """Бюджет главы: ≤4 сюжетных блока. Постоянные (закон, нрав,
     акт-рамка) не считаются. Гости ротируются парами по дню забега:
-    {villain↔focus} / {promises↔places} / {echoes↔distant} — каждая пара
+    {villain↔focus} / {heretic↔places} / {echoes↔distant} — каждая пара
     видна через день, антагонист дышит через день без давления."""
     first = day_index % len(_GUEST_POOL)
     second = (first + 3) % len(_GUEST_POOL)
@@ -461,6 +463,7 @@ async def _plan_and_render(
         alignment_motifs,
         alignment_tints,
         anchor_axes,
+        heretic_prompt_block,
         season_block as build_season_block,
     )
 
@@ -499,15 +502,30 @@ async def _plan_and_render(
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
+    # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
+    from app.season import midpoint_day as season_midpoint
+    from app.season import run_position as season_run_position
+    from app.season import villain_stage as season_villain_stage
+
+    run_day_now, total_now = season_run_position(anchor, open_moment)
+    # Правила Еретика: вторая сюжетная линия, зеркало плана Хозяина Ошибки.
+    # Идёт в season_block одним блоком (как призвания/отношения) — сигнатура
+    # генератора главы не раздувается.
+    if "heretic" in guests:
+        try:
+            heretic_block = heretic_prompt_block(
+                key, season_villain_stage(run_day_now, total_now), run_day_now
+            )
+        except Exception:
+            logger.warning("Блок Еретика не собран (день продолжится без него)", exc_info=True)
+            heretic_block = None
+        if heretic_block:
+            sblock = f"{sblock}\n{heretic_block}"
     # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
     villain_full = await _villain_block(session, open_moment, anchor)
     villain = villain_full if "villain" in guests else None
 
     # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
-    from app.season import midpoint_day as season_midpoint
-    from app.season import run_position as season_run_position
-
-    run_day_now, total_now = season_run_position(anchor, open_moment)
     twist = season_midpoint(run_day_now, total_now)
     rule = WinRule.MEDIAN if twist else secrets.choice(list(WinRule))
 

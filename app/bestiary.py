@@ -46,7 +46,19 @@ BEASTIES: dict[str, tuple[str, str]] = {
         "Хозяин Ошибки",
         "Безликий пересчётчик стаи. Не говорит вовсе — о нём сообщают "
         "последствия: лишние метки, чужие страницы, счёт, который "
-        "сходится не так. Строит коридор к Первому Лаю.",
+        "сходится не так. Идёт из старого мира по следу стаи: хочет вернуть "
+        "всем ровный сон без единой ошибки. Строит коридор к Первому Лаю.",
+    ),
+    "heretic": (
+        "Свернувший с Пути",
+        "Хозяин этой игры: пёс из старой Стаи, где один сон был на всех. "
+        "Заскучал первым — и увёл стаю сюда переписывать правила. Говорит "
+        "формулами, не оправдывается; его знак — апостроф.",
+    ),
+    "cat": (
+        "Кошачий след",
+        "Примета старого мира: след лапы на пыльной папке, сон, который "
+        "никто не признаётся. Появляется, когда чужой план почти готов.",
     ),
 }
 
@@ -67,9 +79,17 @@ async def note_round(session: AsyncSession, round_row: Round, season_key_value: 
 
     try:
         run_day, total = run_position(get_cached_anchor(anchor_moment), anchor_moment)
-        if villain_stage(run_day, total) >= 1:
+        stage = villain_stage(run_day, total)
+        if stage >= 1:
             title, desc = BEASTIES["master"]
             wanted.append(("master", f"{title}. {desc}"))
+            # Еретик выходит из теней вместе с первой явной приметой Хозяина.
+            title, desc = BEASTIES["heretic"]
+            wanted.append(("heretic", f"{title}. {desc}"))
+        if stage >= 3:
+            # В кризисе сезона старый мир напоминает о себе кошачьим следом.
+            title, desc = BEASTIES["cat"]
+            wanted.append(("cat", f"{title}. {desc}"))
     except Exception:
         pass
     created = 0
