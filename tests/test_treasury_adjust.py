@@ -25,10 +25,13 @@ from app.handlers import (
     _panel_keyboard,
     cmd_adjust,
     cmd_advance,
+    cmd_payouts,
     cmd_pause,
     cmd_resume,
     on_adjust_action,
     on_panel_action,
+    on_paystars,
+    on_pre_checkout,
 )
 from app.lore import compose_chapter
 from app.models import Income, Payout, Player, Round, RoundStatus, Stake, WatcherState, WinRule
@@ -627,3 +630,104 @@ async def test_dispatch_sends_comment_override(monkeypatch) -> None:
             assert sent.status == "sent" and sent.tx_hash == "tx-pause-refund"
     finally:
         await _wipe_money_rows()
+
+
+# ---------- Регрессии пульта и платных механик ----------
+
+
+async def test_payouts_command_actually_answers(admin_only) -> None:
+    """/payouts раньше молчал: декоратор висел на хелпере, возвращавшем
+    строку (aiogram отправляет только TelegramMethod)."""
+    try:
+        async with SessionLocal() as db:
+            db.add(Payout(
+                kind="prize",
+                amount_nanotons=to_nano(0.3),
+                dest_address="0:" + "ef" * 32,
+                status="pending",
+            ))
+            await db.commit()
+
+        outsider = make_message(1, "/payouts")
+        await cmd_payouts(outsider)
+        assert "только для хранителя" in outsider.answer.call_args.args[0]
+
+        admin = make_message(ADMIN_ID, "/payouts")
+        await cmd_payouts(admin)
+        text = admin.answer.call_args.args[0]
+        assert "#" in text and "pending" in text
+    finally:
+        await _wipe_money_rows()
+
+
+async def test_panel_advance_double_press_now_executes(admin_only, monkeypatch) -> None:
+    """Кнопка «Завершить день» раньше вечно просила «ещё раз» — второй тап
+    не доходил до действия. Теперь повторный тап подтверждает."""
+    calls: list = []
+
+    async def fake_advance(shim_message):
+        calls.append(shim_message)
+        await shim_message.answer("День 98001 открыт.")
+
+    monkeypatch.setattr(handlers_module, "cmd_advance", fake_advance)
+
+    first = make_callback(ADMIN_ID, "panel:advance")
+    first.message.edit_text = AsyncMock()
+    await on_panel_action(first)
+    args, kwargs = first.answer.call_args
+    assert kwargs.get("show_alert") is True and "ещё раз" in args[0]
+    assert not calls  # первый тап только предупреждает
+
+    second = make_callback(ADMIN_ID, "panel:advance")
+    await on_panel_action(second)
+    assert len(calls) == 1  # повторный тап выполнил действие
+    second.answer.assert_awaited_with("День переключён.")
+
+
+async def test_panel_refresh_identical_content_is_not_error(admin_only) -> None:
+    """Повторное «Обновить» без изменений — «Без изменений», а не алерт сбоя."""
+    from aiogram.exceptions import TelegramBadRequest
+
+    view = make_callback(ADMIN_ID, "panel:view")
+    view.message.edit_text = AsyncMock(
+        side_effect=TelegramBadRequest(
+            method=SimpleNamespace(), message="Bad Request: message is not modified"
+        )
+    )
+    await on_panel_action(view)  # не падает
+    view.answer.assert_awaited_with("Без изменений.")
+
+
+async def test_stars_payment_blocked_while_paused(admin_only, ton_on) -> None:
+    """Стоп-кран закрывает и платные механики: счёт не выдаётся,
+    а выставленный до паузы счёт отклоняется ДО списания Stars."""
+    await _wipe_pause()
+    try:
+        async with SessionLocal() as session:
+            await ops.set_game_paused(session, True, "техработы")
+
+        paystars = SimpleNamespace(
+            data="paystars:1",
+            from_user=SimpleNamespace(id=ADMIN_ID),
+            bot=AsyncMock(),
+            message=SimpleNamespace(chat=SimpleNamespace(id=ADMIN_ID, type="private")),
+            answer=AsyncMock(),
+        )
+        await on_paystars(paystars)
+        paystars.bot.send_invoice.assert_not_awaited()
+        kwargs = paystars.answer.call_args.kwargs
+        assert kwargs.get("show_alert") is True
+        assert "технические" in paystars.answer.call_args.args[0]
+
+        from app.payments import build_revote_payload
+
+        pre_checkout = SimpleNamespace(
+            invoice_payload=build_revote_payload(1),
+            answer=AsyncMock(),
+        )
+        await on_pre_checkout(pre_checkout)
+        kwargs = pre_checkout.answer.call_args.kwargs
+        assert kwargs.get("ok") is False
+        assert "технические" in kwargs.get("error_message", "")
+    finally:
+        await _wipe_pause()

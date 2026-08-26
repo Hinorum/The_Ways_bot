@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatType, ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -1213,6 +1214,14 @@ async def on_paystars(callback: CallbackQuery) -> None:
     if not raw.isdigit() or callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
         await callback.answer("Оплата — только в личке у бота (/change).", show_alert=True)
         return
+    # Стоп-кран: во время техработ платные механики не продаются,
+    # чтобы игрок не платил за смену пути в замороженной игре.
+    if await _game_paused_now():
+        await callback.answer(
+            "⏸ Идут технические работы — оплата временно недоступна. Попробуй позже.",
+            show_alert=True,
+        )
+        return
     status, active_id = await _revote_status(callback.from_user)
     round_id = int(raw)
     if active_id != round_id:
@@ -1233,6 +1242,14 @@ async def on_paystars(callback: CallbackQuery) -> None:
 async def on_pre_checkout(query: PreCheckoutQuery) -> None:
     if parse_revote_payload(query.invoice_payload) is None:
         await query.answer(ok=False, error_message="Счёт устарел. Вызови /change заново.")
+        return
+    # Второй рубеж стоп-крана: счёт мог быть выставлен до паузы —
+    # отклоняем оплату ДО списания Stars.
+    if await _game_paused_now():
+        await query.answer(
+            ok=False,
+            error_message="⏸ Идут технические работы — оплата приостановлена. Попробуй позже.",
+        )
         return
     await query.answer(ok=True)
 
@@ -1500,7 +1517,6 @@ async def cmd_resetgame(message: Message) -> None:
     )
 
 
-@router.message(Command("payouts"))
 async def _payouts_text() -> str:
     """Список неотправленных выплат (для /payouts и кнопки пульта)."""
     async with SessionLocal() as session:
@@ -1534,6 +1550,10 @@ async def _payouts_text() -> str:
     return "\n".join(lines)
 
 
+# Инцидент-регрессия: декоратор висел на _payout_text, которая ВОЗВРАЩАЕТ
+# строку. Aiogram автоотправляет результат хендлера только если это
+# TelegramMethod — голый str выбрасывался, и команда /payouts молчала.
+@router.message(Command("payouts"))
 async def cmd_payouts(message: Message) -> None:
     """Очередь выплат для хранителя: что не ушло и почему."""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -2041,9 +2061,17 @@ async def on_panel_action(callback: CallbackQuery) -> None:
             async with SessionLocal() as session:
                 text = await _admin_panel_text(session)
             if callback.message is not None:
-                await callback.message.edit_text(
-                    text, parse_mode=ParseMode.HTML, reply_markup=await _panel_keyboard()
-                )
+                try:
+                    await callback.message.edit_text(
+                        text, parse_mode=ParseMode.HTML, reply_markup=await _panel_keyboard()
+                    )
+                except TelegramBadRequest as exc:
+                    # Двойной тап «Обновить» — нормальный жест, а не ошибка:
+                    # Telegram отклоняет правку без изменений содержимого.
+                    if "message is not modified" in str(exc).lower():
+                        await callback.answer("Без изменений.")
+                        return
+                    raise
             await callback.answer("Обновлено.")
             return
         if action == "payouts":
@@ -2109,14 +2137,23 @@ async def on_panel_action(callback: CallbackQuery) -> None:
             return
         if action in {"advance", "advance:go"}:
             if action != "advance:go":
-                # Досрочное закрытие — действие с последствиями: первый тап
-                # только спрашивает подтверждение.
-                await callback.answer(
-                    "Закрыть голосование досрочно и открыть следующий день? "
-                    "Нажми кнопку ещё раз для подтверждения.",
-                    show_alert=True,
-                )
-                return
+                # Досрочное закрытие — действие с последствиями. Кнопка всегда
+                # шлёт один и тот же callback_data, поэтому «нажми ещё раз»
+                # фиксируется в памяти: второй тап в окне подтверждает.
+                # (Раньше ветка ":go" была недостижима из UI — кнопка не могла
+                # завершить день никогда, только просила «ещё раз» вечно.)
+                confirm_key = (callback.from_user.id, callback.data or "")
+                now = time.monotonic()
+                pending_at = _ADJ_PENDING.get(confirm_key)
+                if pending_at is None or now - pending_at > _ADJ_CONFIRM_WINDOW:
+                    _ADJ_PENDING[confirm_key] = now
+                    await callback.answer(
+                        "Закрыть голосование досрочно и открыть следующий день? "
+                        "Нажми кнопку ещё раз для подтверждения.",
+                        show_alert=True,
+                    )
+                    return
+                _ADJ_PENDING.pop(confirm_key, None)
             _answers: list[str] = []
 
             class _ShimMessage:
