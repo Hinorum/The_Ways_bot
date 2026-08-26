@@ -758,7 +758,9 @@ async def test_chapter_generation_retries_on_bad_payload(monkeypatch) -> None:
     good_content = json.dumps(
         {
             "title": "День 5. Испытание",
-            "text": "История дня на 400 знаков и больше: ты стоишь у развилки...",
+            # Гейт длины: валидная глава обязана набрать минимум нейро-пути.
+            "text": "История дня: " + "стая идёт мимо гудящих порталов, и каждая "
+            "тень на дороге кажется продолжением вчерашнего решения. " * 14,
             "lore_summary": "s",
             "cover_prompt": "scene",
             "cards": [

@@ -131,7 +131,10 @@ def _season_status_line(round_row: Round) -> str | None:
             run_position,
         )
 
-        moment = round_row.voting_ends_at
+        # Позиция забега считается от ОТКРЫТИЯ дня (opens_at). Раньше брали
+        # voting_ends_at — завтрашний момент, и титул пролога показывал
+        # следующий день («Пять собак» на дне Лайнера).
+        moment = round_row.opens_at or round_row.voting_ends_at
         if getattr(moment, "tzinfo", None) is None:
             from datetime import timezone as _tz
 

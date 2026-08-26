@@ -150,8 +150,10 @@ def test_status_line_shows_act_one_after_midmonth_reset() -> None:
         ]
         text = status_text(round_row)
         assert "акт 1" in text
-        # Голосование уходит на завтра (день 2 арки 61 дн.) — отсчёт от якоря.
-        assert "осталось 59 дн." in text
+        # Отсчёт и пролог считаются от ОТКРЫТИЯ дня (день 1 арки 61 дн.):
+        # раньше брали момент закрытия — титул пролога уезжал на день вперёд.
+        assert "осталось 60 дн." in text
+        assert "Пролог дня: «Приход»" in text
         assert "Нрав стаи" in text  # характер стаи теперь в статусе
         assert "Кризис сезона" not in text
     finally:

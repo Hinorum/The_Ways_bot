@@ -42,6 +42,39 @@ def text_is_clean(text: str) -> bool:
     return _BANNED_RE.search(text or "") is None
 
 
+# ---------- Типографика: нормализация вывода модели ----------
+
+# Диалоговая кавычка-ёлочка вместо ASCII-апострофов и прямых кавычек;
+# тире-диалог вместо дефиса с пробелами; многоточие одной литерой.
+_DOUBLE_QUOTE_RE = re.compile(r'"([^"\n]{1,300}?)"')
+_SINGLE_QUOTE_RE = re.compile(r"(?<![\wа-яёA-Z])'([^'\n]{1,300}?)'(?![\wа-яё])")
+_DASH_RE = re.compile(r"(?<=\S) - (?=\S)")
+
+
+def polish_typography(text: str) -> str:
+    """Ёлочки, диалоговое тире и многоточие одним проходом.
+
+    Модели стабильно выдают ASCII-кавычки и «...» — пост-обработка лечит
+    ВСЕ будущие тексты одной функцией, не полагаясь на послушание модели.
+    """
+    if not text:
+        return text
+    result = _DOUBLE_QUOTE_RE.sub(lambda m: f"«{m.group(1)}»", text)
+    result = _SINGLE_QUOTE_RE.sub(lambda m: f"«{m.group(1)}»", result)
+    result = _DASH_RE.sub(" — ", result)
+    return result.replace("...", "…")
+
+
+def _polish_chapter(chapter: dict) -> dict:
+    """Нормализует типографику всех русских полей главы на месте."""
+    for key in ("title", "text", "lore_summary"):
+        chapter[key] = polish_typography(str(chapter.get(key, "")))
+    for card in chapter.get("cards") or []:
+        for key in ("title", "description", "consequence"):
+            card[key] = polish_typography(str(card.get(key, "")))
+    return chapter
+
+
 DM_SYSTEM_PROMPT = (
     "Ты — Ведущий (Dungeon Master) ежедневной сюжетной игры, мастер тёмной сказки с лёгким собачьим юмором "
     "и тихой цифровой тревогой. Мир: "
@@ -495,7 +528,9 @@ async def generate_chapter(
         alignment_block=alignment_block,
         focus_line=focus_line,
     )
-    return neural or authored
+    # Типографика применяется к обоим путям: нейро-текст приходит с
+    # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
+    return _polish_chapter(neural or authored)
 
 
 async def _chat_completion(messages: list[dict], timeout: int | None = None) -> tuple[dict, str] | None:
@@ -602,7 +637,10 @@ def _build_story_prompt(
             law_line = (
                 f"Закон сегодняшнего дня уже объявлен игрокам с утра: {RULE_PHRASES[win_rule]}. "
                 "В главе он должен прозвучать голосом Архивариуса как реплика в сцене "
-                "(канцелярский шёпот, полуправда), а не сухой справкой за кадром.\n"
+                "(канцелярский шёпот, полуправда), а не сухой справкой за кадром. "
+                "ЗАПРЕЩЕНО цитировать формулировку дословно и называть механику "
+                "(«среднее число голосов», «большинство», «меньшинство») — "
+                "Архивариус передаёт закон образом архива и меры, игрок поймёт.\n"
             )
     villain_text = ""
     if villain_block:
@@ -660,7 +698,8 @@ def _build_story_prompt(
         f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
         "героев: Баркод, Миска, Вектор, Пиксель и Безымянная — только фоновый "
-        "бросок, новых главных персонажей не вводи.\n"
+        "бросок, новых главных персонажей не вводи. В дни пролога фокус сцены — "
+        "одно вводимое лицо; остальные постоянные лица молчат фоном без реплик.\n"
         "Обязательный состав главы, по порядку:\n"
     )
     if pending_outcome:
@@ -683,7 +722,10 @@ def _build_story_prompt(
     else:
         opening_line = (
             "(1) Отголосок вчера: чем отозвался вчерашний выбор из канона — через "
-            "одну конкретную деталь мира или стаи, не пересказом;\n"
+            "одну КОНКРЕТНУЮ деталь мира или стаи: предмет, шрам на местности, "
+            "запах, постройку. ЗАПРЕЩЕНЫ мета-фразы вроде «напоминает о "
+            "вчерашнем выборе» и любые отсылки к факту голосования — только "
+            "то, что изменилось в мире;\n"
         )
     return (
         head
@@ -693,13 +735,15 @@ def _build_story_prompt(
         "персонажа с его характерной манерой речи;\n"
         "(3) Закон дня звучит голосом Архивариуса как реплика в сцене — с его "
         "полуправдой и канцелярским шёпотом, а не сухой справкой;\n"
-        "(4) Напряжение выбора: что случилось этим утром и что стае должна "
-        "решить до заката. Финальная строка главы — крючок: недоговорённость, "
-        "звук или вопрос, обрывающий сцену перед картами. Не резюмируй мораль.\n"
+        "(4) Напряжение выбора: что случилось этим утром и какое решение стая "
+        "должна успеть принять до темноты сети. Финальная строка главы — "
+        "крючок: недоговорённость, звук или вопрос, обрывающий сцену перед "
+        "картами. Не резюмируй мораль.\n"
         "Три карты — трудная дилемма: риск против заботы против хитрости, без "
         "очевидно правильного ответа. Варьируй форму развилки ото дня ко дню: "
         "иногда две дороги похожи и одна дикая, иногда одна карта — соблазн с "
-        "красивой формулировкой и плохой ценой.\n"
+        "красивой формулировкой и плохой ценой. Начала трёх карт различны: "
+        "первое слово и конструкция каждой — свои.\n"
         "Правила ясности. Пиши простым живым русским языком, короткими "
         "предложениями; причина и следствие обязаны сходиться. Не оставляй "
         "двусмысленных местоимений: после «и» читателю ясно, кто выполняет "
@@ -771,6 +815,21 @@ async def _free_story_llm(
         try:
             data = _parse_chapter(payload, day_index)
             if data is not None:
+                # Контроль длины (инцидент: модель отдала конспект на ~1000
+                # знаков, и он ушёл в пост). Нейро-глава обязана набрать
+                # контрактный минимум; ниже — отклонение, вызывающий код
+                # соберёт офлайн-версию (её аварийный пол ниже: 1000).
+                expanded = bool(season_block) and (
+                    "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
+                )
+                min_chars = 1500 if expanded else 1200
+                text_len = len(str(data.get("text", "")))
+                if text_len < min_chars:
+                    logger.warning(
+                        "Модель %s вернула главу %d знаков (<%d, попытка %d) — отклонена",
+                        used_model, text_len, min_chars, attempt,
+                    )
+                    continue
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data
             logger.warning("Модель %s вернула не 3 карты (попытка %d)", used_model, attempt)
@@ -826,7 +885,7 @@ async def generate_epilogue(
         logger.warning("Эпилог отброшен стоп-фильтром")
         return ""
     logger.info("Эпилог дня написан моделью %s", used_model)
-    return text
+    return polish_typography(text)
 
 
 _TEASER_FALLBACKS = (
@@ -892,7 +951,7 @@ async def generate_opening_echo(
         stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
         text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
     logger.info("Открывающее эхо дня %d написано моделью %s", day_index + 1, used_model)
-    return text
+    return polish_typography(text)
 
 
 async def generate_teaser(day_index: int, rule_phrase: str) -> str:
@@ -934,7 +993,7 @@ async def generate_teaser(day_index: int, rule_phrase: str) -> str:
         stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
         text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
     logger.info("Тизер подсчёта написан моделью %s", used_model)
-    return text
+    return polish_typography(text)
 
 
 def _extract_json(content: str) -> dict:
