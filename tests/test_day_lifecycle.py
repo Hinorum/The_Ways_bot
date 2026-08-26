@@ -20,7 +20,22 @@ from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import cmd_advance, cmd_resetgame
-from app.models import Card, Chat, Round, RoundStatus, StoryBeat, WatcherState, WinRule
+from app.models import (
+    Card,
+    Chat,
+    Income,
+    MemoryHit,
+    Payout,
+    Player,
+    RevoteGrant,
+    Round,
+    RoundStatus,
+    Stake,
+    StoryBeat,
+    Vote,
+    WatcherState,
+    WinRule,
+)
 from app.ops import PAUSE_KEY, set_game_paused
 from app.rounds import heal_stale_rounds
 
@@ -66,8 +81,17 @@ def _round(day_index: int, status: RoundStatus, *, voting_in_minutes: int) -> Ro
 
 
 async def _wipe(days: list[int]) -> None:
+    """Полная уборка дней со всеми детьми: осиротевшие ставки иначе
+    «прилипают» к новым дням через переиспользованные id в SQLite."""
     async with SessionLocal() as db:
         await db.execute(delete(StoryBeat).where(StoryBeat.day_index.in_(days)))
+        await db.execute(delete(Card))
+        await db.execute(delete(Vote))
+        await db.execute(delete(Stake))
+        await db.execute(delete(Income))
+        await db.execute(delete(MemoryHit))
+        await db.execute(delete(RevoteGrant))
+        await db.execute(delete(Payout))
         for round_row in (
             await db.execute(select(Round).where(Round.day_index.in_(days)))
         ).scalars().all():
@@ -186,6 +210,42 @@ async def test_resetgame_auto_resumes_from_pause(offline_all) -> None:
             await db.commit()
 
 
+async def test_resetgame_refused_with_unfinalized_stakes(offline_all) -> None:
+    """Вторая линия защиты: ставки дня без финализации — деньги игроков в
+    казнее; сброс обязан отказать, а не стирать память об обязательствах."""
+    from app.models import Stake
+
+    round_row = _round(740, RoundStatus.CLOSED, voting_in_minutes=-40)
+    round_row.winner_card = 0  # payouts_finalized остаётся False
+    async with SessionLocal() as db:
+        db.add(round_row)
+        await db.flush()
+        db.add(
+            Stake(
+                round_id=round_row.id,
+                player_id=1,
+                amount_nanotons=300_000_000,
+                tx_hash="reset-guard-tx",
+                status="confirmed",
+            )
+        )
+        await db.commit()
+    try:
+        message = _message("/resetgame confirm keepstory")
+        await cmd_resetgame(message)
+        texts = [c.args[0] for c in message.answer.await_args_list if c.args]
+        joined = "\n".join(texts)
+        assert "неразыгранные ставки" in joined and "740" in joined
+        assert not any("Игра обнулена" in t for t in texts)
+        async with SessionLocal() as db:
+            alive = (
+                await db.execute(select(Round).where(Round.day_index == 740))
+            ).scalar_one()
+            assert alive is not None  # ничего не стёрто
+    finally:
+        await _wipe([740])
+
+
 async def test_announce_single_cover_uses_send_photo(monkeypatch, tmp_path) -> None:
     """Регрессия инцидента: Telegram отвергает mediaGroup из одного файла —
     анонс нового дня должен идти обычным фото, иначе статус с кнопками
@@ -240,7 +300,7 @@ async def test_announce_single_cover_uses_send_photo(monkeypatch, tmp_path) -> N
 async def test_resetgame_wipes_income_and_memory_links(offline_all) -> None:
     """Регрессия: Income.round_id держит FK на rounds — сброс падал
     ForeignKeyViolation и молча откатывался целиком."""
-    from app.models import Income, MemoryHit, Player
+    from app.models import Income, MemoryHit
 
     player_id = 880_001
     round_row = _round(900, RoundStatus.CLOSED, voting_in_minutes=-40)

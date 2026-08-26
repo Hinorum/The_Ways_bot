@@ -1535,6 +1535,26 @@ async def cmd_resetgame(message: Message) -> None:
                 "обнуление стёрло бы чужие деньги."
             )
             return
+        # Вторая линия защиты (инцидент: ставки зависшего дня стёрлись сбросом,
+        # а монеты остались в казнее): дни без финализации со ставками —
+        # неразыгранные обязательства. Сначала дай им доиграть.
+        stuck_rows = (
+            await session.execute(
+                select(Round.day_index)
+                .join(Stake, Stake.round_id == Round.id)
+                .where(Round.payouts_finalized.is_(False))
+                .distinct()
+            )
+        ).scalars().all()
+        if stuck_days := sorted(stuck_rows):
+            days_list = ", ".join(str(day) for day in stuck_days[:10])
+            await message.answer(
+                f"{warn_mark('queue')} Сброс отложен: у дня(ей) {days_list} есть "
+                "неразыгранные ставки — деньги игроков ещё в казнее.\n"
+                "Дай дням доиграть (/advance или автоцикл): подсчёт сам создаст "
+                "возвраты и призы, после отправки сброс пройдёт."
+            )
+            return
         new_round = await reset_game(session, keep_story=keep_story)
         first = await claim_announcement(session, new_round)
     if not first:
