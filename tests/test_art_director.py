@@ -32,11 +32,11 @@ def offline_llm(monkeypatch):
     monkeypatch.setattr(settings, "use_free_story_llm", False)
 
 
-async def test_offline_bible_has_four_distinct_shots(offline_llm) -> None:
+async def test_offline_bible_is_single_cover_frame(offline_llm) -> None:
+    """Новый мир: один сетевой кадр в день. Библия — только cover."""
     bible = await plan_day_art(CHAPTER)
-    assert set(bible["shots"]) == {"cover", "0", "1", "2"}
-    scenes = {bible["shots"][slot]["scene"] for slot in ("0", "1", "2")}
-    assert len(scenes) == 3
+    assert set(bible["shots"]) == {"cover"}
+    assert bible["shots"]["cover"]["scene"]
     assert bible["palette"] and bible["lighting"] and bible["motifs"]
 
 
@@ -49,10 +49,7 @@ async def test_llm_bible_is_used_when_valid(monkeypatch) -> None:
                         '{"palette":"rust orange over teal","lighting":"low sun through fog",'
                         '"motifs":["rusted iron","drifting sparks"],'
                         '"shots":{'
-                        '"cover":{"scene":"aerial view of the pack at the gates","composition":"sweeping aerial"},'
-                        '"0":{"scene":"dog forcing the gate hinge","composition":"low angle"},'
-                        '"1":{"scene":"dog slipping under the fence","composition":"dutch angle"},'
-                        '"2":{"scene":"dogs sharing watch by embers","composition":"top-down"}}}'
+                        '"cover":{"scene":"aerial view of the pack at the gates, gate torn open","composition":"sweeping aerial"}}}'
                     )
                 }
             }
@@ -63,9 +60,9 @@ async def test_llm_bible_is_used_when_valid(monkeypatch) -> None:
         return payload, "test-model"
 
     monkeypatch.setattr("app.art_director._chat_completion", fake_chat)
-    bible = await plan_day_art(CHAPTER)
+    bible = await plan_day_art(CHAPTER, ["вчера стая взломала ворота"])
     assert bible["palette"] == "rust orange over teal"
-    assert "hinge" in bible["shots"]["0"]["scene"]
+    assert "gate" in bible["shots"]["cover"]["scene"]
 
 
 async def test_broken_llm_answer_falls_back_offline(monkeypatch) -> None:
@@ -75,16 +72,14 @@ async def test_broken_llm_answer_falls_back_offline(monkeypatch) -> None:
     monkeypatch.setattr(settings, "use_free_story_llm", True)
     monkeypatch.setattr("app.art_director._chat_completion", fake_chat)
     bible = await plan_day_art(CHAPTER)
-    assert set(bible["shots"]) == {"cover", "0", "1", "2"}
+    assert set(bible["shots"]) == {"cover"}
 
 
 async def test_build_prompt_contains_negatives_and_varies(offline_llm) -> None:
     bible = await plan_day_art(CHAPTER)
-    p0 = build_image_prompt(bible, "0", seed=11)
-    p1 = build_image_prompt(bible, "1", seed=12)
+    p0 = build_image_prompt(bible, "cover", seed=11)
     assert "no text" in p0 and "no poster layout" in p0
     assert "rust" in p0 or "teal" in p0 or "ember" in p0
-    assert p0 != p1
     # Вариативность от сида: другой день — другая киношная фактура.
     seeds = {build_image_prompt(bible, "cover", seed=s) for s in range(4)}
     assert len(seeds) == 4
@@ -92,7 +87,7 @@ async def test_build_prompt_contains_negatives_and_varies(offline_llm) -> None:
 
 async def test_short_prompt_is_compact(offline_llm) -> None:
     bible = await plan_day_art(CHAPTER)
-    short = short_image_prompt(bible, "2", seed=5)
+    short = short_image_prompt(bible, "cover", seed=5)
     assert len(short.split()) < 60
 
 
@@ -111,14 +106,31 @@ async def test_anchor_continues_palette_offline(offline_llm) -> None:
     assert bible["palette"] == _PALETTE_ROTATION[2][0]
 
 
-def test_prompt_carries_anchor_for_llm() -> None:
+def test_prompt_carries_anchor_and_yesterday_core_for_llm() -> None:
     prompt = _build_art_prompt(
         CHAPTER,
-        ["вчерашний итог"],
+        ["вчера стая взломала ржавые ворота"],
         anchor={"palette": "cold slate", "lighting": "moonlit rim", "motifs": ["iron ring"]},
     )
     assert "ПРЕДЫДУЩИЙ ДЕНЬ" in prompt and "cold slate" in prompt
     assert "локацию" in prompt  # требование сменить декорации сохранено
+    # Новая драматургия: последствие вчерашнего канона — ядро кадра.
+    assert "ЯДРО КАДРА" in prompt and "взломала ржавые ворота" in prompt
+    # Кадр один: JSON-схема без слотов карт.
+    assert '"0"' not in prompt and "ПУТЬ 0" not in prompt
+
+
+async def test_intro_prompt_carries_world_and_heretic(offline_llm) -> None:
+    """Стартовый кадр мира: палитра дня + сцена знакомства с Еретиком."""
+    from app.art_director import build_intro_prompt, build_intro_short_prompt
+
+    bible = await plan_day_art(CHAPTER)
+    intro = build_intro_prompt(bible, seed=7)
+    short = build_intro_short_prompt(bible)
+    assert "portal rings" in intro and "old stitched maps" in intro
+    for mark in ("no text", "cinematic"):
+        assert mark in intro
+    assert len(short.split()) < 95  # сжатый, но сцена мира насыщенная
 
 
 def test_compact_anchor_fits_state_limit() -> None:

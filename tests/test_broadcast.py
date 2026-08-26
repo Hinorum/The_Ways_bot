@@ -159,20 +159,54 @@ def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None:
     assert "Банк дня" not in text
 
 
-def test_status_hides_descriptions_and_captions_carry_them(tmp_path) -> None:
-    """Описания путей переехали в подписи фото: пост дня остаётся главе."""
+def test_status_carries_paths_and_media_is_single_cover(tmp_path) -> None:
+    """Новый мир: один сетевой кадр в день.
+
+    Описания путей вернулись в текст статуса (фото-карт больше нет), медиа
+    дня — только обложка «после вчерашнего выбора». Легаси-дни с готовыми
+    фото-картами по-прежнему показывают четыре кадра.
+    """
     from app.broadcast import day_media_group, status_text
 
+    # Новый день: карты без генерации.
     round_row = _round(9300, tmp_path)
+    for card in round_row.cards:
+        card.image_path = ""
     status = status_text(round_row)
-    assert "описание" not in status  # описания больше не в текстовом посте
     for position in range(3):
-        assert f"{['I', 'II', 'III'][position]}. Путь {position}" in status
+        assert f"{['I', 'II', 'III'][position]}. Путь {position} — описание" in status
+    assert len(status) <= 4096
 
     media = day_media_group(round_row)
-    captions = [item.caption for item in media[1:]]
-    assert len(captions) == 3
+    assert len(media) == 1  # только обложка
+    assert "День проверки рассылки" in media[0].caption
+
+    # Легаси-день: у всех карт есть файлы — показываем четыре кадра.
+    legacy = _round(9301, tmp_path)
+    legacy_media = day_media_group(legacy)
+    assert len(legacy_media) == 4
+    captions = [item.caption for item in legacy_media[1:]]
     for position, caption in enumerate(captions):
         assert f"Путь {['I', 'II', 'III'][position]}." in caption
-        assert "описание" in caption  # полное описание живёт на картинке пути
         assert len(caption) <= 1024  # лимит Telegram на подпись фото
+
+
+def test_intro_frame_attached_only_to_day_one(tmp_path, monkeypatch) -> None:
+    """Стартовый кадр мира едет в посте первого дня забега и больше нигде."""
+    from app.broadcast import day_media_group
+
+    monkeypatch.setattr(settings, "media_dir", str(tmp_path))
+    intro = tmp_path / "run_intro.jpg"
+    intro.write_bytes(b"")
+
+    first_day = _round(1, tmp_path)
+    for card in first_day.cards:
+        card.image_path = ""
+    media = day_media_group(first_day)
+    assert len(media) == 2  # обложка + стартовый кадр мира
+    assert "Еретик" in media[1].caption
+
+    second_day = _round(2, tmp_path)
+    for card in second_day.cards:
+        card.image_path = ""
+    assert len(day_media_group(second_day)) == 1  # обычный день — без интро

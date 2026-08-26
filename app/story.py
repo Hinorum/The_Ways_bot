@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import random
@@ -10,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from app.config import settings
 from app.echoes import echo_prompt_lines
@@ -312,6 +313,68 @@ def render_cover(path: Path, title: str, body: str = "") -> None:
     _save_image(scene, path)
 
 
+async def _fetch_gemini_image(
+    prompt: str, dest: Path, width: int = 768, height: int = 1024
+) -> bool:
+    """Первичный провайдер кадра: Google Gemini Image («nano banana»).
+
+    Ключ GEMINI_API_KEY из AI Studio; free-tier квоты с запасом покрывают
+    1-2 генерации в сутки (новая архитектура дня — один кадр). Ответ ищем в
+    candidates[0].content.parts[*].inlineData (base64 PNG/JPEG). Любая
+    неудача молча возвращает False — лестница продолжается Pollinations.
+    """
+    key = (settings.gemini_api_key or "").strip()
+    if not settings.use_free_images or not key:
+        return False
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_image_model}:generateContent"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": styled_prompt(prompt)}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.gemini_image_timeout_seconds) as client:
+            response = await client.post(url, json=payload, headers={"x-goog-api-key": key})
+            if response.status_code != 200:
+                logger.warning(
+                    "Gemini image %s: HTTP %d — кадр уходит на следующего провайдера",
+                    settings.gemini_image_model,
+                    response.status_code,
+                )
+                return False
+            data = response.json()
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        inline = next(
+            (
+                part.get("inlineData")
+                for part in parts
+                if isinstance(part, dict) and part.get("inlineData")
+            ),
+            None,
+        )
+        raw = str((inline or {}).get("data") or "")
+        if not raw:
+            logger.warning("Gemini image ответ без inlineData — лестница продолжается")
+            return False
+        content = base64.b64decode(raw)
+        if not _looks_like_image(content):
+            logger.warning("Gemini image вернул не изображение (%d байт)", len(content))
+            return False
+        image = Image.open(BytesIO(content)).convert("RGB")
+        if image.size != (width, height):
+            # fit вместо stretch: кадр обрезается по композиции, а не давится.
+            image = ImageOps.fit(image, (width, height))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _save_image(image, dest)
+        logger.info("Кадр получен через Gemini (%s): %s", settings.gemini_image_model, dest.name)
+        return True
+    except Exception as exc:
+        logger.warning("Gemini image не удался: %s", exc)
+        return False
+
+
 async def fetch_free_image(
     prompt: str,
     dest: Path,
@@ -340,7 +403,7 @@ async def fetch_free_image(
                 logger.warning("Pollinations охлаждается до %d с — кадр %s в фолбэк", _throttle_left_seconds(), dest.name)
                 return False
             url = (
-                f"{base}?width={width}&height={height}&nologo=true&model={model}"
+                f"{base}?width={width}&height={height}&nologo=true&private=true&model={model}"
                 f"&seed={seed if seed is not None else random.randint(1, 999999)}"
             )
             if settings.pollinations_token:
@@ -388,9 +451,12 @@ async def fetch_day_image(
     width: int = 768,
     height: int = 1024,
 ) -> bool:
-    """Двухступенчатая генерация кадра: полный промпт по лестнице моделей,
-    затем одна попытка сжатым промптом (длинные промпты иногда давят модель).
-    False — вызывающий код рисует локальный абстракт."""
+    """Лестница кадра: Gemini «nano banana» → Pollinations (полный промпт,
+    потом сжатый — длинные промпты иногда давят модель). False — вызывающий
+    код рисует локальный абстракт. Один сетевой кадр в день делает лестницу
+    практически безошибочной: ни один провайдер не успевает затроттлиться."""
+    if await _fetch_gemini_image(prompt, dest, width=width, height=height):
+        return True
     if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height):
         return True
     if not settings.use_free_images:

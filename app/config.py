@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # Токен Pollinations (pollinations.ai → auth): поднимает лимиты анонимного
     # tier'а — без него общий IP Render регулярно ловит 429 на весь день.
     pollinations_token: str = ""
+    # Google Gemini Image («nano banana», gemini-2.5-flash-image) — первичный
+    # генератор кадра дня при заданном ключе AI Studio. Free-tier квот легко
+    # хватает на 1-2 генерации в сутки; при сбое лестница уходит в Pollinations,
+    # а после неё — детерминированный PIL-фолбэк.
+    gemini_api_key: str = ""
+    gemini_image_model: str = "gemini-2.5-flash-image"
+    gemini_image_timeout_seconds: int = 75
     use_free_story_llm: bool = True
     # Бесплатные модели неторопливы: таймауты щедрые, чтобы день собирался
     # нейросетью, а не фолбэками. Настраивается из Environment.

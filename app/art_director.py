@@ -1,17 +1,18 @@
-"""Арт-директор дня: цепочка «замысел → промпт → генерация» вместо одного
-сырого image_prompt из главы.
+"""Арт-директор дня: один кадр вместо четырёх генераций.
 
-1) «Режиссёр» — отдельный LLM-запрос строит визуальную библию дня:
-   общая палитра, свет, сквозные мотивы и четыре различных кадра (обложка
-   и три пути), каждый в своей локации и ракурсе, с привязкой к смыслу
-   выбора. Ответ валидируется; при молчании сети работает детерминированный
-   офлайн-план из полей главы.
-2) «Промпт-инженер» — чистая функция собирает финальный английский промпт
-   каждого кадра из библии: сцена, композиция, палитра, свет, мотив плюс
-   вариативные кино-приёмы, вращающиеся от сида дня, и жёсткие негативы
-   против текста на картинке.
-3) Генерация остаётся в story.fetch_free_image (лестница моделей); при
-   полном молчании сети rounds рисует абстрактный арт без текста.
+Инцидент-предыстория: залп из четырёх запросов в минуту по free-провайдерам
+регулярно упирался в 429/таймауты — 1-2 картинки получались, остальные уходили
+в PIL-заглушки. Решение — «один кадр дня»: обложка, которая показывает МИР
+ПОСЛЕ ВЧЕРАШНЕГО ВЫБОРА (последствие канона как ядро композиции), плюс
+стартовый кадр мира один раз на забег. Пути голосования остаются текстом
+и кнопками: смысл выбора читается словами лучше, чем нейрокартинкой.
+
+1) «Режиссёр» — LLM-запрос строит визуальную библию дня: палитра, свет,
+   сквозные мотивы и ОДИН кадр. Ответ валидируется; при молчании сети
+   работает детерминированный офлайн-план.
+2) «Промпт-инженер» — чистая функция собирает финальный английский промпт.
+3) Лестница генерации в story.fetch_day_image: Gemini («nano banana») →
+   Pollinations → детерминированный PIL-фолбэк без текста.
 """
 
 from __future__ import annotations
@@ -28,10 +29,12 @@ ART_SYSTEM_PROMPT = (
     "Ты — арт-директор визуальной новеллы по мотивам тёмной сказки о стае "
     "бездомных собак-путешественников у цифровых порталов. Мир: Эхо Стаи. "
     + settings.world_brief
-    + " Твоя задача — придумать визуальный язык одного игрового дня так, чтобы "
-    "все картинки дня выглядели как один фильм, но ни одна не повторяла другую "
-    "по локации, ракурсу и настроению. Ты не пишешь текст для игрока и не "
-    "упоминаешь механику игры: только изображения."
+    + " Твоя задача — придумать визуальный язык ОДНОГО игрового дня: "
+    "единственный широкий кинематографичный кадр, который показывает мир "
+    "ПОСЛЕ вчерашнего выбора стаи. Последствие канонического события — ядро "
+    "композиции: то, что стая построила, сломала или разбудила вчера, видно "
+    "в сцене сегодня. Ты не пишешь текст для игрока и не упоминаешь механику "
+    "игры: только изображение."
 )
 
 _NEGATIVE_SUFFIX = (
@@ -116,7 +119,7 @@ def character_motifs_for(text: str) -> list[str]:
 
 
 def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
-    """Детерминированный план дня без сети: сцены берём из image_prompt карт.
+    """Детерминированный план дня без сети: один кадр из cover_prompt главы.
 
     anchor — компактный якорь предыдущего дня: палитра продолжает ротацию
     с него (а не с нуля), чтобы офлайн-дни тоже шли «серией».
@@ -139,20 +142,6 @@ def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
             "composition": _COVER_COMPOSITIONS[seed % len(_COVER_COMPOSITIONS)],
         }
     }
-    for position, card in enumerate(chapter.get("cards") or []):
-        base = (
-            card.get("image_prompt")
-            or f"dark fairy-tale tarot scene, {card.get('title', 'stray dog at a crossroads')}"
-        )
-        shots[str(position)] = {
-            "scene": base,
-            "composition": _CARD_COMPOSITIONS[(seed + position) % len(_CARD_COMPOSITIONS)],
-        }
-    while len(shots) < 4:
-        shots[str(len(shots))] = {
-            "scene": "lone stray dog before a glitching portal",
-            "composition": _CARD_COMPOSITIONS[len(shots) % len(_CARD_COMPOSITIONS)],
-        }
     return {
         "palette": palette,
         "lighting": lighting,
@@ -162,14 +151,14 @@ def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
 
 
 def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | None = None) -> str:
-    cards_block = ""
-    for position, card in enumerate(chapter.get("cards") or []):
-        cards_block += (
-            f"\nПУТЬ {position}: тег {card.get('tag', 'care')}; «{card.get('title', '')}» — "
-            f"{card.get('description', '')} Последствие: {card.get('consequence', '')} "
-            f"Черновой образ: {card.get('image_prompt', '')}"
-        )
     last_beat = recent_beats[-1] if recent_beats else ""
+    yesterday_block = (
+        f"\nЯДРО КАДРА — чем обернулся вчерашний выбор стаи: «{last_beat}». "
+        "Покажи его последствие в сцене (постройка или руина, след или примета, "
+        "изменившееся место), не иллюстрируя событие буквально.\n"
+        if last_beat
+        else "\nКанона вчера нет: покажи стаю в момент прихода в новый мир.\n"
+    )
     anchor_block = ""
     if anchor and anchor.get("palette"):
         motifs = ", ".join(anchor.get("motifs") or [])
@@ -177,27 +166,22 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | Non
             f"\nПРЕДЫДУЩИЙ ДЕНЬ: палитра «{anchor.get('palette', '')}», свет "
             f"«{anchor.get('lighting', '')}», мотивы: {motifs}. Сохрани узнаваемость "
             "стиля (та же гамма и сквозные мотивы), но полностью смени локацию "
-            "и ракурсы — новый день не должен выглядеть копией вчерашнего.\n"
+            "и ракурс — новый день не должен выглядеть копией вчерашнего.\n"
         )
     return (
         "Ответь только JSON, все текстовые значения на английском. Собери "
-        "визуальную библию одного дня игры.\n\n"
+        "визуальную библию одного дня игры: ОДИН кадр.\n\n"
         f"ГЛАВА ДНЯ: «{chapter.get('title', '')}»\n{chapter.get('text', '')[:700]}\n"
-        f"{cards_block}\n"
-        f"КАНОН ВЧЕРАШНЕГО ДНЯ: {last_beat}\n"
+        f"{yesterday_block}"
         f"{anchor_block}"
-        "Требования. Обложка — широкий кинематографичный кадр всей сцены дня. "
-        "Каждый путь — отдельная портретная сцена, передающая СМЫСЛ выбора, а не "
-        "буквальную подпись. Четыре кадра должны быть в разных локациях, с разных "
-        "ракурсов и с разным настроением, но в единой палитре и свете, с общими "
-        "мотивами дня. На изображениях не должно быть никакого текста. "
-        "Не используй слова vote, card, player, UI.\n"
+        "Требования. Обложка — широкий кинематографичный кадр всей сцены дня; "
+        "последствие вчерашнего канона читается в сцене первым взглядом. Стая "
+        "присутствует в кадре; если в тексте есть Еретик — это тощий пёс в "
+        "пальто из старых карт с белым знаком-апострофом у глаза. На изображении "
+        "не должно быть никакого текста. Не используй слова vote, card, player, UI.\n"
         'Формат: {"palette":"english color palette phrase","lighting":"english '
         'lighting phrase","motifs":["english motif","english motif"],'
-        '"shots":{"cover":{"scene":"...","composition":"..."},'
-        '"0":{"scene":"...","composition":"..."},'
-        '"1":{"scene":"...","composition":"..."},'
-        '"2":{"scene":"...","composition":"..."}}}'
+        '"shots":{"cover":{"scene":"...","composition":"..."}}}'
     )
 
 
@@ -207,22 +191,20 @@ def _parse_bible(payload: dict) -> dict | None:
     shots_raw = data.get("shots")
     if not isinstance(shots_raw, dict):
         return None
-    shots: dict[str, dict[str, str]] = {}
-    for slot in ("cover", "0", "1", "2"):
-        shot = shots_raw.get(slot)
-        if not isinstance(shot, dict):
-            return None
-        scene = str(shot.get("scene", "")).strip()
-        composition = str(shot.get("composition", "")).strip()
-        if not scene or not composition:
-            return None
-        shots[slot] = {"scene": scene[:400], "composition": composition[:200]}
+    shot = shots_raw.get("cover")
+    if not isinstance(shot, dict):
+        return None
+    scene = str(shot.get("scene", "")).strip()
+    composition = str(shot.get("composition", "")).strip()
+    if not scene or not composition:
+        return None
+    shots = {"cover": {"scene": scene[:400], "composition": composition[:200]}}
     palette = str(data.get("palette", "")).strip() or _PALETTE_ROTATION[0][0]
     lighting = str(data.get("lighting", "")).strip() or _PALETTE_ROTATION[0][1]
     motifs = [str(m).strip()[:80] for m in (data.get("motifs") or []) if str(m).strip()][:3]
     if not motifs:
         motifs = ["glowing portal ring"]
-    blob = " ".join([palette, lighting, *motifs, *(s["scene"] for s in shots.values())])
+    blob = " ".join([palette, lighting, *motifs, scene])
     if not text_is_clean(blob):
         logger.warning("Библия дня отброшена стоп-фильтром")
         return None
@@ -305,3 +287,31 @@ def short_image_prompt(bible: dict, slot: str, seed: int = 0) -> str:
     shot = bible.get("shots", {}).get(slot) or next(iter(bible.get("shots", {}).values()))
     words = " ".join(shot["scene"].split()[:28])
     return styled_prompt(f"{words}{_NEGATIVE_SUFFIX}")
+
+
+# Стартовый кадр забега: мир целиком, для знакомства игроков. Генерируется
+# один раз на забег (день 1), дальше переиспользуется файлом.
+_INTRO_SCENE = (
+    "sweeping establishing shot of the pack's new world: a valley of glitching "
+    "portal rings under a vast dusk sky, five stray dog silhouettes on a ridge "
+    "looking down, a faint faraway light of the First Bark deep below the "
+    "network, a lean scarred dog in a coat of old stitched maps watching from "
+    "a near cliff edge"
+)
+
+
+def build_intro_prompt(bible: dict, seed: int = 0) -> str:
+    """Промпт стартового кадра мира: палитра и мотивы дня + константа сцены."""
+    texture = _CAMERA_TEXTURES[seed % len(_CAMERA_TEXTURES)]
+    motifs = bible.get("motifs") or []
+    motif = f", {motifs[seed % len(motifs)]}" if motifs else ""
+    prompt = (
+        f"{_INTRO_SCENE}, extreme wide establishing shot, {bible.get('palette', '')}, "
+        f"{bible.get('lighting', '')}{motif}, {texture}{_NEGATIVE_SUFFIX}"
+    )
+    return styled_prompt(prompt)
+
+
+def build_intro_short_prompt(bible: dict) -> str:
+    # styled_prompt сам добавляет стиль и запреты текста — без дублей.
+    return styled_prompt(_INTRO_SCENE)

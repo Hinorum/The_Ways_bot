@@ -589,46 +589,36 @@ async def _plan_and_render(
     # Сид обложки привязан к месту дня: возвращение в «Старый приют»
     # рисует тот же мир, а не новую случайную сцену.
     cover_seed = place_seed_for(chapter.get("place")) or day_seed
-    jobs = []
-    for position, card in enumerate(chapter["cards"]):
-        image_path = media_root / f"day{day_index}_card{position}.jpg"
-        prompt = build_image_prompt(bible, str(position), seed=day_seed + position + 1)
-        short = short_image_prompt(bible, str(position), seed=day_seed + position + 1)
-        jobs.append((position, card, image_path, prompt, short))
-    # Залп из четырёх запросов бьёт по free-лимиту Pollinations (429) и
-    # роняет карты в PIL-шаблоны. Держим не больше двух генераций в полёте.
-    image_semaphore = asyncio.Semaphore(2)
-
-    async def _limited(coroutine):
-        async with image_semaphore:
-            return await coroutine
-
-    fetched = await asyncio.gather(
-        _limited(
-            # Обложка — широкий кинематографичный кадр, карты — портретные сцены.
-            fetch_day_image(
-                build_image_prompt(bible, "cover", seed=cover_seed),
-                short_image_prompt(bible, "cover", seed=cover_seed),
-                cover_path,
-                seed=cover_seed,
-                width=1280,
-                height=720,
-            )
-        ),
-        *(
-            _limited(fetch_day_image(job[3], job[4], job[2], seed=day_seed + job[0] + 1))
-            for job in jobs
-        ),
+    # ОДИН кадр дня: обложка «мир после вчерашнего выбора». Пути голосования
+    # остаются текстом и кнопками — залп из четырёх генераций бил free-лимиты
+    # (429), и три карты из четырёх уходили в PIL-заглушки.
+    fetched_cover = await fetch_day_image(
+        build_image_prompt(bible, "cover", seed=cover_seed),
+        short_image_prompt(bible, "cover", seed=cover_seed),
+        cover_path,
+        seed=cover_seed,
+        width=1280,
+        height=720,
     )
-    if not fetched[0]:
+    if not fetched_cover:
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
         await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
+    # Стартовый кадр мира: один раз на забег (день 1). Падение молчит —
+    # пост дня не зависит от него, файл переиспользуется /start и анонсами.
+    if day_index == 1:
+        from app.art_director import build_intro_prompt, build_intro_short_prompt
+
+        intro_path = media_root / "run_intro.jpg"
+        await fetch_day_image(
+            build_intro_prompt(bible, seed=day_seed),
+            build_intro_short_prompt(bible),
+            intro_path,
+            seed=day_seed + 9_000,
+            width=1280,
+            height=720,
+        )
     cards_payload = []
-    stub_positions: list[int] = []
-    for (position, card, image_path, _prompt, _short), ok in zip(jobs, fetched[1:]):
-        if not ok:
-            stub_positions.append(position)
-            await asyncio.to_thread(render_card, image_path, card["title"], card["description"], position)
+    for position, card in enumerate(chapter["cards"]):
         cards_payload.append(
             {
                 "position": position,
@@ -636,14 +626,8 @@ async def _plan_and_render(
                 "description": card["description"],
                 "consequence": card["consequence"],
                 "tag": card.get("tag", "care"),
-                "image_path": str(image_path),
+                "image_path": "",
             }
-        )
-    if not fetched[0] or stub_positions:
-        # Часть кадров ушла в PIL-заглушки: фиксируем на будущее — через
-        # четверть часа после анонса фоновая задача попробует перерисовать.
-        await _record_image_stubs(
-            session, day_index, cover_stub=not fetched[0], card_positions=stub_positions
         )
     # Три исхода заранее: по варианту открывающего эха на каждый из
     # возможных победивших путей. На закрытии голосования выбор мгновенный
@@ -840,7 +824,7 @@ async def upgrade_stub_images(day_index: int) -> int:
 
     from app.art_director import build_image_prompt, offline_bible, short_image_prompt
     from app.db import SessionLocal
-    from app.story import fetch_free_image
+    from app.story import fetch_day_image
 
     async with SessionLocal() as session:
         stubs = await _pop_image_stubs(session, day_index)
@@ -863,11 +847,11 @@ async def upgrade_stub_images(day_index: int) -> int:
     bible = offline_bible(chapter_like)
     day_seed = 10_000 + day_index * 7
     cover_seed = place_seed_for(round_row.place) or day_seed
-    semaphore = asyncio.Semaphore(2)
+    semaphore = asyncio.Semaphore(1)
 
     async def _pull(slot: str, prompt: str, short: str, dest: Path, seed: int) -> bool:
         async with semaphore:
-            return await fetch_free_image(prompt, dest, seed=seed)
+            return await fetch_day_image(prompt, short, dest, seed=seed)
 
     jobs = []
     if stubs.get("cover"):

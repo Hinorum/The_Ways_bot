@@ -13,6 +13,7 @@ from aiogram.types import (
     CallbackQuery,
     ChatMemberUpdated,
     ErrorEvent,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -103,6 +104,16 @@ async def cmd_start(message: Message) -> None:
         "средства. Ты сам решаешь, на что ставишь."
     )
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+    # Стартовый кадр мира (генерируется один раз на забег): знакомит
+    # новичка глазами, а не только словами. Пропал/не сгенерился — молчим.
+    from pathlib import Path as _Path
+
+    intro = _Path(settings.media_dir) / "run_intro.jpg"
+    if settings.use_free_images and intro.exists():
+        try:
+            await message.answer_photo(FSInputFile(intro))
+        except Exception:
+            logger.info("Стартовый кадр мира не доставлен новичку", exc_info=True)
     await cmd_today(message)
 
 

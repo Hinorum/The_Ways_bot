@@ -80,10 +80,11 @@ def status_text(round_row: Round) -> str:
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:
         phase = "🌙 День закрыт."
-    # Описания путей живут в подписях фото (лимит подписи 1024), поэтому
-    # текстовый пост остаётся главе и фазе — больше воздуха для истории.
+    # Пути голосования читаются словами: заголовок + суть каждого.
+    # (Раньше описания жили в подписях трёх фото-карт — генерацию карт
+    # убрали, и текст снова стал носителем смысла развилки.)
     cards = "\n".join(
-        f"{POSITIONS[card.position]}. {_clamp(card.title, 100)}"
+        f"{POSITIONS[card.position]}. {_clamp(card.title, 80)} — {_clamp(card.description, 200)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     bank_line = ""
@@ -105,7 +106,7 @@ def status_text(round_row: Round) -> str:
     else:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 3200)}\n\n"
+        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2600)}\n\n"
         f"{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
     season_line = _season_status_line(round_row)
@@ -180,12 +181,38 @@ def _cover_media(round_row: Round) -> InputMediaPhoto:
     )
 
 
+def _intro_media(round_row: Round) -> InputMediaPhoto | None:
+    """Стартовый кадр мира: прикладывается только к дню 1 забега."""
+    if round_row.day_index != 1:
+        return None
+    path = Path(settings.media_dir) / "run_intro.jpg"
+    if not path.exists():
+        return None
+    caption = (
+        f"{day_mark(str(round_row.id))} Мир, который Еретик построил для тех, "
+        "кому стал тесен один сон на всех. Выбирай тропу — реальность перестроится."
+    )
+    return InputMediaPhoto(media=FSInputFile(path), caption=caption[:1000])
+
+
 def day_media_group(round_row: Round) -> list[InputMediaPhoto]:
-    """Свежий набор медиа на каждый чат: aiogram мутирует объекты при отправке."""
-    return [
-        _cover_media(round_row),
-        *(_card_media(card) for card in sorted(round_row.cards, key=lambda item: item.position)),
-    ]
+    """Свежий набор медиа на каждый чат: aiogram мутирует объекты при отправке.
+
+    Новый мир: обложка «после вчерашнего выбора» (+ стартовый кадр в день 1).
+    Легаси-дни с готовыми фото-картами показываются по-старому — четыре кадра.
+    """
+    media = [_cover_media(round_row)]
+    cards = sorted(round_row.cards, key=lambda item: item.position)
+    legacy = bool(cards) and all(
+        card.image_path and Path(card.image_path).exists() for card in cards
+    )
+    if legacy:
+        media.extend(_card_media(card) for card in cards)
+        return media
+    intro = _intro_media(round_row)
+    if intro is not None:
+        media.append(intro)
+    return media
 
 
 async def active_chat_ids() -> list[int]:
@@ -247,18 +274,28 @@ def winner_card(round_row: Round):
 
 
 def winner_photo(round_row: Round) -> FSInputFile | None:
-    """Фото победившей карты для поста итогов: файл уже сгенерирован днём ранее.
+    """Фото для поста итогов: «мир после выбора» этого дня.
 
-    Пропавший файл дорисовывается локальным шаблоном; карты без победителя
-    (пустой день) фото не получают.
+    Легаси-дни с готовой картинкой победившей карты показывают её; новые дни
+    (карты без генерации) получают обложку дня — она и есть последствия
+    канона. Совсем пропавший файл дорисовывается локальным шаблоном; без
+    победителя фото нет.
     """
     card = winner_card(round_row)
     if card is None:
         return None
-    path = Path(card.image_path or "")
-    if not path.exists():
-        render_card(path, card.title, card.description, card.position)
-    return FSInputFile(path)
+    if card.image_path:
+        path = Path(card.image_path)
+        if path.exists():
+            return FSInputFile(path)
+    cover = (
+        Path(round_row.cover_path)
+        if round_row.cover_path
+        else Path(settings.media_dir) / f"day{round_row.day_index}_cover.jpg"
+    )
+    if not cover.exists():
+        render_cover(cover, round_row.chapter_title, round_row.chapter_text)
+    return FSInputFile(cover)
 
 
 _BROADCAST_PARALLELISM = 8

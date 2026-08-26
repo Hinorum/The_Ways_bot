@@ -168,7 +168,7 @@ def test_story_prompt_demands_full_narrative() -> None:
 
 
 def test_winner_photo_reuses_generated_file(tmp_path, monkeypatch) -> None:
-    """Итоги получают фото победившей карты — без новой генерации."""
+    """Итоги получают фото победившей карты — без новой генерации (легаси)."""
     from app.broadcast import winner_photo
 
     finished = Round(
@@ -194,11 +194,23 @@ def test_winner_photo_reuses_generated_file(tmp_path, monkeypatch) -> None:
     photo = winner_photo(finished)
     assert photo is not None
 
-    # Файл пропал — рисуется локальный шаблон, а не падение.
-    image.unlink()
-    monkeypatch.setattr("app.broadcast.render_card", lambda p, t, d, pos: p.write_bytes(b"x"))
+    # Легаси-файл на месте — показывается именно он.
+    assert image.exists()
+
+    # Новый мир: у карт нет генерации — итоги показывает ОБЛОЖКА дня
+    # («после выбора»), а не перерисованная карта.
+    for card in finished.cards:
+        card.image_path = ""
+    finished.cover_path = str(tmp_path / "day8_cover.jpg")
+    (tmp_path / "day8_cover.jpg").write_bytes(b"\xff\xd8\xfffakejpeg")
     photo = winner_photo(finished)
-    assert photo is not None and image.exists()
+    assert photo is not None
+
+    # Обложки нет — рисуется локальный шаблон, а не падение.
+    (tmp_path / "day8_cover.jpg").unlink()
+    monkeypatch.setattr("app.broadcast.render_cover", lambda p, t, body="": p.write_bytes(b"x"))
+    photo = winner_photo(finished)
+    assert photo is not None and (tmp_path / "day8_cover.jpg").exists()
 
     # Нет победителя — нет фото.
     finished.winner_card = None
