@@ -24,6 +24,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
 from app.payments import parse_revote_memo
+from app.ops import is_game_paused
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
 
@@ -332,7 +333,9 @@ def _decode_comment(in_msg: dict) -> str:
     return ""
 
 
-async def _stash_refund(session, transfer: Transfer, round_id: int | None) -> str:
+async def _stash_refund(
+    session, transfer: Transfer, round_id: int | None, comment: str | None = None
+) -> str:
     """Авто-возврат перевода, который не может стать ставкой или оплатой.
 
     Идемпотентно по tx_hash: повторная обработка той же транзакции не плодит
@@ -341,6 +344,8 @@ async def _stash_refund(session, transfer: Transfer, round_id: int | None) -> st
     Древние переводы (старе WATCH_REFUND_MAX_AGE_DAYS) не возвращаются: после
     сброса базы курсор обнуляется и история казны перечитывается целиком —
     без лимита старый спам вечно рождал бы новые dead-letter возвраты.
+    comment — свободный текст перевода вместо служебного memo «way:…»
+    (возвраты при паузе игры объясняют игроку, что идут техработы).
     """
     age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
     if age_days > max(0, settings.watch_refund_max_age_days):
@@ -364,6 +369,7 @@ async def _stash_refund(session, transfer: Transfer, round_id: int | None) -> st
             dest_address=transfer.source or "",
             tx_hash=transfer.tx_hash[:80],
             network=current_network(),
+            comment_override=comment[:120] if comment else None,
         )
     )
     await session.commit()
@@ -408,6 +414,11 @@ async def _ledger_incoming(
     await session.commit()
 
 
+# Комментарий возвратов, пока игра на паузе: игрок видит причину прямо
+# в проводнике блокчейна и в кошельке, без обращения к хранителю.
+PAUSE_REFUND_COMMENT = "Игра приостановлена: идут технические работы"
+
+
 async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
     async with SessionLocal() as session:
@@ -415,6 +426,28 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
             select(Player).where(Player.wallet_address == normalize_address(transfer.source))
         )
         player = player_result.scalar_one_or_none()
+        if await is_game_paused(session):
+            # Стоп-кран включён: никакой игры — каждый входящий перевод
+            # уезжает обратно отправителю с объяснением. Ставки/оплаты смены
+            # пути не создаются даже от известных игроков.
+            result = await _stash_refund(
+                session, transfer, None, comment=PAUSE_REFUND_COMMENT
+            )
+            await _ledger_incoming(
+                session,
+                transfer,
+                player.id if player is not None else None,
+                None,
+                f"paused:{result}",
+            )
+            if player is not None and result == "refund_queued":
+                await _dm_stake(
+                    bot,
+                    player.id,
+                    f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                    f"{PAUSE_REFUND_COMMENT.lower()}.",
+                )
+            return f"paused_{result}"
         if player is None:
             # Деньги от неопознанного кошелька нельзя оставить в казнее молча.
             result = await _stash_refund(session, transfer, None)

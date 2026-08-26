@@ -247,6 +247,10 @@ class Payout(Base):
     # Причина последней неудачи отправки: видно в /payouts и алертах админу,
     # диагноз не требует раскопок логов сервиса.
     last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Свободный комментарий перевода вместо служебного memo «way:…»:
+    # возвраты при паузе игры несут игроку текст о техработах, а не
+    # технический идентификатор. Null — используется стандартное memo.
+    comment_override: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Админ уже предупреждён об этой выплате: дедуп алертов живёт в БД,
     # а не в памяти процесса — переживает рестарт, безопасен при репликах.
     alerted: Mapped[bool] = mapped_column(Boolean, default=False)

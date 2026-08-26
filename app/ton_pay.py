@@ -31,7 +31,7 @@ from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Payout, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
 from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
 
@@ -479,7 +479,9 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                     else "нет адреса получателя (кошелёк игрока не найден)"
                 )
                 continue
-            comment = f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+            # Свободный комментарий (возвраты при паузе) либо служебное memo
+            # «way:<день>:<тип>#<id>» — по нему же работает анти-дубль.
+            comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
             if comment in markers:
                 # Перевод уже ушёл в цепочку раньше, но статус тогда не
                 # сохранился (краш/таймаут после вещания). Повтор задвоил бы
@@ -667,6 +669,56 @@ async def treasury_diagnostics() -> str:
             lines.append(f"Баланс: {from_nano(balance):.4f} Gram{note} · источник {source}")
             if balance <= 0:
                 lines.append("Баланс пуст: пополнить через @testgiver_ton_bot (testnet).")
+    # Сверка с ожиданиями БД, корректировки казны и стоп-кран (/adjust, /pause).
+    from app.ops import (
+        MANUAL_IN_KIND,
+        MANUAL_OUT_KIND,
+        is_game_paused,
+        paused_reason,
+        treasury_expected_state,
+    )
+
+    try:
+        async with SessionLocal() as session:
+            drift_state = await treasury_expected_state(session)
+            adjustments = (
+                await session.execute(
+                    select(
+                        Income.kind,
+                        func.count(),
+                        func.coalesce(func.sum(Income.amount_nanotons), 0),
+                    )
+                    .where(Income.kind.in_([MANUAL_OUT_KIND, MANUAL_IN_KIND]))
+                    .group_by(Income.kind)
+                )
+            ).all()
+            paused = await is_game_paused(session)
+            reason = await paused_reason(session)
+    except Exception:
+        logger.warning("Сверка казны для /treasury не собралась", exc_info=True)
+        drift_state, adjustments, paused, reason = None, [], False, None
+    if paused:
+        lines.append(
+            f"⏸ Игра на паузе ({reason or 'техработы'}): входящие переводы "
+            "возвращаются отправителям. Снять: /resume"
+        )
+    if adjustments:
+        parts = [
+            f"{'−' if kind == MANUAL_OUT_KIND else '+'}{from_nano(total):.4f} Gram ({count})"
+            for kind, count, total in adjustments
+        ]
+        lines.append("Корректировки казны: " + " · ".join(parts))
+    if drift_state is not None:
+        if drift_state.beyond_tolerance:
+            lines.append(
+                f"Ожидания БД: ~{drift_state.expected_nanotons / 1e9:.4f} Gram · "
+                f"расхождение {drift_state.drift_nanotons / 1e9:+.4f} Gram ⚠️ — "
+                "закрой: /adjust"
+            )
+        else:
+            lines.append(
+                f"Сверка с БД сходится ✓ (ожидается ~{drift_state.expected_nanotons / 1e9:.4f} Gram)"
+            )
     async with SessionLocal() as session:
         waiting = (
             await session.execute(

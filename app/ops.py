@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 from aiogram import Bot
 from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Payout, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Round, RoundStatus, WatcherState
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,15 @@ _TICK_STALE_AFTER = timedelta(minutes=5)
 # Допуск сверки баланса казначея с БД: сгоревший газ исходящих переводов
 # и мелкий ручной вывод не должны будить админа ложной тревогой.
 _BALANCE_TOLERANCE_NANO = 50_000_000  # 0.05 Gram
+
+# Пауза игры (стоп-кран): метка времени включения и причина. Живут в
+# watcher_state — переживают рестарт, видны всем процессам и джобам.
+PAUSE_KEY = "game_paused_iso"
+PAUSE_REASON_KEY = "game_paused_reason"
+# Виды корректировок казны: ручной вывод хранителя / ручное пополнение.
+# Пишутся в Income (unit_ref «manual:<uuid>»), попадают в формулу сверки.
+MANUAL_OUT_KIND = "manual_out"
+MANUAL_IN_KIND = "manual_in"
 
 
 def _now() -> datetime:
@@ -244,19 +255,41 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
             if balance_note is not None:
                 problems.append(balance_note)
                 if await _throttled(session, ALERT_BALANCE_KEY):
-                    await notify_admins(bot, f"⚠️ Казначей: {balance_note}. Детали: /treasury и /payouts.")
+                    await notify_admins(
+                        bot,
+                        f"⚠️ Казначей: {balance_note}. Детали: /treasury и /payouts.\n"
+                        "Это был твой ручной перевод — закрой расхождение: /adjust",
+                    )
     return problems
 
 
-async def _treasury_balance_anomaly(session) -> str | None:
-    """Сравнивает баланс цепочки с ожиданиями БД. None — всё сходится.
+class TreasuryDrift(NamedTuple):
+    """Снимок сверки «баланс цепочки ↔ ожидания БД» одним объектом."""
 
-    Ожидаемый остаток = подтверждённые ставки + revote-переводы − все
-    выплаты (sent уже ушли, pending/sending ещё уйдут). Допуск покрывает
-    сгоревший газ исходящих переводов; Income не размечен сетью, поэтому
-    при активном тестнет-контуре сверка отключена — метки смешались бы.
+    balance_nanotons: int
+    expected_nanotons: int
+    unpaid_nanotons: int
+    tolerance_nanotons: int
+
+    @property
+    def drift_nanotons(self) -> int:
+        """Положительный — на цепи МЕНЬШЕ ожиданий (вывод/пропажа),
+        отрицательный — больше (незаметное пополнение)."""
+        return self.expected_nanotons - self.balance_nanotons
+
+    @property
+    def beyond_tolerance(self) -> bool:
+        return abs(self.drift_nanotons) > self.tolerance_nanotons
+
+
+async def treasury_expected_state(session) -> TreasuryDrift | None:
+    """Баланс цепочки против ожиданий БД; None — баланс недоступен.
+
+    Ожидаемый остаток = подтверждённые ставки + revote-переводы + ручные
+    пополнения − ручные выводы − все выплаты (sent уже ушли, pending/sending
+    ещё уйдут). Допуск покрывает сгоревший газ исходящих переводов.
     """
-    from app.models import Income, Stake
+    from app.models import Stake
     from app.ton_pay import fetch_account_state
 
     try:
@@ -313,19 +346,123 @@ async def _treasury_balance_anomaly(session) -> str | None:
             )
         ).scalar_one()
     )
-    expected = staked + revotes - sent - unpaid
+    manual_in = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
+                    Income.kind == MANUAL_IN_KIND,
+                )
+            )
+        ).scalar_one()
+    )
+    manual_out = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
+                    Income.kind == MANUAL_OUT_KIND,
+                )
+            )
+        ).scalar_one()
+    )
+    expected = staked + revotes + manual_in - manual_out - sent - unpaid
     # Газ сгорает на каждом исходящем переводе; допуск = база + запас по числу.
     from app.ton_utils import to_nano
 
     tolerance = _BALANCE_TOLERANCE_NANO + sent_count * 2 * to_nano(settings.payout_fee_gram)
-    if balance < unpaid:
+    return TreasuryDrift(
+        balance_nanotons=balance,
+        expected_nanotons=expected,
+        unpaid_nanotons=unpaid,
+        tolerance_nanotons=tolerance,
+    )
+
+
+async def _treasury_balance_anomaly(session) -> str | None:
+    """Сравнивает баланс цепочки с ожиданиями БД. None — всё сходится.
+
+    Две беды разного рода: дефицит под очередь выплат (пополни казначея)
+    и расхождение с ожиданиями (ручной вывод или пропажа — закрывается
+    командой /adjust). Income не размечен сетью, поэтому при активном
+    тестнет-контуре сверка смешала бы метки — известная шероховатость.
+    """
+    state = await treasury_expected_state(session)
+    if state is None:
+        return None
+    if state.balance_nanotons < state.unpaid_nanotons:
         return (
-            f"баланса {balance / 1e9:.4f} Gram не хватит на очередь выплат "
-            f"({unpaid / 1e9:.4f} Gram) — пополни казначея"
+            f"баланса {state.balance_nanotons / 1e9:.4f} Gram не хватит на очередь выплат "
+            f"({state.unpaid_nanotons / 1e9:.4f} Gram) — пополни казначея"
         )
-    if balance + tolerance < expected:
+    if state.balance_nanotons + state.tolerance_nanotons < state.expected_nanotons:
         return (
-            f"баланс {balance / 1e9:.4f} Gram ниже ожиданий БД "
-            f"(~{expected / 1e9:.4f} Gram): ручной вывод или пропажа средств?"
+            f"баланс {state.balance_nanotons / 1e9:.4f} Gram ниже ожиданий БД "
+            f"(~{state.expected_nanotons / 1e9:.4f} Gram): ручной вывод или пропажа средств? "
+            f"Закрыть расхождение: /adjust"
         )
     return None
+
+
+async def record_manual_adjustment(
+    session,
+    kind: str,
+    amount_nanotons: int,
+    note: str = "",
+) -> Income:
+    """Корректировка казны: «это был мой ручной вывод» либо «пропажа/пополнение».
+
+    Пишет строку в Income-леджер (unit_ref «manual:<uuid>» — уникальность
+    бесплатно), после чего формула ожиданий в treasury_expected_state
+    сходится с реальностью и часовой алерт замолкает сам.
+    """
+    if kind not in {MANUAL_OUT_KIND, MANUAL_IN_KIND}:
+        raise ValueError(f"Неизвестный вид корректировки: {kind}")
+    amount = int(amount_nanotons)
+    if amount <= 0:
+        raise ValueError("Сумма корректировки должна быть положительной")
+    row = Income(
+        kind=kind,
+        amount_nanotons=amount,
+        player_id=None,
+        round_id=None,
+        unit_ref=f"manual:{uuid.uuid4().hex}",
+        note=(note or "")[:200],
+    )
+    session.add(row)
+    await session.commit()
+    logger.info(
+        "Корректировка казны: %s %.4f Gram (%s)", kind, amount / 1e9, note or "без комментария"
+    )
+    return row
+
+
+# ---------- Пауза игры (стоп-кран хранителя) ----------
+
+
+async def is_game_paused(session) -> bool:
+    """True, пока игра остановлена командой /pause или кнопкой пропажи."""
+    return bool(await _get_state(session, PAUSE_KEY))
+
+
+async def paused_reason(session) -> str | None:
+    """Причина паузы (для пульта и сообщений игрокам) или None."""
+    reason = await _get_state(session, PAUSE_REASON_KEY)
+    return reason or None
+
+
+async def set_game_paused(session, paused: bool, reason: str = "") -> bool:
+    """Включает/снимает паузу. Возвращает True, если состояние изменилось.
+
+    Повторная установка того же состояния — no-op: двойное нажатие кнопки
+    не рассылает игрокам второе уведомление и не затирает причину.
+    """
+    if paused == await is_game_paused(session):
+        return False
+    if paused:
+        await _set_state(session, PAUSE_KEY, _now().isoformat())
+        if reason:
+            await _set_state(session, PAUSE_REASON_KEY, reason[:200])
+    else:
+        await _set_state(session, PAUSE_KEY, "")
+        await _set_state(session, PAUSE_REASON_KEY, "")
+    logger.info("Пауза игры: %s (%s)", "включена" if paused else "снята", reason or "—")
+    return True

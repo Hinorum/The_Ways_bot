@@ -49,7 +49,7 @@ from app.rounds import claim_announcement, close_voting, create_next_round_detai
 from app.style import day_mark, hint_mark, money_mark, ok_mark, path_mark, result_mark, warn_mark
 from app.tally import award_points
 from app.ton_pay import pending_payout_count
-from app.ton_utils import from_nano, friendly_address, is_valid_ton_address, normalize_address
+from app.ton_utils import from_nano, friendly_address, is_valid_ton_address, normalize_address, to_nano
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
 
@@ -1399,6 +1399,9 @@ async def cmd_advance(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
+    if await _game_paused_now():
+        await message.answer(f"{warn_mark('pause')} Игра на паузе — сначала /resume.")
+        return
     closed_here = False
     claimed = False
     async with SessionLocal() as session:
@@ -1459,6 +1462,9 @@ async def cmd_resetgame(message: Message) -> None:
     /resetgame confirm keepstory — счёты чисты, но мир помнит прошлое."""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
+        return
+    if await _game_paused_now():
+        await message.answer(f"{warn_mark('pause')} Игра на паузе — сначала /resume.")
         return
     words = (message.text or "").lower().split()
     if "confirm" not in words:
@@ -1579,6 +1585,270 @@ async def cmd_treasury(message: Message) -> None:
         await message.answer(f"Отчёт не собрался: {exc}")
 
 
+# ---------- Сверка казны (/adjust) и стоп-кран игры (/pause, /resume) ----------
+
+
+async def _game_paused_now() -> bool:
+    """Быстрая проверка стоп-крана без привязки к чужой сессии."""
+    from app.ops import is_game_paused
+
+    async with SessionLocal() as session:
+        return await is_game_paused(session)
+
+
+async def _set_paused_and_broadcast(bot, paused: bool, reason: str = "") -> tuple[bool, int]:
+    """Стоп-кран игры + объявление в чатах. Возвращает (изменилось, чатов)."""
+    from app.ops import set_game_paused
+
+    async with SessionLocal() as session:
+        changed = await set_game_paused(session, paused, reason)
+    if not changed:
+        return False, 0
+    from app.broadcast import whisper_to_chats
+
+    text = (
+        "⏸ Игра приостановлена: идут технические работы. Переводы на адрес фонда "
+        "будут возвращены отправителям."
+        if paused
+        else "▶️ Технические работы завершены — игра возобновляется. Новый день откроется сам в течение минуты."
+    )
+    try:
+        delivered = await whisper_to_chats(bot, text)
+    except Exception:
+        logger.warning("Объявление о паузе/возобновлении не разослано", exc_info=True)
+        delivered = 0
+    return True, delivered
+
+
+async def _adjust_menu_text() -> str:
+    """Меню сверки: что видно по расхождению и какие есть кнопки."""
+    from app.ops import is_game_paused, paused_reason, treasury_expected_state
+
+    lines = ["⚖️ <b>Сверка казны с БД</b>"]
+    async with SessionLocal() as session:
+        state = await treasury_expected_state(session)
+        paused = await is_game_paused(session)
+        reason = await paused_reason(session)
+    if state is None:
+        lines.append("Баланс казначея недоступен (оба индексатора молчат) — повтори позже.")
+        return "\n".join(lines)
+    drift = state.drift_nanotons
+    lines.append(
+        f"Баланс цепочки: {state.balance_nanotons / 1e9:.4f} Gram\n"
+        f"Ожидания БД: ~{state.expected_nanotons / 1e9:.4f} Gram "
+        f"(допуск ±{state.tolerance_nanotons / 1e9:.4f})"
+    )
+    if not state.beyond_tolerance:
+        lines.append(f"\n{ok_mark('clean')} Всё сходится в допуске — корректировка не нужна.")
+    elif drift > 0:
+        lines.append(
+            f"\n⚠️ На цепи меньше ожиданий на <b>{drift / 1e9:.4f} Gram</b>. Что это было?\n"
+            "✋ <b>Ручной вывод</b> — ты сам выводил/переводил эти деньги: сумма уйдёт "
+            "в леджер, алерт сверки замолчит.\n"
+            "🕳 <b>Пропажа средств</b> — то же самое плюс стоп-кран: игра встанет на паузу, "
+            "а все входящие переводы будут автоматически возвращаться отправителям "
+            "с комментарием о техработах."
+        )
+    else:
+        lines.append(
+            f"\n⚠️ На цепи больше ожиданий на <b>{-drift / 1e9:.4f} Gram</b> — "
+            "похоже, было пополнение мимо учёта. Кнопка «Пополнение» запомнит его."
+        )
+    if paused:
+        lines.append(
+            f"\n⏸ Игра сейчас на паузе ({reason or 'техработы'}). Снять: /resume или кнопка пульта."
+        )
+    lines.append("\nТочная сумма: <code>/adjust &lt;сумма&gt; out|in|loss [комментарий]</code>")
+    return "\n".join(lines)
+
+
+def _adjust_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✋ Это был ручной вывод", callback_data="adj:out")],
+            [InlineKeyboardButton(text="🕳 Пропажа средств (пауза игры)", callback_data="adj:loss")],
+            [InlineKeyboardButton(text="💰 Ручное пополнение казны", callback_data="adj:in")],
+        ]
+    )
+
+
+def _adjust_confirm_text(action: str) -> str:
+    return {
+        "out": (
+            "Записать текущее расхождение как ручной вывод? Ожидания БД скорректируются, "
+            "алерт замолчит. Нажми кнопку ещё раз для подтверждения."
+        ),
+        "in": (
+            "Записать излишек как ручное пополнение казны? "
+            "Нажми кнопку ещё раз для подтверждения."
+        ),
+        "loss": (
+            "⚠️ Пропажа средств: расхождение уйдёт в леджер, а игра ВСТАНЕТ НА ПАУЗУ — "
+            "входящие переводы будут возвращаться с пометкой о техработах. "
+            "Нажми кнопку ещё раз для подтверждения."
+        ),
+    }.get(action, "")
+
+
+# Подтверждение опасных кнопок сверки: admin_id+действие → момент первого тапа.
+_ADJ_PENDING: dict[tuple[int, str], float] = {}
+_ADJ_CONFIRM_WINDOW = 120.0
+
+
+async def _apply_adjustment(bot, direction: str, amount_nanotons: int | None, note: str = "") -> str:
+    """Записывает корректировку казны; «пропажа» дополнительно гасит игру."""
+    from app.ops import (
+        MANUAL_IN_KIND,
+        MANUAL_OUT_KIND,
+        record_manual_adjustment,
+        treasury_expected_state,
+    )
+
+    kind_by_direction = {
+        "out": MANUAL_OUT_KIND,
+        "loss": MANUAL_OUT_KIND,
+        "in": MANUAL_IN_KIND,
+    }
+    if direction not in kind_by_direction:
+        return "Неизвестное действие сверки."
+    async with SessionLocal() as session:
+        if amount_nanotons is None:
+            state = await treasury_expected_state(session)
+            if state is None:
+                return "Баланс казначея недоступен (индексаторы молчат) — попробуй позже."
+            drift = state.drift_nanotons
+            if abs(drift) <= state.tolerance_nanotons:
+                return (
+                    f"{ok_mark('clean')} Расхождений нет (в допуске "
+                    f"±{state.tolerance_nanotons / 1e9:.4f} Gram) — корректировка не нужна."
+                )
+            amount_nanotons = abs(int(drift))
+        row = await record_manual_adjustment(
+            session, kind_by_direction[direction], int(amount_nanotons), note
+        )
+    labels = {
+        "out": "Ручной вывод",
+        "in": "Ручное пополнение",
+        "loss": "Пропажа средств",
+    }
+    result = (
+        f"{money_mark('adj')} <b>{labels[direction]}</b>: "
+        f"{from_nano(row.amount_nanotons):.4f} Gram записано в леджер казны. "
+        "Ожидания БД скорректированы — алерт сверки замолчит."
+    )
+    if direction == "loss":
+        changed, delivered = await _set_paused_and_broadcast(bot, True, note or "пропажа средств")
+        if changed:
+            chats = f" Анонс ушёл в {delivered} чат(ов)." if delivered else ""
+            result += (
+                f"\n⏸ Игра остановлена.{chats} Входящие переводы теперь возвращаются "
+                "отправителям с пометкой о техработах. Снять паузу: /resume"
+            )
+        else:
+            result += "\n⏸ Игра уже стояла на паузе."
+    return result
+
+
+@router.message(Command("adjust"))
+async def cmd_adjust(message: Message) -> None:
+    """Сверка казны: меню разбора расхождения баланса с ожиданиями БД.
+
+    Кнопки закрывают расхождение целиком; точная сумма — аргументами:
+    /adjust 1.3569 out «вывод на биржу».
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    parts = (message.text or "").split()
+    if len(parts) >= 3 and parts[2].lower() in {"out", "in", "loss"}:
+        try:
+            amount = float(parts[1].replace(",", "."))
+        except ValueError:
+            await message.answer(
+                "Сумма не разобралась. Формат: <code>/adjust &lt;сумма&gt; out|in|loss [комментарий]</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if amount <= 0:
+            await message.answer("Сумма должна быть положительной.")
+            return
+        note = " ".join(parts[3:]) if len(parts) > 3 else ""
+        result = await _apply_adjustment(message.bot, parts[2].lower(), to_nano(amount), note)
+        await message.answer(result, parse_mode=ParseMode.HTML)
+        return
+    await message.answer(
+        await _adjust_menu_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_adjust_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("adj:"))
+async def on_adjust_action(callback: CallbackQuery) -> None:
+    """Кнопки сверки казны: первый тап предупреждает, второй — делает."""
+    if callback.from_user.id not in settings.admin_id_set:
+        await callback.answer("Сверка только для хранителя.", show_alert=True)
+        return
+    action = callback.data.split(":", 1)[1]
+    if action not in {"out", "in", "loss"}:
+        await callback.answer("Неизвестное действие.", show_alert=True)
+        return
+    key = (callback.from_user.id, action)
+    now = time.monotonic()
+    pending_at = _ADJ_PENDING.get(key)
+    if pending_at is None or now - pending_at > _ADJ_CONFIRM_WINDOW:
+        _ADJ_PENDING[key] = now
+        await callback.answer(_adjust_confirm_text(action), show_alert=True)
+        return
+    _ADJ_PENDING.pop(key, None)
+    try:
+        result = await _apply_adjustment(callback.bot, action, None)
+    except Exception as exc:
+        logger.exception("Корректировка казны %s не удалась", action)
+        await callback.answer(f"Не получилось: {exc}", show_alert=True)
+        return
+    if callback.message is not None:
+        await callback.message.answer(result, parse_mode=ParseMode.HTML, reply_markup=None)
+    await callback.answer("Записано.")
+
+
+@router.message(Command("pause"))
+async def cmd_pause(message: Message) -> None:
+    """Стоп-кран: дни замирают, входящие переводы автоматически возвращаются."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    words = (message.text or "").split(maxsplit=1)
+    reason = words[1].strip()[:200] if len(words) > 1 else "идут технические работы"
+    changed, delivered = await _set_paused_and_broadcast(message.bot, True, reason)
+    if not changed:
+        await message.answer(f"{warn_mark('pause')} Игра уже на паузе. Снять: /resume")
+        return
+    chats = f" Анонс ушёл в {delivered} чат(ов)." if delivered else ""
+    await message.answer(
+        f"{ok_mark('pause')} Игра остановлена: {reason}.{chats}\n"
+        "Дни не открываются, watcher каждый входящий перевод возвращает отправителю "
+        "(в комментарии — «техработы»). Очередь выплат продолжает разгребаться.\n"
+        "Снять паузу: /resume"
+    )
+
+
+@router.message(Command("resume"))
+async def cmd_resume(message: Message) -> None:
+    """Снимает стоп-кран: следующий тик откроет новый день сам."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    changed, delivered = await _set_paused_and_broadcast(message.bot, False)
+    if not changed:
+        await message.answer("Игра и так идёт.")
+        return
+    chats = f" Анонс ушёл в {delivered} чат(ов)." if delivered else ""
+    await message.answer(
+        f"{ok_mark('go')} Пауза снята.{chats} Новый день откроется в ближайший тик (до минуты)."
+    )
+
+
 # ---------- Пульт хранителя (/panel) ----------
 
 _PANEL_FOOTER = (
@@ -1589,6 +1859,8 @@ _PANEL_FOOTER = (
     "/stakes — ставки дня · /payouts — очередь выплат (причина у каждой строки)\n"
     "/payout &lt;id&gt; retry|spam — ручной разбор долга\n"
     "/treasury — казначей: баланс и пара ключей\n"
+    "/adjust — сверка казны: ручной вывод или пропажа средств ⚖️\n"
+    "/pause … /resume — стоп-кран игры (техработы) ⏸\n"
     "/revenue — касса (Stars/Gram) · /health — снимок JSON\n"
     "/resetgame confirm [keepstory] — полный сброс ⚠️\n"
     "Картинки-заглушки дорисовываются сами через 15 мин после анонса."
@@ -1598,10 +1870,21 @@ _PANEL_FOOTER = (
 async def _admin_panel_text(session=None) -> str:
     """Сводка состояния игры + подсказки по командам, одним сообщением."""
     from app.ops import snapshot
+    from app.ops import is_game_paused as _paused_flag
+    from app.ops import paused_reason as _pause_reason
     from app.season import act_line_short, get_cached_anchor, run_position
 
     snap = await snapshot()
     lines = ["🎛 <b>ПУЛЬТ ХРАНИТЕЛЯ</b>"]
+    try:
+        async with SessionLocal() as pause_session:
+            if await _paused_flag(pause_session):
+                lines.append(
+                    f"⏸ ИГРА НА ПАУЗЕ ({await _pause_reason(pause_session) or 'техработы'}) "
+                    "— снять: /resume. Входящие переводы возвращаются автоматически."
+                )
+    except Exception:
+        pass
     rnd = snap.get("round") or {}
     closing = str(rnd.get("voting_ends_at", ""))[11:16]
     lines.append(
@@ -1702,8 +1985,21 @@ async def _admin_panel_text(session=None) -> str:
     return "\n".join(lines) + _PANEL_FOOTER
 
 
-def _panel_keyboard() -> InlineKeyboardMarkup:
-    """Кнопочный пульт хранителя: обновление и безопасные действия."""
+async def _panel_keyboard() -> InlineKeyboardMarkup:
+    """Кнопочный пульт хранителя: обновление и безопасные действия.
+
+    Кнопка стоп-крана живёт здесь же: подпись зависит от текущего
+    состояния (пауза/работа), поэтому клавиатура пересобирается на каждый показ.
+    """
+    from app.ops import is_game_paused
+
+    async with SessionLocal() as session:
+        paused = await is_game_paused(session)
+    pause_button = (
+        InlineKeyboardButton(text="▶️ Возобновить игру", callback_data="panel:resume")
+        if paused
+        else InlineKeyboardButton(text="⏸ Пауза игры", callback_data="panel:pause")
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1713,6 +2009,10 @@ def _panel_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🏛 Казначей", callback_data="panel:treasury"),
                 InlineKeyboardButton(text="💰 Касса", callback_data="panel:revenue"),
+            ],
+            [
+                InlineKeyboardButton(text="⚖️ Сверка казны", callback_data="panel:adjust"),
+                pause_button,
             ],
             [InlineKeyboardButton(text="⏩ Завершить день", callback_data="panel:advance")],
         ]
@@ -1726,7 +2026,7 @@ async def cmd_panel(message: Message) -> None:
         return
     async with SessionLocal() as session:
         text = await _admin_panel_text(session)
-    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard())
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=await _panel_keyboard())
 
 
 @router.callback_query(F.data.startswith("panel:"))
@@ -1742,13 +2042,58 @@ async def on_panel_action(callback: CallbackQuery) -> None:
                 text = await _admin_panel_text(session)
             if callback.message is not None:
                 await callback.message.edit_text(
-                    text, parse_mode=ParseMode.HTML, reply_markup=_panel_keyboard()
+                    text, parse_mode=ParseMode.HTML, reply_markup=await _panel_keyboard()
                 )
             await callback.answer("Обновлено.")
             return
         if action == "payouts":
             await callback.message.answer(await _payouts_text())
             await callback.answer("Список ниже.")
+            return
+        if action == "adjust":
+            await callback.message.answer(
+                await _adjust_menu_text(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_adjust_keyboard(),
+            )
+            await callback.answer()
+            return
+        if action in {"pause", "resume"}:
+            # Стоп-кран с последствиями: первый тап предупреждает,
+            # повторный тап той же кнопки в течение двух минут — делает.
+            want_paused = action == "pause"
+            confirm_key = (callback.from_user.id, callback.data or "")
+            now = time.monotonic()
+            pending_at = _ADJ_PENDING.get(confirm_key)
+            if pending_at is None or now - pending_at > _ADJ_CONFIRM_WINDOW:
+                _ADJ_PENDING[confirm_key] = now
+                confirm = (
+                    "Остановить игру: дни замрут, входящие переводы пойдут обратно "
+                    "с пометкой о техработах. Нажми кнопку ещё раз для подтверждения."
+                    if want_paused
+                    else "Возобновить игру? Новый день откроется сам в ближайший тик. "
+                    "Нажми кнопку ещё раз для подтверждения."
+                )
+                await callback.answer(confirm, show_alert=True)
+                return
+            _ADJ_PENDING.pop(confirm_key, None)
+            changed, delivered = await _set_paused_and_broadcast(
+                callback.bot, want_paused, "технические работы"
+            )
+            if not changed:
+                await callback.answer(
+                    "Игра уже на паузе." if want_paused else "Игра и так идёт.",
+                    show_alert=True,
+                )
+                return
+            chats = f" Анонс в {delivered} чат(ах)." if delivered else ""
+            if callback.message is not None:
+                await callback.message.answer(
+                    ("⏸ Игра остановлена." if want_paused else "▶️ Игра возобновляется.")
+                    + chats
+                    + (" Снять паузу: /resume" if want_paused else "")
+                )
+            await callback.answer("Готово.")
             return
         if action == "treasury":
             from app.ton_pay import treasury_diagnostics
@@ -1798,9 +2143,16 @@ async def on_panel_action(callback: CallbackQuery) -> None:
 
 
 async def _revenue_text() -> str:
-    """Касса игры: ledger доходов из Income (для /revenue и пульта)."""
+    """Касса игры: ledger доходов из Income (для /revenue и пульта).
+
+    Корректировки казны (manual_out/manual_in из /adjust) доходом не
+    считаются — они видны в /treasury отдельной строкой.
+    """
+    from app.ops import MANUAL_IN_KIND, MANUAL_OUT_KIND
+
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    revenue_kinds = Income.kind.notin_([MANUAL_OUT_KIND, MANUAL_IN_KIND])
 
     def _block(title: str, data) -> str:
         parts = []
@@ -1820,7 +2172,7 @@ async def _revenue_text() -> str:
                     func.coalesce(func.sum(Income.amount_stars), 0),
                     func.coalesce(func.sum(Income.amount_nanotons), 0),
                 )
-                .where(Income.created_at >= month_start)
+                .where(Income.created_at >= month_start, revenue_kinds)
                 .group_by(Income.kind)
             )
         ).all()
@@ -1831,7 +2183,9 @@ async def _revenue_text() -> str:
                     func.count(),
                     func.coalesce(func.sum(Income.amount_stars), 0),
                     func.coalesce(func.sum(Income.amount_nanotons), 0),
-                ).group_by(Income.kind)
+                )
+                .where(revenue_kinds)
+                .group_by(Income.kind)
             )
         ).all()
     return (

@@ -56,6 +56,7 @@ _SQLITE_COLUMN_DDL = {
         "attempts": "ALTER TABLE payouts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
         "alerted": "ALTER TABLE payouts ADD COLUMN alerted BOOLEAN NOT NULL DEFAULT 0",
         "last_error": "ALTER TABLE payouts ADD COLUMN last_error VARCHAR(200)",
+        "comment_override": "ALTER TABLE payouts ADD COLUMN comment_override VARCHAR(120)",
     },
 }
 
@@ -133,6 +134,10 @@ async def init_db() -> None:
             # Причина последней неудачи отправки: /payouts и алерты показывают её сами.
             await conn.execute(text(
                 "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)"
+            ))
+            # Свободный комментарий перевода (возвраты при паузе игры).
+            await conn.execute(text(
+                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)"
             ))
             # План Хозяина Ошибки не влезал в VARCHAR(255): ронял тик до
             # создания следующего дня. Расширяем до TEXT, но только когда это

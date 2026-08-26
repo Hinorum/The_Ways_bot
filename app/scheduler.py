@@ -281,9 +281,15 @@ async def _personal_echo_job(round_id: int) -> None:
 
 async def tick(bot: Bot | None = None) -> None:
     bot = bot or _bot
-    from app.ops import mark_tick
+    from app.ops import is_game_paused, mark_tick
 
     await mark_tick()
+    # Стоп-кран: дни не открываются и не закрываются, анонсы молчат.
+    # Watcher (отдельная джоба) продолжает возвращать входящие переводы,
+    # а очередь выплат — разгребаться: чужие деньги зависнуть не должны.
+    async with SessionLocal() as session:
+        if await is_game_paused(session):
+            return
     async with SessionLocal() as session:
         previous = await get_latest_round(session)
         current = await ensure_current_round(session)

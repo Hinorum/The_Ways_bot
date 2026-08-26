@@ -37,6 +37,8 @@ def _message_event(chat_id: int = 555_002) -> SimpleNamespace:
 async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -> None:
     monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
     # Алерт хранителю идёт отдельным каналом: не мешаем счётчикам игрока.
+    # Хранитель должен быть задан явно: тест не зависит от ADMIN_IDS машины.
+    monkeypatch.setattr(settings, "admin_ids", "42")
     sent_admin: list[str] = []
 
     async def fake_notify(bot, text) -> None:

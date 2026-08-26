@@ -90,6 +90,12 @@ async def register_stake(
         return "disabled"
     if round_row.status != RoundStatus.OPEN:
         return "closed"
+    # Стоп-кран игры: ставка не создаётся, даже если сюда пришли напрямую,
+    # минуя watcher (который при паузе и так возвращает переводы).
+    from app.ops import is_game_paused
+
+    if await is_game_paused(session):
+        return "paused"
     duplicate = await session.execute(select(Stake.id).where(Stake.tx_hash == tx_hash))
     if duplicate.scalar_one_or_none() is not None:
         return "duplicate_tx"
