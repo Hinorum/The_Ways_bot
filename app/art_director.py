@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 ART_SYSTEM_PROMPT = (
     "Ты — арт-директор визуальной новеллы по мотивам тёмной сказки о стае "
     "бездомных собак-путешественников у цифровых порталов. Мир: Эхо Стаи. "
+    "ВИЗУАЛЬНЫЙ СТИЛЬ СЕРИИ — flat 2D vector cartoon, cozy-dystopia: смелые "
+    "чистые контуры, приглушённые матовые цвета, никакой фотореалистичности, "
+    "3D-рендера или аниме. Кадр читается как иллюстрация к сказке, а не как "
+    "живое фото. "
     + settings.world_brief
     + " Твоя задача — придумать визуальный язык ОДНОГО игрового дня: "
     "единственный широкий кинематографичный кадр, который показывает мир "
@@ -48,8 +52,10 @@ _NEGATIVE_SUFFIX = (
     "no poster layout, no frames, no borders"
     # Антидрейф стиля (уроки промпт-пака): free-модели уползают в фотореализм,
     # 3D-рендер или аниме-скрин без явных запретов; руки/лишние конечности —
-    # типовые артефакты существ в кадре.
+    # типовые артефакты существ в кадре. Серия — flat 2D vector cozy-dystopia,
+    # поэтому запрещаем и «живописные» текстуры.
     ", photorealistic, 3D render, realistic fur, anime screencap, glossy render, "
+    "digital painting, oil painting, painterly texture, watercolor wash, "
     "human hands, extra limbs, deformed face, cluttered background"
 )
 
@@ -67,17 +73,21 @@ _CARD_COMPOSITIONS = [
     "top-down view of a small figure",
 ]
 _CAMERA_TEXTURES = [
-    "35mm film grain, cinematic still",
-    "matte painting detail, soft depth of field",
-    "ink-and-watercolor accents over digital painting",
-    "anamorphic lens flare, subtle chromatic fringe",
+    "flat 2D vector illustration, bold clean outlines, matte colors",
+    "limited flat color palette, hard-edged shapes, storybook illustration",
+    "bold contour lines, no gradients, cozy-dystopia paper-cutout feel",
+    "flat graphic novel panel, muted matte finish, subtle grain",
 ]
 
+# Гамма серии (cozy-dystopia, flat-vector): песочно-бежевый / жжёно-оранжевый /
+# пыльно-бирюзовый / угольный — база; неоново-радиоактивно-красный / монетно-
+# золотой / кислотно-зелёный — акценты. Цветовая семантика (см. ART_SYSTEM_PROMPT)
+# не меняется: красное — Хозяин Ошибки, бирюза — порталы, золото — миски/память.
 _PALETTE_ROTATION = [
-    ("muted teal and ember orange with deep violet shadows", "volumetric god rays through fog"),
-    ("cold slate blue with amber lantern light", "cold moonlit rim light"),
-    ("dusty rose and rusted copper with teal dusk", "warm ember glow"),
-    ("abyssal green-black with bioluminescent turquoise", "bioluminescent haze"),
+    ("sandy beige and burnt orange with dusty teal shadows, charcoal linework", "soft hazy dusk glow"),
+    ("dusty teal and charcoal with coin-gold lantern light", "cold moonlit rim light"),
+    ("burnt orange and sandy beige with acid-green accents", "warm ember glow"),
+    ("charcoal and dusty teal with neon radioactive-red glints", "bioluminescent haze"),
 ]
 
 

@@ -59,6 +59,7 @@ def default_anchor(moment: datetime) -> dict:
     return {
         "dom": day_of_month_of(moment),
         "key": season_key(moment),
+        "season": 1,
         "order_axis": order,
         "moral_axis": moral,
     }
@@ -82,6 +83,8 @@ def parse_anchor(raw: str | None) -> dict | None:
         if not 1 <= dom <= 31 or not 1 <= month <= 12:
             return None
         anchor: dict = {"dom": dom, "key": f"{year:04d}-{month:02d}"}
+        if isinstance(data.get("season"), int) and data["season"] >= 1:
+            anchor["season"] = data["season"]
         for axis in ("order_axis", "moral_axis"):
             if isinstance(data.get(axis), int):
                 anchor[axis] = _clamp_axis(data[axis])
@@ -105,12 +108,25 @@ def get_cached_anchor(moment: datetime | None = None) -> dict:
     return default_anchor(moment or datetime.now(timezone.utc))
 
 
-def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
-    """(день забега, длина забега).
+def _epoch_total(start_date: date, months: int) -> int:
+    """Число дней в арке длиной `months` месяцев от `start_date` (включительно)."""
+    months = max(1, int(months))
+    end_month_index = (start_date.month - 1) + months
+    end_year = start_date.year + end_month_index // 12
+    end_month = end_month_index % 12 + 1
+    end_day = min(start_date.day, calendar.monthrange(end_year, end_month)[1])
+    end_date = date(end_year, end_month, end_day) - timedelta(days=1)
+    return max(1, (end_date - start_date).days + 1)
 
-    Длина арки = RUN_LENGTH_MONTHS месяцев от месяца-старта (по умолчанию
-    два — сюжетная линия держит интригу два месяца). Копилки недели/месяца
-    при этом остаются календарными. Если забег длиннее арки — она циклится.
+
+def _run_position_full(anchor: dict, moment: datetime) -> tuple[int, int, int]:
+    """(день_в_сезоне, длина_сезона, номер_сезона).
+
+    Сезоны — последовательные эпохи: сезон 1 длится first_season_months,
+    сезоны 2+ — run_length_months. Так первый сезон короткий и плотный
+    («сильный»), а дальше арки длиннее, и у второго месяца появляется своя
+    награда месячного лидерборда. Отсчёт идёт от стартовой даты якоря, поэтому
+    функция чистая и не требует состояния между вызовами.
     """
     from app.config import settings as _settings
 
@@ -120,22 +136,44 @@ def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     today = moment.astimezone(timezone.utc).date()
-    raw = (today - start).days + 1
+    abs_days = (today - start).days + 1
 
-    months = max(1, int(_settings.run_length_months))
-    # Конец арки: старт + N месяцев − 1 день (включительно).
-    end_month_index = (month - 1) + months
-    end_year = year + end_month_index // 12
-    end_month = end_month_index % 12 + 1
-    end_day = min(dom, calendar.monthrange(end_year, end_month)[1])
-    end_date = date(end_year, end_month, end_day) - timedelta(days=1)
-    total = max(1, (end_date - start).days + 1)
+    season = 1
+    epoch_start = start
+    remaining = abs_days
+    if remaining < 1:
+        # Часовой пояс/гонка часов: считаем первым днём сезона 1.
+        return 1, _epoch_total(epoch_start, _settings.first_season_months), 1
+    guard = 0
+    while True:
+        months = (
+            _settings.first_season_months if season == 1
+            else _settings.run_length_months
+        )
+        total_k = _epoch_total(epoch_start, months)
+        if remaining <= total_k:
+            return remaining, total_k, season
+        remaining -= total_k
+        epoch_start = epoch_start + timedelta(days=total_k)
+        season += 1
+        guard += 1
+        if guard > 200:
+            # Страховка от зацикливания при кривых настройках длин.
+            return max(1, remaining), max(1, total_k), season
 
-    if raw < 1:
-        # Часовой пояс/гонка часов: считаем первым днём.
-        raw = 1
-    run_day = ((raw - 1) % total) + 1
+
+def run_position(anchor: dict, moment: datetime) -> tuple[int, int]:
+    """(день забега, длина забега). Длина арки зависит от номера сезона
+    (см. _run_position_full): сезон 1 короче, сезоны 2+ длиннее.
+    Копилки недели/месяца остаются календарными."""
+    run_day, total, _season = _run_position_full(anchor, moment)
     return run_day, total
+
+
+def current_season(anchor: dict, moment: datetime) -> int:
+    """Номер текущего сезона (эпохи) для якоря и момента."""
+    _run_day, _total, season = _run_position_full(anchor, moment)
+    return season
 
 
 def run_days_left(run_day: int, total: int) -> int:
@@ -153,12 +191,19 @@ def act_number(run_day: int) -> int:
     return 1 if run_day <= 7 else 2
 
 
+def _crisis_window(total: int) -> int:
+    """Длина кризисного акта масштабируется с длиной сезона: у короткого сезона —
+    7 дней, у длинного (два месяца) — заметно больше, чтобы вторая половина
+    арки реально набирала напряжение, а не сползала в плоский плато."""
+    return max(7, total // 5)
+
+
 def crisis_act(run_day: int, total: int) -> bool:
-    """Последние семь дней забега — третий акт."""
-    return total - run_day < 7
+    """Последние дни забега (окно _crisis_window) — третий акт."""
+    return total - run_day < _crisis_window(total)
 
 
-def act_line(run_day: int, total: int) -> str:
+def act_line(run_day: int, total: int, season: int | None = None) -> str:
     act = 3 if crisis_act(run_day, total) else act_number(run_day)
     tone = _ACT_TONE[act]
     left = run_days_left(run_day, total)
@@ -167,7 +212,8 @@ def act_line(run_day: int, total: int) -> str:
         if left == 0
         else f"До Дня Первого Лая осталось {left} дн."
     )
-    return f"Сезон: акт {act}. {tone} {tail}"
+    season_tag = f"Сезон {season}. " if season else ""
+    return f"{season_tag}Акт {act}. {tone} {tail}"
 
 
 # ---------- Нрав стаи: две оси D&D (Порядок × Мораль) ----------
@@ -177,18 +223,38 @@ AXIS_MIN, AXIS_MAX = -2, 2
 # если так решил рандом — гарантированного смещения ни в одну сторону нет.
 _AXIS_START_POOL = (-2, -1, 0, 1, 2)
 
-# Дрейф от тега победившего пути: забота добреет, риск беснуется к хаосу,
-# хитрость — расчётливая работа с архивом: подлее и «по правилам изнанки».
-_ALIGNMENT_DRIFT: dict[str, dict[str, int]] = {
-    "care": {"moral_axis": +1},
+# Дрейф от тега победившего пути. Оси развязаны: у каждой оси есть и «+», и «−»
+# драйверы среди разных тегов, так что порядок и мораль не заперты одной связкой.
+#   care    (добрые-законопослушные):  порядок +1, мораль +1
+#   risk    (хаотики):                  порядок −1, мораль ±1 (знак от сида дня)
+#   cunning (расчётливые-законники):    порядок +1, мораль −1
+# Характер хаоса: беспорядок всегда (порядок −1), но его мораль непредсказуема —
+# хаотик бывает и добрым, и злым (как в D&D: хаос ≠ зло). Знак морали выбирается
+# детерминированно от сида дня победы (см. apply_alignment_drift), благодаря чему
+# достижима и диагональ «добрые-хаотики» (−порядок, +мораль), которая иначе
+# выпадала из покрытия.
+_ALIGNMENT_DRIFT: dict[str, dict[str, object]] = {
+    "care": {"moral_axis": +1, "order_axis": +1},
+    "risk": {"order_axis": -1, "moral_axis": lambda rng: rng.choice((+1, -1))},
     "cunning": {"moral_axis": -1, "order_axis": +1},
-    "risk": {"order_axis": -1},
 }
 
 
 def roll_axes() -> tuple[int, int]:
     """Случайный ненулевой старт обеих осей."""
     return random.choice(_AXIS_START_POOL), random.choice(_AXIS_START_POOL)
+
+
+def season_base_axes(anchor_key: str, season: int) -> tuple[int, int]:
+    """Детерминированные стартовые оси для нового сезона.
+
+    При смене эпохи оси перекатываются: визуальный и нарративный характер
+    мира обновляются, а не тянутся из прошлого сезона. Дрейф от голосов
+    стаи начинается заново с новой стартовой точки.
+    """
+    digest = hashlib.sha256(f"axes:{anchor_key}:{season}".encode()).hexdigest()
+    rng = random.Random(int(digest[:16], 16))
+    return rng.choice(_AXIS_START_POOL), rng.choice(_AXIS_START_POOL)
 
 
 def _clamp_axis(value: int) -> int:
@@ -203,20 +269,31 @@ def anchor_axes(anchor: dict) -> tuple[int, int]:
     )
 
 
-def apply_alignment_drift(anchor: dict, tag: str) -> tuple[int, int, bool]:
+def apply_alignment_drift(
+    anchor: dict, tag: str, seed: int | str | None = None
+) -> tuple[int, int, bool]:
     """Двигает оси якоря по тегу победившего пути (мутация + возврат).
 
     Возвращает (порядок, мораль, изменилось_ли).
+
+    seed — стабильный сид дня победы (обычно day_index). Нужен для тегов
+    с неоднозначным направлением (хаос): знак морали выбирается
+    детерминированно от сида, чтобы дрейф был воспроизводим, а не «настоящий
+    рандом», который рвал бы аудит и реконструкцию дня.
     """
     moved = _ALIGNMENT_DRIFT.get(tag)
+    if not moved:
+        return anchor_axes(anchor), False
+    rng = _rng(f"drift:{tag}:{seed}") if seed is not None else None
     changed = False
-    if moved:
-        for key, delta in moved.items():
-            current = _clamp_axis(anchor.get(key, 0))
-            fresh = _clamp_axis(current + delta)
-            if fresh != current:
-                anchor[key] = fresh
-                changed = True
+    for key, delta in moved.items():
+        if callable(delta):
+            delta = delta(rng)
+        current = _clamp_axis(anchor.get(key, 0))
+        fresh = _clamp_axis(current + delta)
+        if fresh != current:
+            anchor[key] = fresh
+            changed = True
     order, moral = anchor_axes(anchor)
     return order, moral, changed
 
@@ -327,12 +404,13 @@ def milestone_line(run_day: int, total: int) -> str | None:
     return _WEATHER_POOL[rng.randrange(len(_WEATHER_POOL))]
 
 
-def act_line_short(run_day: int, total: int) -> str:
+def act_line_short(run_day: int, total: int, season: int | None = None) -> str:
     """Короткая строка акта для пульта/статусов без тонального абзаца."""
     act = 3 if crisis_act(run_day, total) else act_number(run_day)
     left = run_days_left(run_day, total)
     tail = "финал сегодня" if left == 0 else f"до Лая {left} дн."
-    return f"Акт {act} · {tail}"
+    season_tag = f"Сезон {season} · " if season else ""
+    return f"{season_tag}Акт {act} · {tail}"
 
 
 def tag_balance_line(balance: dict[str, int]) -> str:
@@ -365,17 +443,43 @@ def finale_instruction(
     )
 
 
-def opener_instruction(previous_finale_summary: str | None) -> str:
-    """Первый день нового сезона: мир помнит, чем закрылся прошлый."""
+def opener_instruction(previous_finale_summary: str | None, season: int = 1) -> str:
+    """Первый день нового сезона: мир помнит, чем закрылся прошлый.
+
+    Сезон 1: нет прошлого — opener не показывается (возвращается пустая строка).
+    Сезон 2+: мир помнит осадок финала, короткое напоминание без повтора.
+    """
+    if season == 1 and not previous_finale_summary:
+        return ""
     base = (
-        "НОВЫЙ СЕЗОН: прошёл сезон, и он закрылся Днём Первого Лая. Счёты "
-        "обнулены копилкой лидеров, но память сети жива — мир носит шрамы "
-        "и подарки того решения. Не пересказывай финал, покажи его осадок: "
-        "чем пахнет утро после Лая."
+        "НОВЫЙ СЕЗОН: мир помнит осадок прошлого Лая. Счёты обнулены, "
+        "но память сети жива — шрамы и подарки прошлого решения остались. "
+        "Не пересказывай финал, покажи его осадок: чем пахнет утро после Лая."
     )
     if previous_finale_summary:
         base += f" Осадок прошлого финала: {previous_finale_summary}"
     return base
+
+
+_CULMINATION_BLOCK = (
+    "КУЛЬМИНАЦИЯ АРКИ: до Лая остались считанные дни, и оба плана вышли из тени. "
+    "Хозяин Ошибки достраивает свой коридор в открытую, Еретик держит второй — "
+    "и стая голосует уже не «за мир», а за то, чей коридор короче. Покажи мир "
+    "на пределе натяжения: тропы звенят, порталы считают стаю вслух, каждый "
+    "жест отзывается эхом в мисках. Финал не случится «потом» — он уже начался."
+)
+
+
+def season_banner(anchor: dict, moment: datetime) -> str | None:
+    """Анонс нового сезона для поста дня. None, если сезон не сменился."""
+    run_day, _total, season = _run_position_full(anchor, moment)
+    if run_day == 1 and season > 1:
+        return (
+            f"НОВЫЙ СЕЗОН {season}. Прошлый закрылся Днём Первого Лая, и мир "
+            "пересобрался заново: другая длина арки, другой счёт до финала. "
+            "Стая помнит осадок прошлого Лая — но правила этого сезона пишутся сейчас."
+        )
+    return None
 
 
 def season_block(
@@ -387,22 +491,29 @@ def season_block(
 ) -> str:
     """Готовый блок для промпта главы по якорю забега."""
     run_day, total = run_position(anchor, moment)
+    season = current_season(anchor, moment)
     order_axis, moral_axis = anchor_axes(anchor)
     if is_run_finale(run_day, total):
         return finale_instruction(
             balance or {}, alignment=alignment_label(order_axis, moral_axis)
         )
-    block = act_line(run_day, total)
+    block = act_line(run_day, total, season)
     if run_day == 1:
-        block += "\n" + opener_instruction(previous_season_summary)
+        opener = opener_instruction(previous_season_summary, season=season)
+        if opener:
+            block += "\n" + opener
     elif run_day == 2 and previous_season_summary:
-        # Второй день ещё держит осадок финала, если день 1 собран до сброса.
-        block += "\n" + opener_instruction(previous_season_summary)
+        opener = opener_instruction(previous_season_summary, season=season)
+        if opener:
+            block += "\n" + opener
+    banner = season_banner(anchor, moment)
+    if banner:
+        block += "\n" + banner
     # Пролог забега: первые семь дней знакомят стаю с миром и лицами.
     from app.prologue import prologue_block
 
     pblock = prologue_block(
-        run_day, alignment_label=alignment_label(order_axis, moral_axis)
+        run_day, alignment_label=alignment_label(order_axis, moral_axis), season=season
     )
     if pblock:
         block += "\n" + pblock
@@ -410,6 +521,8 @@ def season_block(
     block += "\n" + alignment_block(order_axis, moral_axis)
     if midpoint_day(run_day, total):
         block += "\n" + _MIDPOINT_BLOCK
+    if crisis_act(run_day, total):
+        block += "\n" + _CULMINATION_BLOCK
     return block
 
 
@@ -470,7 +583,7 @@ _VILLAIN_STAGE_TONE = {
 
 def villain_stage(run_day: int, total: int) -> int:
     """Ступень плана Хозяина Ошибки для дня забега (0..3)."""
-    if total - run_day < 7:
+    if total - run_day < _crisis_window(total):
         return 3
     if run_day >= max(8, total // 2):
         return 2
@@ -490,10 +603,13 @@ def midpoint_day(run_day: int, total: int) -> bool:
 
 
 _MIDPOINT_BLOCK = (
-    "ПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки впервые действует открыто — "
-    "мир на глазах «чинится» чужой рукой. Архив запечатал урну, а закон "
-    "дня принадлежит Середняку. Покажи, как удобно стало тропам — и как "
-    "неуютно от этого стало стае."
+    "ПОВОРОТ СЕРЕДИНЫ. Сегодня мир перешагивает рубикон — это не просто "
+    "очередной день, а само событие перелома. Хозяин Ошибки впервые действует "
+    "открыто: тропы на глазах выпрямляются под чужой линейкой, урна в Архиве "
+    "запечатана наглухо, а закон дня отдан Середняку — стая голосует вслепую. "
+    "Покажи сам момент разлома: как удобно и гладко стало картам и как холодно "
+    "от этой чужой аккуратности стае. Сегодняшний выбор — первая проба того, "
+    "чьим коридором пойдёт остаток сезона."
 )
 
 

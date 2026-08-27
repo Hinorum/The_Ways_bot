@@ -104,14 +104,33 @@ def status_text(round_row: Round) -> str:
         )
     else:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
+    banner = _season_banner_line(round_row)
     text = (
         f"{_clamp(round_row.chapter_text, 2600)}\n\n"
         f"{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
+    if banner:
+        text = f"📢 {banner}\n\n{text}"
     season_line = _season_status_line(round_row)
     if season_line:
         text += f"\n{season_line}"
     return text[:_MAX_TEXT_LEN]
+
+
+def _season_banner_line(round_row: Round) -> str | None:
+    """Баннер нового сезона: показывается один раз в день 1 сезона >1."""
+    try:
+        from app.season import get_cached_anchor, season_banner
+
+        moment = round_row.opens_at or round_row.voting_ends_at
+        if getattr(moment, "tzinfo", None) is None:
+            from datetime import timezone as _tz
+
+            moment = moment.replace(tzinfo=_tz.utc)
+        cached = get_cached_anchor(moment)
+        return season_banner(cached, moment)
+    except Exception:
+        return None
 
 
 def _season_status_line(round_row: Round) -> str | None:
