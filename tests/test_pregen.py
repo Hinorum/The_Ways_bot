@@ -67,6 +67,16 @@ async def _seed_tallying_day(session) -> Round:
         winner_card=0,
         vote_counts_json='{"0": 3}',
     )
+    for position in (0, 1, 2):
+        round_row.cards.append(
+            Card(
+                position=position,
+                title=f"Тропа {position}",
+                description="Описание.",
+                consequence=f"Итог пути {position}.",
+                image_path="",
+            )
+        )
     session.add(round_row)
     await session.commit()
     return round_row
@@ -81,26 +91,39 @@ async def test_prepare_next_day_creates_prepared(session) -> None:
     assert prepared is not None
     payload = json.loads(prepared.payload)
     assert payload["day_index"] == 6
-    assert payload["chapter_title"]
-    assert len(payload["cards"]) == 3
+    # Фаза 1 кладёт три полные ветки дня (по одной на путь «вчера»).
+    assert set(payload["branches"].keys()) == {"0", "1", "2"}
+    for branch in payload["branches"].values():
+        assert branch["chapter_title"]
+        assert len(branch["cards"]) == 3
+    # Плоской top-level главы ещё нет: её разложит патч победителя (фаза 2).
+    assert not payload.get("chapter_title")
     # Лок снят после успеха.
     assert await session.get(WatcherState, "pregen_lock:6") is None
 
 
-async def test_pregen_phase_one_waits_for_outcome(session) -> None:
-    """Фаза 1 (час подсчёта): итог дня ещё не вскрыт — глава без отголоска."""
+async def test_pregen_phase_one_builds_three_branches(session) -> None:
+    """Фаза 1 (час подсчёта): три полные ветки дня — по одной на каждый из
+    трёх путей «вчера». Итог ещё не вскрыт, поэтому ветки не патчатся — их
+    выберет patch_prepared_day по фактическому победителю."""
     round_row = await _seed_tallying_day(session)
     assert await prepare_next_day(session, round_row.day_index) is True
     payload = json.loads((await session.get(PreparedDay, 6)).payload)
     assert int(payload["v"]) == PREPARED_PAYLOAD_VERSION
-    # Офлайн-глава в обычном режиме начинает с эха «вчера стая выбрала…»;
-    # в фазе 1 этого быть не должно: исход ещё неизвестен.
-    assert not payload["chapter_text"].startswith("Сеть стала")
-    assert "Вчера стая выбрала" not in payload["chapter_text"]
+    branches = payload["branches"]
+    assert len(branches) == 3
+    # Каждая ветка — полная глава с началом от своего итога (не «затычка»).
+    for branch in branches.values():
+        assert branch["chapter_title"]
+        assert branch["chapter_text"]
+        assert len(branch["cards"]) == 3
+    # Сетевой вызов генератора не понадобился при извлечении веток.
+    assert not payload.get("chapter_title")
 
 
 async def test_patch_applies_outcome_and_survives_materialization(session, monkeypatch) -> None:
-    """Фаза 2: готовый вариант эха под победителя ставится перед сценой."""
+    """Фаза 2: по победителю (winner_card=0) выбрана его ветка, разложена в
+    плоский payload и нарисована её обложка; материализация мгновенная."""
     from app import rounds as rounds_mod
 
     round_row = await _seed_tallying_day(session)
@@ -118,21 +141,18 @@ async def test_patch_applies_outcome_and_survives_materialization(session, monke
     round_row.epilogue_text = "Ночь прошла тревожно: кабель трещал во сне."
     await session.commit()
 
-    async def explode(**kwargs):
-        raise AssertionError("готовые варианты не требуют сетевого вызова")
-
-    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
-
     payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
-    expected = payload_before["echo_variants"]["0"]
+    expected_branch = payload_before["branches"]["0"]
 
     assert await patch_prepared_day(session, round_row) is True
     patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"].startswith(expected)
+    assert patched["chapter_text"] == expected_branch["chapter_text"]
+    assert "branches" not in patched
+    assert patched.get("cover_path", "").endswith("_cover.jpg")
 
     created_round, created = await create_next_round_detailed(session)
     assert created is True
-    assert created_round.chapter_text.startswith(expected)
+    assert created_round.chapter_text == expected_branch["chapter_text"]
 
 
 async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None:
@@ -150,7 +170,7 @@ async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None
 
 
 async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> None:
-    """Варианты эха уже офлайн (сеть молчала в прегене) — патч ставит их."""
+    """Патч берёт ветку победителя из готовых (даже если генерации были офлайн)."""
 
     round_row = await _seed_tallying_day(session)
     assert await prepare_next_day(session, round_row.day_index) is True
@@ -166,11 +186,11 @@ async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> N
     await session.commit()
 
     payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
-    expected = payload_before["echo_variants"]["0"]  # вариант под winner_card=0
+    expected_branch = payload_before["branches"]["0"]  # ветка под winner_card=0
 
     assert await patch_prepared_day(session, round_row) is True
     patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"].startswith(expected)
+    assert patched["chapter_text"] == expected_branch["chapter_text"]
 
 
 async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:

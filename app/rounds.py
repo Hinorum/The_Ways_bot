@@ -457,6 +457,51 @@ def guest_blocks_for(day_index: int) -> set[str]:
     return {_GUEST_POOL[first], _GUEST_POOL[second]}
 
 
+async def _cover_art_for_chapter(
+    session: AsyncSession,
+    chapter: dict,
+    beats: list[str],
+    echoes: list,
+    day_index: int,
+    order_axis: int,
+    moral_axis: int,
+) -> str:
+    """Обложка дня: библия арта + сетевой fetch (или PIL-фолбэк на месте).
+
+    Вынесено из _plan_and_render, чтобы фаза 2 прегенерации могла рисовать
+    обложку только победившей ветки (лимиты на картинки не тратятся на
+    ветки, которые игроки не увидят). Возвращает готовый путь к файлу.
+    """
+    echo_motifs = sorted({_ECHO_ART_MOTIFS.get(e.kind, "portal hum haze") for e in echoes})
+    hero_motifs = character_motifs_for(f"{chapter.get('title', '')} {chapter.get('text', '')}")
+    from app.season import alignment_motifs
+
+    align_motifs = alignment_motifs(order_axis, moral_axis)
+    anchor = await _load_art_anchor(session)
+    bible = await plan_day_art(
+        chapter, beats, anchor=anchor,
+        extra_motifs=sorted(set(echo_motifs + hero_motifs + align_motifs)),
+    )
+    bible["motifs"] = align_motifs + [m for m in (bible.get("motifs") or []) if m not in align_motifs]
+    await _save_art_anchor(session, bible)
+
+    media_root = Path(settings.media_dir)
+    cover_path = media_root / f"day{day_index}_cover.jpg"
+    day_seed = 10_000 + day_index * 7
+    cover_seed = place_seed_for(chapter.get("place")) or day_seed
+    fetched_cover = await fetch_day_image(
+        build_image_prompt(bible, "cover", seed=cover_seed),
+        short_image_prompt(bible, "cover", seed=cover_seed),
+        cover_path,
+        seed=cover_seed,
+        width=1280,
+        height=720,
+    )
+    if not fetched_cover:
+        await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
+    return str(cover_path)
+
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -469,7 +514,9 @@ async def _plan_and_render(
     который материализуется в раунд за миллисекунды.
 
     pending_outcome=True — фаза 1 прегенерации: итог «вчера» ещё не вскрыт,
-    поэтому глава пишется без отголоска (его допишет patch_prepared_day).
+    поэтому вместо одной нейтральной главы собираются ТРИ полные ветки дня
+    (по одной на каждый из трёх путей «вчера»). Обложки не генерятся: арт
+    получит только победившая ветка в patch_prepared_day (фаза 2).
     """
     beats = await previous_beats(session)
     echoes = await collect_due_echoes(session, day_index)
@@ -574,6 +621,65 @@ async def _plan_and_render(
         )
     except Exception:
         focus_line = None
+    if pending_outcome:
+        # Фаза 1 прегенерации: вместо одной нейтральной главы собираем ТРИ
+        # полные ветки дня — по одной на каждый из путей «вчера» (итог ещё
+        # неизвестен). Каждая ветка пишется как продолжение своего пути: хвост
+        # канона подменяется на карту этого пути, поэтому глава сама открывается
+        # его итогом и развивает его (pending_outcome=False). Обложки не тратим:
+        # арт получит только победившая ветка в patch_prepared_day.
+        current_row = (
+            await session.execute(
+                select(Round)
+                .options(selectinload(Round.cards))
+                .order_by(Round.day_index.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        source_cards = sorted(current_row.cards, key=lambda c: c.position) if current_row else []
+        base_beats = beats[:-1] if beats else []
+        branches: dict[str, dict] = {}
+        for card in source_cards:
+            branch_beats = base_beats + [f"{card.title}: {card.consequence}"]
+            blk = await generate_chapter(
+                day_index, branch_beats, rule,
+                echoes=echoes if "echoes" in guests else [],
+                distant_echoes=distant if "distant" in guests else [],
+                season_block=sblock, places_block=places_block,
+                villain_block=villain, sealed=sealed_day(day_index) or twist,
+                pending_outcome=False,
+                salt=run_salt,
+                alignment_block=alignment_block(order_axis, moral_axis),
+                tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
+                focus_line=focus_line,
+            )
+            cards_payload = [
+                {
+                    "position": position,
+                    "title": c["title"],
+                    "description": c["description"],
+                    "consequence": c["consequence"],
+                    "tag": c.get("tag", "care"),
+                    "image_path": "",
+                }
+                for position, c in enumerate(blk["cards"])
+            ]
+            branches[str(card.position)] = {
+                "chapter_title": blk["title"],
+                "chapter_text": blk["text"],
+                "lore_summary": blk["lore_summary"],
+                "place": blk.get("place"),
+                "cards": cards_payload,
+            }
+        return {
+            "v": PREPARED_PAYLOAD_VERSION,
+            "day_index": day_index,
+            "rule": rule.value,
+            "commitment": commit_rule(rule, salt) + ":" + salt,
+            "sealed": sealed_day(day_index) or twist,
+            "season": key,
+            "branches": branches,
+        }
     chapter = await generate_chapter(
         day_index, beats, rule,
         echoes=echoes if "echoes" in guests else [],
@@ -775,7 +881,12 @@ _PREGEN_LOCK_TTL = 1800  # секунд: генерация дольше пол�
 # материализации — день честно генерируется заново по текущим правилам.
 # v2: двухфазная прегенерация — глава собирается до вскрытия итогов дня,
 # открывающее эхо дописывает patch_prepared_day после finish_tally.
-PREPARED_PAYLOAD_VERSION = 3
+# v3: офлайн-фолбэки, арт-якорь, мягкая деградация (без изменений формата).
+# v4: трёхветочная прегенерация — фаза 1 кладёт в payload["branches"] три
+# полные ветки дня (по одной на путь «вчера»), фаза 2 (patch_prepared_day)
+# по победителю выбирает ветку, рисует её обложку и раскладывает её в
+# плоский (top-level) payload для мгновенной материализации.
+PREPARED_PAYLOAD_VERSION = 4
 
 
 def place_seed_for(place: str | None) -> int | None:
@@ -918,13 +1029,14 @@ async def upgrade_stub_images(day_index: int) -> int:
 
 
 async def patch_prepared_day(session: AsyncSession, finished: Round) -> bool:
-    """Фаза 2 прегенерации: вплетает итог дня в готовую заготовку следующего.
+    """Фаза 2 прегенерации: выбирает победившую ветку дня и готовит её к показу.
 
-    Заготовка собрана в час подсчёта, когда исход ещё не вскрыт, поэтому её
-    глава начинается сразу со сцены. Здесь — после записи StoryBeat и эпилога —
-    дописываем открывающий абзац-отголосок (нейро или офлайн-строка лора)
-    и приклеиваем его перед сценой. Так обещание «итог становится завязкой
-    завтрашней главы» выполняется, а открытие дня остаётся мгновенным.
+    Фаза 1 (prepare_next_day) кладёт в payload["branches"] три полные ветки дня
+    (по одной на каждый из путей «вчера»). Здесь — после записи StoryBeat и
+    эпилога — по фактическому победителю (finished.winner_card) выбираем ветку,
+    рисуем её обложку (сетевой fetch + PIL-фолбэк) и раскладываем ветку в
+    плоский top-level payload для мгновенной материализации. Ветки проигравших
+    арт не получают — лимиты картинок не тратятся зря.
 
     True — патч применён. Любая незапланированная ситуация (нет заготовки,
     нет итога дня) — False без исключений: день откроется как есть.
@@ -948,40 +1060,62 @@ async def patch_prepared_day(session: AsyncSession, finished: Round) -> bool:
         )
     ).scalar_one_or_none()
     if beat is None:
-        # Итога ещё нет (патч вызван раньше finish_tally) — нечем вплетать.
+        # Итога ещё нет (патч вызван раньше finish_tally) — нечем выбирать ветку.
         return False
 
-    # Бесшовный путь: вариант эха под фактического победителя собран заранее
-    # в прегенерации — выбор мгновенный, сетевой вызов не нужен.
-    variants = payload.get("echo_variants") or {}
-    preset = variants.get(str(finished.winner_card))
-    text = payload.get("chapter_text", "")
-    if preset:
-        opening = str(preset).strip()
-        if opening and not text.startswith(opening):
-            payload["chapter_text"] = f"{opening}\n\n{text}" if text else opening
-            prepared.payload = json.dumps(payload, ensure_ascii=False)
-            await session.commit()
-            logger.info("Заготовка дня %d: эхо победителя взято из готовых вариантов", next_index)
-            return True
+    branches = payload.get("branches") or {}
+    if not branches:
+        # Старый формат без веток — материализация пересоберёт день заново.
+        return False
 
-    opening = await generate_opening_echo(
-        day_index=finished.day_index,
-        beat_title=beat.winning_title,
-        beat_text=beat.winning_text[:300],
-        chapter_excerpt=payload.get("chapter_text", "")[:500],
-        epilogue_hook=(finished.epilogue_text or "")[:220],
+    # Победитель — позиция карты дня (finished.winner_card). Ветки фразы 1
+    # заведены под эти же позиции, поэтому выбор мгновенный. Нет совпадения
+    # (нестандартный кейс) — берём первую ветку.
+    winner_key = str(getattr(finished, "winner_card", None) or "")
+    branch = branches.get(winner_key) or next(iter(branches.values()))
+    if branch is None:
+        return False
+
+    chapter = {
+        "title": branch.get("chapter_title", "") or "",
+        "text": branch.get("chapter_text", "") or "",
+        "lore_summary": branch.get("lore_summary", "") or "",
+        "place": branch.get("place"),
+        "cards": branch.get("cards") or [],
+    }
+    # Обложка только для победившей ветки: лимиты картинок не тратятся на
+    # ветки, которые игроки не увидят. Сетевой fetch + PIL-фолбэк.
+    from app.season import anchor_axes
+
+    anchor = await get_run_anchor(session)
+    order_axis, moral_axis = anchor_axes(anchor)
+    cover = ""
+    try:
+        cover = await _cover_art_for_chapter(
+            session, chapter, beats=[],
+            echoes=[], day_index=next_index,
+            order_axis=order_axis, moral_axis=moral_axis,
+        )
+    except Exception:
+        logger.exception("Обложка победившей ветки дня %d не нарисовалась", next_index)
+        cover = ""
+
+    payload.update(
+        {
+            "chapter_title": chapter["title"],
+            "chapter_text": chapter["text"],
+            "lore_summary": chapter["lore_summary"],
+            "place": chapter["place"],
+            "cover_path": cover,
+            "cards": chapter["cards"],
+        }
     )
-    if not opening:
-        opening = offline_opening_echo(beat.winning_title)
-    opening = opening.strip()
-    text = payload.get("chapter_text", "")
-    if not opening or text.startswith(opening):
-        return False
-    payload["chapter_text"] = f"{opening}\n\n{text}" if text else opening
+    payload.pop("branches", None)
     prepared.payload = json.dumps(payload, ensure_ascii=False)
     await session.commit()
-    logger.info("Заготовка дня %d дополнена итогом дня %d", next_index, finished.day_index)
+    logger.info(
+        "Заготовка дня %d: выбрана ветка %r, обложка готова", next_index, winner_key
+    )
     return True
 
 
@@ -990,10 +1124,11 @@ async def prepare_next_day(session: AsyncSession, current_day_index: int) -> boo
 
     Тяжёлая генерация уходит в окно TALLYING, поэтому в 11:00 UTC день
     открывается мгновенно из готовой заготовки. Заготовка собирается ДО
-    вскрытия итогов (pending_outcome=True): глава без отголоска, который
-    допишет patch_prepared_day сразу после finish_tally. Claim через
-    PreparedDay-строку и временный лок в watcher_state: повторные тики и
-    второй инстанс не плодят параллельных генераций.
+    вскрытия итогов (pending_outcome=True): фаза 1 кладёт в payload["branches"]
+    три полные ветки дня (по одной на путь «вчера»). Патч победителя —
+    patch_prepared_day после finish_tally. Claim через PreparedDay-строку и
+    временный лок в watcher_state: повторные тики и второй инстанс не плодят
+    параллельных генераций.
     False — готовить нечего/уже готовится.
     """
     day_index = current_day_index + 1
@@ -1044,6 +1179,27 @@ async def prepare_next_day(session: AsyncSession, current_day_index: int) -> boo
             await session.commit()
 
 
+def _flatten_first_branch(payload: dict) -> None:
+    """Деградация v4: если патч победителя ещё не выполнен (payload всё ещё
+    держит ветки, а не плоскую главу), раскладываем первую ветку в top-level.
+    Обложка уйдёт в PIL-фолбэк на рендере — день останется рабочим и мгновенным.
+    """
+    if payload.get("chapter_title") or not payload.get("branches"):
+        return
+    branch = next(iter(payload["branches"].values()))
+    payload.update(
+        {
+            "chapter_title": branch.get("chapter_title", "") or "",
+            "chapter_text": branch.get("chapter_text", "") or "",
+            "lore_summary": branch.get("lore_summary", "") or "",
+            "place": branch.get("place"),
+            "cover_path": "",
+            "cards": branch.get("cards") or [],
+        }
+    )
+    payload.pop("branches", None)
+
+
 async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool]:
     """Создаёт следующий день. Второе значение — был ли день создан сейчас.
 
@@ -1059,6 +1215,9 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
                 payload = json.loads(prepared.payload)
                 if int(payload.get("v", 0)) != PREPARED_PAYLOAD_VERSION:
                     raise ValueError("неизвестная версия заготовки")
+                # Заготовка могла прийти из фазы 1 ещё до патча победителя
+                # (гонка/сбой): если это ветки без плоской главы — берём первую.
+                _flatten_first_branch(payload)
                 await _ensure_art_files(session, payload)
                 materialized = await _materialize_round(session, payload, latest)
             except (ValueError, KeyError, TypeError):
