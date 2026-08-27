@@ -2,10 +2,10 @@ from app.config import settings
 from app.story import DM_SYSTEM_PROMPT, STYLE_SUFFIX, styled_prompt
 
 
-def test_styled_prompt_appends_cinematic_style() -> None:
+def test_styled_prompt_appends_flat_2d_style() -> None:
     prompt = styled_prompt("dark fairy-tale tarot card, rusted gates")
     assert prompt.startswith("dark fairy-tale tarot card, rusted gates")
-    for mark in ("portal", "cinematic", "no text", "no watermark"):
+    for mark in ("portal", "flat 2D", "cozy-dystopia", "no text", "no watermark"):
         assert mark in prompt
     assert not prompt.rstrip().endswith(",")
 

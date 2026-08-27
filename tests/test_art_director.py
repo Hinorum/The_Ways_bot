@@ -152,7 +152,7 @@ async def test_intro_prompt_carries_world_and_heretic(offline_llm) -> None:
     intro = build_intro_prompt(bible, seed=7)
     short = build_intro_short_prompt(bible)
     assert "portal rings" in intro and "old stitched maps" in intro
-    for mark in ("no text", "cinematic"):
+    for mark in ("no text", "flat 2D"):
         assert mark in intro
     assert len(short.split()) < 95  # сжатый, но сцена мира насыщенная
 

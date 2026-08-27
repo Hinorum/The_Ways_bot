@@ -61,27 +61,33 @@ def test_leap_february_run_length(monkeypatch) -> None:
 
 def test_act_progression_and_countdown() -> None:
     line_early = act_line(3, 31)
-    assert "акт 1" in line_early and "осталось 28" in line_early
+    assert line_early.lower().startswith("акт 1") and "осталось 28" in line_early
     line_mid = act_line(15, 31)
-    assert "акт 2" in line_mid and "осталось 16" in line_mid
+    assert line_mid.lower().startswith("акт 2") and "осталось 16" in line_mid
     line_crisis = act_line(26, 31)
-    assert "акт 3" in line_crisis and "осталось 5" in line_crisis
+    assert line_crisis.lower().startswith("акт 3") and "осталось 5" in line_crisis
     finale_line = act_line(31, 31)
     assert "ДЕНЬ ПЕРВОГО ЛАЯ" in finale_line
 
 
 def test_run_wraps_after_month_length(monkeypatch) -> None:
-    """Одномесячный забег циклится ровно по границе месяца."""
-    _one_month(monkeypatch)
+    """Одномесячный забег циклится по границе своей арки (эпоха: первый сезон
+    короткий — first_season_months; следующие — run_length_months)."""
+    _one_month(monkeypatch)  # run_length_months=1
+    monkeypatch.setattr(settings, "first_season_months", 1)
     anchor = {"dom": 24, "key": "2026-08"}
-    last_day, total = run_position(anchor, _utc(2026, 10, 24))
+
+    # Сезон 1: 24 авг → 23 сен = 31 день. Последний день — финальный.
+    last_day, total = run_position(anchor, _utc(2026, 9, 23))
     assert (last_day, total) == (31, 31)
-    run_day, _total = run_position(anchor, _utc(2026, 10, 25))
+    # На следующий день арка циклится: старт нового сезона.
+    run_day, _total = run_position(anchor, _utc(2026, 9, 24))
     assert run_day == 1
 
 
 def test_two_month_arc_is_default(monkeypatch) -> None:
-    """По умолчанию арка держит интригу два месяца: 24 авг → 23 окт = 61 день."""
+    """Двухмесячная арка: при первом сезоне в два месяца 24 авг → 23 окт = 61 день."""
+    monkeypatch.setattr(settings, "first_season_months", 2)
     monkeypatch.setattr(settings, "run_length_months", 2)
     anchor = {"dom": 24, "key": "2026-08"}
     _, total = run_position(anchor, _utc(2026, 10, 24))

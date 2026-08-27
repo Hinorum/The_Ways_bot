@@ -47,7 +47,7 @@ def test_run_arc_is_relative_to_reset_not_calendar(monkeypatch) -> None:
     run_day, total = run_position(anchor, day_one)
     assert (run_day, total) == (1, 61)
     line = act_line(run_day, total)
-    assert "акт 1" in line
+    assert line.lower().startswith("акт 1")
     assert "осталось 60 дн." in line
 
     # Финал — когда забег дорастает до полной длины арки (61-й день).

@@ -90,6 +90,22 @@ async def _status_of(day_index: int) -> RoundStatus | None:
     return row
 
 
+async def _drain_background(timeout: float = 10.0) -> None:
+    """Тик плодит фоновые задачи (прегенерация, тизер, диспетчер выплат) —
+    даём им закрыть сессии БД, иначе SQLite-лок валит очистку соседних тестов."""
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+    pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+    if pending:
+        done, pending = await asyncio.wait(pending, timeout=timeout)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
 async def test_prepare_job_seeds_next_day_and_clears_lock() -> None:
     round_id = await _seed(9501, RoundStatus.TALLYING, voting_in=timedelta(hours=-2), tally_in=timedelta(minutes=30))
     try:
@@ -154,6 +170,7 @@ async def test_tick_schedules_preparation_during_tally_window(monkeypatch) -> No
         assert prepare_job.await_count == 1
         assert prepare_job.await_args.args[0] >= 1
     finally:
+        await _drain_background()
         await _cleanup(9541)
 
 
@@ -177,6 +194,7 @@ async def test_tick_finishes_day_and_opens_next() -> None:
         assert card_count == 3
         del round_id
     finally:
+        await _drain_background()
         await _cleanup(9551, 9552)
 
 

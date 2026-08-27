@@ -46,23 +46,33 @@ def test_labels_cover_all_nine_combinations() -> None:
 
 
 def test_drift_rules_match_tags_and_clamp() -> None:
+    # care → добро+порядок (мораль и порядок +1).
     anchor = {"order_axis": 1, "moral_axis": 1}
     o, m, changed = apply_alignment_drift(anchor, "care")
-    assert (o, m) == (1, 2) and changed  # забота → к добру
-    o, m, changed = apply_alignment_drift(anchor, "care")
-    assert (o, m) == (1, 2) and not changed  # потолок добра
-    o, m, changed = apply_alignment_drift(anchor, "risk")
-    assert (o, m, changed) == (0, 2, True)  # риск → к хаосу
-    o, m, changed = apply_alignment_drift(anchor, "cunning")
-    assert (o, m, changed) == (1, 1, True)  # хитрость → расчёт (+порядок) и подлость (−мораль)
+    assert (o, m) == (2, 2) and changed
 
-    # Клампы на краях.
+    # риск → хаос: порядок −1, мораль ±1 (знак детерминирован сидом дня).
+    anchor = {"order_axis": 1, "moral_axis": 1}
+    o, m, changed = apply_alignment_drift(anchor, "risk", seed=7)
+    assert o == 0 and m in (0, 2) and changed
+
+    # cunning → расчёт+порядок (порядок +1, мораль −1).
+    anchor = {"order_axis": 1, "moral_axis": 1}
+    o, m, changed = apply_alignment_drift(anchor, "cunning")
+    assert (o, m, changed) == (2, 0, True)
+
+    # Потолок добра: мораль на AXIS_MAX не растёт (clamp), порядок — растёт.
+    anchor = {"order_axis": 0, "moral_axis": AXIS_MAX}
+    o, m, changed = apply_alignment_drift(anchor, "care")
+    assert (o, m, changed) == (1, AXIS_MAX, True)
+
+    # Клампы на краях: за край не выходит (порядок −2 + 1 = −1, мораль у верха −1).
     anchor = {"order_axis": AXIS_MIN, "moral_axis": AXIS_MAX}
-    o, m, changed = apply_alignment_drift(anchor, "risk")
-    assert (o, m, changed) == (AXIS_MIN, AXIS_MAX, False)
+    o, m, changed = apply_alignment_drift(anchor, "cunning")
+    assert (o, m, changed) == (AXIS_MIN + 1, AXIS_MAX - 1, True)
     # Неизвестный тег ничего не двигает.
     anchor = {"order_axis": 1, "moral_axis": -1}
-    assert apply_alignment_drift(anchor, "unknown") == (1, -1, False)
+    assert apply_alignment_drift(anchor, "unknown") == ((1, -1), False)
 
 
 def test_alignment_block_carries_directives_and_label() -> None:

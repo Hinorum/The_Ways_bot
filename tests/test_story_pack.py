@@ -38,6 +38,7 @@ def test_run_arc_spans_two_months(monkeypatch) -> None:
     from app.season import is_run_finale
 
     monkeypatch.setattr(settings, "run_length_months", 2)
+    monkeypatch.setattr(settings, "first_season_months", 2)
     anchor = {"dom": 24, "key": "2026-08"}
     # Август (7 дней от 24-го) + сентябрь (30) + октябрь (24 дня до 24.10):
     # длина арки = 61.
