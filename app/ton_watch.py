@@ -509,6 +509,44 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
                 )
             return status
+        # Авто-грант по сумме: кошелёк не всегда доносит rv:-мемо. Сумма из
+        # вилки [revote_ton, stake_min_ton) ставкой быть не может (минимальная
+        # ставка выше), зато это ровная зона платы за смену пути. Если игрок
+        # уже выбрал путь на открытом дне — выдаём грант автоматически.
+        if to_nano(settings.revote_ton) <= transfer.value_nanotons < to_nano(settings.stake_min_ton):
+            auto_status = await _maybe_auto_grant(session, transfer, player)
+            if auto_status == "revote_ok":
+                await _dm_stake(
+                    bot,
+                    player.id,
+                    f"💎 Смена пути оплачена ({from_nano(transfer.value_nanotons):g} Gram, "
+                    "без мемо — зачтено по сумме). Нажми другую карту, чтобы сменить выбор.",
+                )
+                return "revote_ok"
+            if auto_status == "no_vote":
+                # День открыт, но пути ещё нет — менять нечего, а суммой это
+                # и не ставка: возвращаем сразу с объяснением.
+                await _stash_refund(
+                    session,
+                    transfer,
+                    None,
+                    ledger_result="revote_auto:no_vote",
+                    ledger_player_id=player.id,
+                )
+                await _dm_stake(
+                    bot,
+                    player.id,
+                    f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                    "он меньше минимума ставки, а за смену пути платить нечего — "
+                    "ты ещё не выбрал путь сегодня. Первый выбор бесплатный: жми карту "
+                    "дня, без оплаты.",
+                )
+                return "revote_auto_no_vote"
+            # revote_closed — открытого дня нет: поведение обращения как обычно
+            # (закрытый день вернёт перевод штатно). duplicate_tx — грант уже
+            # был выдан ранее, молча выходим.
+            if auto_status == "duplicate_tx":
+                return "revote_dup"
         round_result = await session.execute(
             select(Round)
             .where(Round.status == RoundStatus.OPEN)
@@ -620,20 +658,20 @@ async def confirm_aged_pending(bot: Bot | None = None) -> int:
     return confirmed
 
 
-async def _process_revote(session, transfer: Transfer, player: Player, round_id: int) -> str:
+async def _grant_revote(session, transfer: Transfer, player: Player, round_row: Round, note: str) -> str:
+    """Общий путь выдачи гранта: идемпотентность + грант + учёт дохода.
+
+    Возвращает ok / duplicate_tx. Проверки раунда, суммы и голоса — на совести
+    вызывающего, грант создаётся здесь один раз.
+    """
     duplicate = await session.execute(
         select(RevoteGrant.id).where(RevoteGrant.unit_ref == transfer.tx_hash)
     )
     if duplicate.scalar_one_or_none() is not None:
         return "duplicate_tx"
-    round_row = await session.get(Round, round_id)
-    if round_row is None or round_row.status != RoundStatus.OPEN:
-        return "revote_closed"
-    if transfer.value_nanotons < to_nano(settings.revote_ton):
-        return "revote_too_small"
     session.add(
         RevoteGrant(
-            round_id=round_id,
+            round_id=round_row.id,
             player_id=player.id,
             source="ton",
             unit_ref=transfer.tx_hash,
@@ -644,14 +682,56 @@ async def _process_revote(session, transfer: Transfer, player: Player, round_id:
         Income(
             kind="ton",
             amount_nanotons=transfer.value_nanotons,
-            round_id=round_id,
+            round_id=round_row.id,
             player_id=player.id,
             network=current_network(),
             unit_ref=transfer.tx_hash,
-            note=f"rv:{round_id}",
+            note=note,
         )
     )
     await session.commit()
+    return "ok"
+
+
+async def _process_revote(session, transfer: Transfer, player: Player, round_id: int) -> str:
+    round_row = await session.get(Round, round_id)
+    if round_row is None or round_row.status != RoundStatus.OPEN:
+        return "revote_closed"
+    if transfer.value_nanotons < to_nano(settings.revote_ton):
+        return "revote_too_small"
+    return await _grant_revote(session, transfer, player, round_row, f"rv:{round_id}")
+
+
+async def _maybe_auto_grant(session, transfer: Transfer, player: Player) -> str:
+    """Фолбэк «недоехавшего» revote по сумме (когда кошелёк не приложил мемо).
+
+    Плата за смену пути (revote_ton) ниже минимума ставки (stake_min_ton), а
+    сам перевод в вилке [revote_ton, stake_min_ton) ставкой быть не может
+    (мал). Если игрок уже выбрал путь на открытом дне — выдаём грант по сумме.
+    Абсолютную равнозначность мемо не требуется: автогрант выдаётся один раз
+    за перевод (unit_ref=tx_hash).
+
+    Возвращает revote_ok / no_vote / revote_closed / duplicate_tx.
+    """
+    round_result = await session.execute(
+        select(Round)
+        .where(Round.status == RoundStatus.OPEN)
+        .order_by(Round.day_index.desc())
+        .limit(1)
+    )
+    round_row = round_result.scalar_one_or_none()
+    if round_row is None:
+        return "revote_closed"
+    # Грант нужен тем, кто уже выбрал путь (иначе смена выбора бесплатна —
+    # платить за неё бессмысленно).
+    from app.voting import get_vote
+
+    vote = await get_vote(session, round_row.id, player.id)
+    if vote is None:
+        return "no_vote"
+    status = await _grant_revote(session, transfer, player, round_row, "rv:auto")
+    if status == "duplicate_tx":
+        return "duplicate_tx"
     return "revote_ok"
 
 

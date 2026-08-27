@@ -607,10 +607,13 @@ async def test_submin_already_staked_is_refunded_with_revote_hint(
         )
         await db.commit()
         try:
+            # 0.05 — ниже и минимума ставки, и платы за смену пути (0.1): ветка
+            # авто-гранта по сумме не срабатывает, перевод уходит в ставку и
+            # упирается в «уже есть» — игроку дают revote-подсказку.
             t = Transfer(
                 tx_hash,
                 wallet,
-                to_nano(0.1),
+                to_nano(0.05),
                 "",  # мемо не приложилось
                 int(datetime.now(timezone.utc).timestamp()),
             )
@@ -624,6 +627,95 @@ async def test_submin_already_staked_is_refunded_with_revote_hint(
         finally:
             await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
             await db.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+            await db.delete(round_row)
+            player = await db.get(Player, pid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()
+
+
+async def test_auto_grant_by_amount_when_memo_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Известный игрок, уже выбравший путь, шлёт 0.1 (=revote_ton) без мемо —
+    грант выдаётся по сумме, деньги не застревают и не возвращаются."""
+    import os
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import RevoteGrant
+    from app.ton_watch import Transfer, process_transfer
+    from app.voting import cast_vote
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    pid = 830_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + os.urandom(32).hex()
+    tx_hash = "autog-" + os.urandom(8).hex()
+    async with SessionLocal() as db:
+        db.add(Player(id=pid, username=f"u{pid}", wallet_address=wallet))
+        round_row = _open_round(day_index=904_000)
+        db.add(round_row)
+        await db.flush()
+        await cast_vote(db, round_row, pid, 0)
+        await db.commit()
+        try:
+            t = Transfer(
+                tx_hash, wallet, to_nano(0.1), "", int(datetime.now(timezone.utc).timestamp())
+            )
+            assert await process_transfer(t) == "revote_ok"
+            grants = (
+                (await db.execute(select(RevoteGrant).where(RevoteGrant.unit_ref == tx_hash)))
+                .scalars()
+                .all()
+            )
+            assert len(grants) == 1 and grants[0].status == "granted"
+            assert grants[0].round_id == round_row.id
+            refunds = (
+                (await db.execute(Payout.__table__.select().where(Payout.tx_hash == tx_hash)))
+                .all()
+            )
+            assert [] == refunds
+        finally:
+            await db.execute(RevoteGrant.__table__.delete().where(RevoteGrant.unit_ref == tx_hash))
+            await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
+            await db.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+            await db.delete(round_row)
+            player = await db.get(Player, pid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()
+
+
+async def test_auto_grant_returns_refund_if_no_vote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сумма из зоны revote, но пути ещё нет — гранта нет, деньги возвращаются
+    (иначе каждый дарённый 0.1 раздувал бы казну)."""
+    import os
+
+    from app.db import SessionLocal
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    pid = 840_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + os.urandom(32).hex()
+    tx_hash = "autonv-" + os.urandom(8).hex()
+    async with SessionLocal() as db:
+        db.add(Player(id=pid, username=f"u{pid}", wallet_address=wallet))
+        round_row = _open_round(day_index=905_000)
+        db.add(round_row)
+        await db.commit()
+        try:
+            t = Transfer(
+                tx_hash, wallet, to_nano(0.1), "", int(datetime.now(timezone.utc).timestamp())
+            )
+            assert await process_transfer(t) == "revote_auto_no_vote"
+            row = (
+                await db.execute(Payout.__table__.select().where(Payout.tx_hash == tx_hash))
+            ).first()._mapping
+            assert row["kind"] == "refund"
+        finally:
+            await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
             await db.delete(round_row)
             player = await db.get(Player, pid)
             if player is not None:
