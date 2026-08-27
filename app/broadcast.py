@@ -469,6 +469,9 @@ async def whisper_photo_to_chats(bot: Bot | None, photo, caption: str) -> int:
     """
     if bot is None or not caption:
         return 0
+    # Лимит подписи фото в Telegram — 1024 знака. Не даём длинной микросцене
+    # ронять send_photo и молча лишать все чаты вечернего кадра.
+    caption = caption[:1024]
     chat_ids = await active_chat_ids()
     semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 

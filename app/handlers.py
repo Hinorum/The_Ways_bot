@@ -101,8 +101,8 @@ async def cmd_start(message: Message) -> None:
         lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
         lines.append("/top — копилки и лидеры")
         lines.append(
-            "\n💰 Фонд дня: 97% — поставившим на верный путь; остальное — "
-            "копилки недели и месяца (/top) и хранителю. Подробности: /stake."
+            "\n💰 Фонд дня: 96% — поставившим на верный путь; остальное — "
+            "Фонд Стаи, копилки недели и месяца (/top) и хранителю. Подробности: /stake."
         )
     lines.append(
         "\n⚠️ Игра, а не вклад: бот и хранитель не отвечают за утраченные "
@@ -638,14 +638,24 @@ async def on_vote(callback: CallbackQuery) -> None:
 def _economy_text() -> str:
     """Распределение фонда дня — по живым настройкам, без дублей."""
     pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
+
+    def pct(value: float) -> str:
+        # Русская типографика: дробный процент через запятую (0,5%),
+        # целый (1.0 → «1») без хвоста «,0».
+        text = str(value)
+        if text.endswith(".0"):
+            text = text[:-2]
+        return text.replace(".", ",")
+
     return (
         "\n\nРаспределение фонда дня:\n"
-        f"• 97% — поставившим на верный путь, пропорционально ставкам "
+        f"• 96% — поставившим на верный путь, пропорционально ставкам "
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
-        f"• 2% — копилка недели: в понедельник её делят три призовых места "
+        f"• {pct(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
+        f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник её делят три призовых места "
         f"({pcts}%); нужен кошелёк и {settings.weekly_min_days} дней голосования\n"
-        "• 0,5% — копилка месяца: её забирают лидеры /top\n"
-        "• 0,5% — налог «Децентрализованному Богу»\n"
+        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: её забирают лидеры /top\n"
+        f"• {pct(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
         "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
     )
 
@@ -2030,6 +2040,18 @@ async def _admin_panel_text(session=None) -> str:
 
         nano, bets = get_cached_pot(int(rnd.get("day_index", 0)))
         lines.append(f"💰 Банк дня: {nano / 1e9:.2f} Gram · ставок {bets}")
+        # Фонд Стаи: накопление хранителя, раздача вручную.
+        try:
+            from app.models import PackFund as _Fund
+
+            fund_nano = (
+                await session.execute(
+                    select(func.coalesce(func.sum(_Fund.nanotons), 0))
+                )
+            ).scalar_one()
+            lines.append(f"🐾 Фонд Стаи: {fund_nano / 1e9:.2f} Gram")
+        except Exception:
+            pass
         # Метрики суток: явка вчера, всплывшие эха, оставшиеся заглушки.
         try:
             from app.models import LoreEcho as _LE

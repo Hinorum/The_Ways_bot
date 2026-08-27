@@ -5,7 +5,18 @@ import json
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LeaderboardPot, Player, Payout, Round, Stake, Vote, WeeklyPot, WinRule, RULE_PHRASES
+from app.models import (
+    LeaderboardPot,
+    PackFund,
+    Player,
+    Payout,
+    Round,
+    Stake,
+    Vote,
+    WeeklyPot,
+    WinRule,
+    RULE_PHRASES,
+)
 from app.rounds import pick_winner
 from app.stakes import current_network
 from app.ton_utils import from_nano
@@ -253,6 +264,7 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         "week_total": 0,
         "board_today": 0,
         "bank_total": 0,
+        "fund_total": 0,
         "refunded": False,
         "path_stakes": {int(p): int(v) for p, v in path_stakes_rows.all()},
     }
@@ -286,6 +298,12 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         )
     )
     stats["week_total"] = int(week_row.scalar_one())
+    # Фонд Стаи — единое накопление без периода: показываем общий баланс,
+    # а не «сегодня», т.к. разыгрывается вручную, а не по расписанию.
+    fund_row = await session.execute(
+        select(func.coalesce(func.sum(PackFund.nanotons), 0))
+    )
+    stats["fund_total"] = int(fund_row.scalar_one())
     if board_today or stats["bank_total"]:
         stats["board_today"] = board_today
 
@@ -353,4 +371,6 @@ def format_economics(stats: dict) -> str:
             f"🏆 Месяц: ушло {ton(stats['board_today']):.2f} Gram"
             f" · в банке месяца {ton(stats['bank_total']):.2f} Gram"
         )
+    if stats["fund_total"] > 0:
+        lines.append(f"🐾 В Фонде Стаи: {ton(stats['fund_total']):.2f} Gram")
     return "\n".join(lines)

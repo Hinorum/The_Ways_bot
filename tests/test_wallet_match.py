@@ -155,7 +155,7 @@ async def test_fresh_stake_waits_then_aged_pass_confirms_and_notifies(ton_on) ->
     bot = _RecorderBot()
     fresh_utime = int(datetime.now(timezone.utc).timestamp())
     status = await process_transfer(
-        Transfer(tx_hash="dm-aged-1", source=raw, value_nanotons=400_000_000, comment="", utime=fresh_utime),
+        Transfer(tx_hash="dm-aged-1", source=raw, value_nanotons=750_000_000, comment="", utime=fresh_utime),
         bot=bot,
     )
     assert status == "ok"

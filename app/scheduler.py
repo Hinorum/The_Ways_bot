@@ -182,7 +182,13 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
 
         from app.broadcast import whisper_photo_to_chats, whisper_to_chats
 
-        camp_path = await _campfire_art(day_index, round_row)
+        camp_path = None
+        try:
+            camp_path = await _campfire_art(day_index, round_row)
+        except Exception:
+            # Кадр не должен губить вечерний текст: падаем на обычный шёпот.
+            logger.warning("Кадр костра дня %s не получился (исключение)", day_index, exc_info=True)
+            camp_path = None
         if camp_path and text:
             await whisper_photo_to_chats(_bot, FSInputFile(camp_path), text)
         else:

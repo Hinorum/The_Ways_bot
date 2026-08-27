@@ -69,7 +69,12 @@ async def test_fee_is_deducted_proportionally(session: AsyncSession) -> None:
 
     await stakes_mod.finalize_day_payouts(session, round_row)
     pot = to_nano(10)
-    cuts = pot * 50 // 10_000 + pot * 50 // 10_000 + pot * 200 // 10_000
+    cuts = (
+        pot * 50 // 10_000
+        + pot * 50 // 10_000
+        + pot * 200 // 10_000
+        + pot * round(settings.pack_fund_pct * 100) // 10_000
+    )
     prize_pool = pot - cuts
     net_pool = prize_pool - to_nano(settings.payout_fee_gram) * 2
 
@@ -82,7 +87,9 @@ async def test_fee_is_deducted_proportionally(session: AsyncSession) -> None:
     assert set(rows) == {1, 2}
     # Доли сохранили пропорцию ставок 2:1 уже после вычета газа.
     assert rows[1] > rows[2]
-    assert abs(rows[1] - rows[2] * 2) <= 1  # нанотонная пыль
+    # Нанотонная пыль: split_pot кидает остаток целиком крупнейшей ставке,
+    # поэтому допуск — несколько нанотонов (по числу победителей-минимайзеров).
+    assert abs(rows[1] - rows[2] * 2) <= 2
     assert sum(rows.values()) == net_pool
     # Никто не получил меньше минимума: дохлых переводов нет.
     assert all(amount >= to_nano(settings.min_payout_gram) for amount in rows.values())
@@ -112,13 +119,22 @@ async def test_dust_shares_roll_to_weekly_pot(session: AsyncSession, monkeypatch
 
     pot = to_nano(10)
     weekly_cut = pot * 200 // 10_000
-    prize_pool = pot - pot * 50 // 10_000 * 2 - weekly_cut
+    prize_pool = (
+        pot
+        - pot * 50 // 10_000
+        - pot * 50 // 10_000
+        - weekly_cut
+        - pot * round(settings.pack_fund_pct * 100) // 10_000
+    )
     week = (
         await session.execute(select(stakes_mod.WeeklyPot).limit(1))
     ).scalar_one()
     # Неделя получила свою долю плюс всю призовую пыль (пул минус газ).
     assert week.nanotons == weekly_cut + prize_pool - to_nano(settings.payout_fee_gram) * 2
     assert round_row.weekly_nanotons == week.nanotons
+    # Фонд Стаи собрал свой процент отдельной строкой учёта.
+    fund = (await session.execute(select(stakes_mod.PackFund))).scalar_one()
+    assert fund.nanotons == pot * round(settings.pack_fund_pct * 100) // 10_000
 
 
 async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
@@ -147,7 +163,7 @@ async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
 
     pot = to_nano(1)
     weekly_cut = pot * 200 // 10_000
-    prize_pool = pot - pot * 50 // 10_000 * 2 - weekly_cut
+    prize_pool = pot - pot * 50 // 10_000 * 2 - weekly_cut - pot * round(settings.pack_fund_pct * 100) // 10_000
     week = (
         await session.execute(select(stakes_mod.WeeklyPot).limit(1))
     ).scalar_one()
@@ -160,8 +176,8 @@ async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
     assert stats["multiplier"] is None
 
 
-async def test_refunds_keep_full_amount(session: AsyncSession) -> None:
-    """Возвраты (никто не поставил на верный путь) не платят за газ."""
+async def test_refunds_deduct_gas(session: AsyncSession) -> None:
+    """Возвраты (никто не поставил на верный путь) тоже платят газ сети."""
     session.add(Player(id=31, wallet_address="wallet-31"))
     round_row = await make_closed_round(session, winner_card=0, day_index=43)
     session.add_all(
@@ -178,4 +194,7 @@ async def test_refunds_keep_full_amount(session: AsyncSession) -> None:
         .scalars()
         .all()
     )
-    assert [row.amount_nanotons for row in refunds] == [to_nano(0.7)]
+    # Сумма возврата = ставка минус газ сети на перевод.
+    assert [row.amount_nanotons for row in refunds] == [
+        to_nano(0.7) - to_nano(settings.payout_fee_gram)
+    ]

@@ -3,9 +3,10 @@
 Механика: ставка не меняет вес голоса (правила majority/minority/median
 остаются честными), а участвует в фонде дня. После подсчёта фонд делится так:
 
-- 97% — поставившим на верный путь, пропорционально ставкам. Из этой части
+- 96% — поставившим на верный путь, пропорционально ставкам. Из этой части
   ЗАРАНЕЕ вычитается газ сети (~payout_fee_gram на каждый перевод), поэтому
   победитель получает приз «чистыми», а казначей не платит за чужие транзы;
+- 1% — Фонд Стаи: накопительный, разыгрывается вручную хранителем (см. /panel);
 - 2% — копилка недели: каждый день капает сюда, в понедельник сумму делят
   топ-3 недели по числу верных ответов (см. app/leaderboard.py);
 - 0,5% — хранителю игры;
@@ -17,8 +18,10 @@
 призовой пул целиком (экзотика: много микоставок), весь пул уходит туда же.
 
 Если на победивший путь не поставлено ни одной подтвержденной ставки —
-все ставки возвращаются полностью, без рейка, копилок и вычета газа.
-Отклонённые лимитами и неподтверждённые ставки возвращаются всегда.
+все ставки возвращаются без рейка и копилок, но с вычетом газа сети (~payout_fee_gram
+с каждого перевода, как и у призов: казначей не финансирует чужие транзы).
+Отклонённые лимитами и неподтверждённые ставки возвращаются всегда (так же с
+вычетом газа); если газ больше самой ставки — возвращать нечего.
 
 Сети изолированы: каждая ставка и выплата помечена network (mainnet/testnet),
 финализация и watcher работают только со ставками активной сети — тестнет
@@ -34,7 +37,17 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote, WeeklyPot
+from app.models import (
+    LeaderboardPot,
+    PackFund,
+    Payout,
+    Player,
+    Round,
+    RoundStatus,
+    Stake,
+    Vote,
+    WeeklyPot,
+)
 from app.ton_utils import to_nano
 from app.weeks import iso_week_key
 
@@ -44,6 +57,18 @@ logger = logging.getLogger(__name__)
 
 def current_network() -> str:
     return "testnet" if settings.is_testnet else "mainnet"
+
+
+def refund_net_amount(stake_amount_nanotons: int) -> int:
+    """Сумма возврата ИЗ СТАВКИ: с возвратов тоже удерживается газ сети.
+
+    Комиссия (payout_fee_gram по тарифу основной сети TON) вычитается из суммы
+    возврата, как и из призового пула победителей — казначей не финансирует
+    чужие переводы из своего остатка. Если газ больше самой ставки (экзотика:
+    микро-отклонённые ставки), возвращать нечего — возвращаем 0, чтобы не
+    плодить дохлый/отрицательный перевод.
+    """
+    return max(0, stake_amount_nanotons - to_nano(settings.payout_fee_gram))
 
 
 def split_pot(prize_pool_nanotons: int, entries: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -225,17 +250,21 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
 
         if not winning_stakes:
             for stake in confirmed:
-                created += add_payout(stake, "refund", stake.amount_nanotons)
+                refund = refund_net_amount(stake.amount_nanotons)
+                if refund > 0:
+                    created += add_payout(stake, "refund", refund)
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = 0
         else:
             owner_bp = round(settings.owner_rake_pct * 100)
             board_bp = round(settings.leaderboard_rake_pct * 100)
             weekly_bp = round(settings.weekly_pot_pct * 100)
+            fund_bp = round(settings.pack_fund_pct * 100)
             house_cut = pot * owner_bp // 10_000
             board_cut = pot * board_bp // 10_000
             weekly_cut = pot * weekly_bp // 10_000
-            prize_pool = pot - house_cut - board_cut - weekly_cut
+            fund_cut = pot * fund_bp // 10_000
+            prize_pool = pot - house_cut - board_cut - weekly_cut - fund_cut
 
             fee_nano = to_nano(settings.payout_fee_gram)
             min_payout_nano = to_nano(settings.min_payout_gram)
@@ -289,11 +318,26 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                 else:
                     week_row.nanotons += week_total_cut
                 round_row.weekly_nanotons = week_total_cut
+            # Фонд Стаи: неубывающее накопление без периода раздачи. Единственная
+            # строка-накопитель; деньги остаются на кошельке казначея и забираются
+            # хранителем вручную (см. /panel, ручной вывод).
+            if fund_cut > 0:
+                fund_row = (
+                    await session.execute(
+                        select(PackFund).order_by(PackFund.id).limit(1)
+                    )
+                ).scalar_one_or_none()
+                if fund_row is None:
+                    session.add(PackFund(nanotons=fund_cut))
+                else:
+                    fund_row.nanotons += fund_cut
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = house_cut + board_cut
 
     for stake in stuck:
-        created += add_payout(stake, "refund", stake.amount_nanotons)
+        refund = refund_net_amount(stake.amount_nanotons)
+        if refund > 0:
+            created += add_payout(stake, "refund", refund)
 
     await session.commit()
     return created

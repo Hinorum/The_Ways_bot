@@ -307,6 +307,22 @@ class WeeklyPot(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PackFund(Base):
+    """Фонд Стаи: 1% банка каждого дня капает сюда и не раздаётся сам.
+
+    В отличие от копилок недели (WeeklyPot) и месяца (LeaderboardPot) у фонда нет
+    периода авто-розыгрыша: это неубывающее накопление-обязательство. Хранитель
+    видит баланс в пульте и распоряжается им вручную (например, разыгрывает
+    среди любой группы или тратит на приз), выводя деньги обычным ручным путём.
+    """
+
+    __tablename__ = "pack_fund"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RevoteGrant(Base):
     """Оплаченное право изменить свой выбор в дне (Stars или TON).
 
