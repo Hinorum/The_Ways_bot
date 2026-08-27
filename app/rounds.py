@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.echoes import collect_due_echoes, spawn_echoes_from_round
-from app.lore import offline_opening_echo
 from app.models import (
     Card,
     Income,

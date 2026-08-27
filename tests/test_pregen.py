@@ -122,10 +122,8 @@ async def test_pregen_phase_one_builds_three_branches(session) -> None:
 
 
 async def test_patch_applies_outcome_and_survives_materialization(session, monkeypatch) -> None:
-    """Фаза 2: по победителю (winner_card=0) выбрана его ветка, разложена в
+    """    Фаза 2: по победителю (winner_card=0) выбрана его ветка, разложена в
     плоский payload и нарисована её обложка; материализация мгновенная."""
-    from app import rounds as rounds_mod
-
     round_row = await _seed_tallying_day(session)
     assert await prepare_next_day(session, round_row.day_index) is True
 

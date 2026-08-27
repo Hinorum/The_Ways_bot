@@ -448,6 +448,7 @@ async def treasury_expected_state(session) -> TreasuryDrift | None:
             await session.execute(
                 select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
                     Income.kind == "ton",
+                    Income.network == network,
                 )
             )
         ).scalar_one()
@@ -488,8 +489,8 @@ async def _treasury_balance_anomaly(session) -> str | None:
 
     Две беды разного рода: дефицит под очередь выплат (пополни казначея)
     и расхождение с ожиданиями (ручной вывод или пропажа — закрывается
-    командой /adjust). Income не размечен сетью, поэтому при активном
-    тестнет-контуре сверка смешала бы метки — известная шероховатость.
+    командой /adjust). TON-строки Income размечены сетью (network), поэтому
+    сверка идёт по активному контуру mainnet/testnet без смешения меток.
     """
     state = await treasury_expected_state(session)
     if state is None:

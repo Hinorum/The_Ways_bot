@@ -48,7 +48,7 @@ from app.models import (
     Vote,
     WeeklyPot,
 )
-from app.ton_utils import to_nano
+from app.ton_utils import from_nano, to_nano
 from app.weeks import iso_week_key
 
 
@@ -341,3 +341,91 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
 
     await session.commit()
     return created
+
+
+async def refundable_stakes(session, limit: int = 25) -> list[tuple[Stake, Player | None, Round | None]]:
+    """Ставки, которые можно вернуть вручную из /panel: ещё не «засчитанные»
+    (pending/rejected) и не имеющие незакрытого refund-выплата. Возвращает
+    пары (ставка, игрок, раунд) для списка хранителю."""
+    subq = (
+        select(Payout.round_id, Payout.player_id)
+        .where(
+            Payout.kind == "refund",
+            Payout.status.notin_(["sent", "dismissed"]),
+        )
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(Stake, Player, Round)
+            .join(Player, Player.id == Stake.player_id)
+            .join(Round, Round.id == Stake.round_id)
+            .outerjoin(
+                subq,
+                (subq.c.round_id == Stake.round_id) & (subq.c.player_id == Stake.player_id),
+            )
+            .where(
+                Stake.status.in_(["pending", "rejected"]),
+                Stake.network == current_network(),
+                subq.c.player_id.is_(None),
+            )
+            .order_by(Stake.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    return rows
+
+
+async def create_manual_refund(session, stake_id: int) -> str:
+    """Ручной возврат ставки хранителем (см. /panel → «Возвраты»).
+
+    Только для ещё не «засчитанных» ставок status in (pending, rejected) —
+    подтверждённые (confirmed) разбираются автоматически при финализации дня,
+    и ручной возврат там создал бы двойную выплату. Идемпотентно: если для
+    (round_id, player_id) уже есть незакрытый refund-выплат — не дублируем.
+    Деньги уходят обычной очередью выплат (dispatch_pending_payouts).
+    """
+    stake = await session.get(Stake, stake_id)
+    if stake is None:
+        return "нет такой ставки"
+    if stake.network != current_network():
+        return "ставка из другого контура сети"
+    if stake.status == "refunded":
+        return "возврат этой ставки уже оформлен ранее"
+    if stake.status not in ("pending", "rejected"):
+        return (
+            "ставка уже засчитана (confirmed) — она разберётся при итогах дня сама. "
+            "Ручной возврат не нужен."
+        )
+    dup = (
+        await session.execute(
+            select(Payout).where(
+                Payout.kind == "refund",
+                Payout.round_id == stake.round_id,
+                Payout.player_id == stake.player_id,
+                Payout.status.notin_(["sent", "dismissed"]),
+            )
+        )
+    ).scalar_one_or_none()
+    if dup is not None:
+        return f"возврат уже создан (выплата #{dup.id})"
+    player = await session.get(Player, stake.player_id)
+    wallet = player.wallet_address if player is not None else ""
+    if not wallet:
+        return "у игрока не привязан кошелёк — возврат невозможен"
+    refund = refund_net_amount(stake.amount_nanotons)
+    if refund <= 0:
+        return "сумма ставки не покрывает газ сети — возвращать нечего"
+    session.add(
+        Payout(
+            round_id=stake.round_id,
+            player_id=stake.player_id,
+            kind="refund",
+            amount_nanotons=refund,
+            dest_address=wallet,
+            network=current_network(),
+        )
+    )
+    stake.status = "refunded"
+    await session.commit()
+    return f"возврат {from_nano(refund):.4g} Gram поставлен в очередь (выплата создана)"

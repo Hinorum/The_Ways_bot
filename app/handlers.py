@@ -86,7 +86,7 @@ async def cmd_start(message: Message) -> None:
         "развилка приходят сами, сразу после него.",
         "",
         "<b>Команды каравана</b>",
-        "/today — карты дня · /lore — канон прожитых троп",
+        "/today — карты дня · /lore — Архив Начала и канон прожитых троп",
         "/score — твои Следы и хроника · /calling — призвание",
         "/best — бестиарий Сети",
     ]
@@ -161,15 +161,20 @@ async def cmd_today(message: Message) -> None:
 
 @router.message(Command("lore"))
 async def cmd_lore(message: Message) -> None:
+    from app.lore import ARCHIVE_ORIGIN
+
     async with SessionLocal() as session:
         beats = (await session.execute(select(StoryBeat).order_by(StoryBeat.day_index))).scalars().all()
     if not beats:
-        await message.answer(f"{hint_mark('lore-empty')} Канон ещё пуст: первый След появится после итогов дня.")
+        await message.answer(
+            f"{hint_mark('lore-empty')} Канон троп ещё пуст — первый След появится "
+            f"после итогов дня.\n\n{ARCHIVE_ORIGIN}"
+        )
         return
     text, truncated = _canon_text(beats)
     if truncated:
         text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме порталов.\n\n" + text
-    await message.answer(text)
+    await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}")
 
 
 def _canon_text(beats) -> tuple[str, bool]:
@@ -179,9 +184,11 @@ def _canon_text(beats) -> tuple[str, bool]:
     """
     chosen: list[str] = []
     total = 0
+    # Запас под «Архив Начала» (+📜 вступление), чтобы всё сообщение канона
+    # уместилось в лимит Telegram.
     for beat in reversed(beats):
         chunk = f"День {beat.day_index}. {beat.winning_title}\n{beat.winning_text}"
-        if total + len(chunk) + 2 > 3500:
+        if total + len(chunk) + 2 > 3050:
             return "\n\n".join(reversed(chosen)), True
         chosen.append(chunk)
         total += len(chunk) + 2
@@ -738,6 +745,7 @@ def _win_calc_text() -> str:
         - settings.owner_rake_pct
         - settings.leaderboard_rake_pct
         - settings.weekly_pot_pct
+        - settings.pack_fund_pct
     )
     fee = settings.payout_fee_gram
     # Пример 1: банк 10 G, на верный путь 6 G двумя игроками (4 G и 2 G).
@@ -1059,7 +1067,7 @@ async def on_stake_view(callback: CallbackQuery) -> None:
         return
     # Попап кнопки виден только нажавшему — личные цифры можно показывать
     # прямо в группе, как у /score: сумма ставки и её статус.
-    hint = "Ставка: переведи от 0.1 Gram казначею со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
+    hint = f"Ставка: переведи от {settings.stake_min_ton:g} Gram казначею со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
     try:
         async with SessionLocal() as session:
             player = await upsert_player(session, callback.from_user)
@@ -1675,6 +1683,39 @@ async def _stakes_panel_text() -> str:
     return "\n".join(lines)
 
 
+async def _refunds_panel_text() -> str:
+    """Ставки для ручного возврата: «не засчитанные» (pending/rejected) с
+    кошельком и без уже созданного возврата. Действие — /return <id>."""
+    from app.stakes import refundable_stakes
+
+    async with SessionLocal() as session:
+        rows = await refundable_stakes(session)
+    lines = [
+        "↩️ <b>РУЧНОЙ ВОЗВРАТ СТАВОК</b>",
+        "Ставки, не получившие «засчитано» и ещё не возвращённые. Подтверждённые "
+        "сюда не попадают — они разберутся при итогах дня сами.",
+        "",
+    ]
+    if not rows:
+        lines.append("Нет кандидатов для ручного возврата. Долгов нет.")
+        return "\n".join(lines)
+    for stake, player, round_row in rows:
+        who = (
+            (player.username or player.first_name or f"игрок {player.id}")
+            if player
+            else f"игрок {stake.player_id}"
+        )
+        state = "⏳ не подтверждена" if stake.status == "pending" else "↩️ отклонена"
+        round_label = f"день {round_row.day_index}" if round_row else f"раунд {stake.round_id}"
+        lines.append(
+            f"#{stake.id} {who} · {from_nano(stake.amount_nanotons):g} Gram · "
+            f"{state} · {round_label}\n   ↔️ /return {stake.id}"
+        )
+    lines.append("")
+    lines.append("/return &lt;id&gt; — вернуть ставку, деньги уйдут очередью выплат.")
+    return "\n".join(lines)
+
+
 # Инцидент-регрессия: декоратор висел на _payout_text, которая ВОЗВРАЩАЕТ
 # строку. Aiogram автоотправляет результат хендлера только если это
 # TelegramMethod — голый str выбрасывался, и команда /payouts молчала.
@@ -1712,6 +1753,34 @@ async def cmd_payout(message: Message) -> None:
         await message.answer(f"{ok_mark(str(payout_id))} Выплата #{payout_id} вернулась в очередь с нулевым счётом попыток.")
     else:
         await message.answer(f"{warn_mark('nopay')} Выплата #{payout_id} не найдена или уже отправлена.")
+
+
+@router.message(Command("return"))
+async def cmd_return(message: Message) -> None:
+    """Ручной возврат «не засчитанной» ставки хранителем: /return <id>."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer(
+            "Формат: <code>/return &lt;id&gt;</code> — id ставки из «↩️ Вернуть ставку» в /panel."
+        )
+        return
+    from app.stakes import create_manual_refund
+
+    async with SessionLocal() as session:
+        result = await create_manual_refund(session, int(parts[1]))
+    if result.startswith("возврат"):
+        from app.ton_pay import dispatch_pending_payouts
+
+        try:
+            await dispatch_pending_payouts()
+        except Exception:
+            logger.exception("Кик диспетчера после ручного возврата не удался")
+        await message.answer(f"{ok_mark(parts[1])} {result}.")
+    else:
+        await message.answer(f"{warn_mark('return')} {result}")
 
 
 @router.message(Command("treasury"))
@@ -2189,6 +2258,7 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎲 Ставки", callback_data="panel:stakes"),
             ],
             [
+                InlineKeyboardButton(text="↩️ Вернуть ставку", callback_data="panel:refunds"),
                 InlineKeyboardButton(text="🏛 Казначей", callback_data="panel:treasury"),
                 InlineKeyboardButton(text="💰 Касса", callback_data="panel:revenue"),
             ],
@@ -2243,6 +2313,10 @@ async def on_panel_action(callback: CallbackQuery) -> None:
         if action == "stakes":
             await callback.message.answer(await _stakes_panel_text())
             await callback.answer("Ставки ниже.")
+            return
+        if action == "refunds":
+            await callback.message.answer(await _refunds_panel_text())
+            await callback.answer("Возвраты ниже.")
             return
         if action == "adjust":
             await callback.message.answer(

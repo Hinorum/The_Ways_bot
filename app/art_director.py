@@ -101,34 +101,61 @@ AnchorKey = "art_anchor"
 _CHARACTER_MOTIFS = {
     "лайнер": (
         "Liner the memory-trader, hooded stray dog with soft lantern eyes "
-        "and a satchel of glowing memory vials"
+        "and a satchel of glowing memory vials, an old dusty silent radio "
+        "slung on a strap at his hip"
     ),
     "архивариус": (
         "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
-        "drifting paper dust, thin spectacles, whispering folders"
+        "drifting paper dust, loupe spectacles reflecting a different text "
+        "in each lens, whispering folders"
     ),
     "хранитель спорных версий": (
         "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
-        "drifting paper dust, thin spectacles, whispering folders"
+        "drifting paper dust, loupe spectacles reflecting a different text "
+        "in each lens, whispering folders"
     ),
     "хозяин ошибки": (
         "faceless Error Master, a tall silhouette of counting hands and "
-        "misplaced numbers hovering over a glitching portal"
+        "misplaced numbers hovering over a glitching portal, surrounded by "
+        "perfectly aligned but sad, sterile tableaus"
     ),
     # НейроГримёр Еретика: ветеран носит старый мир на себе — пальто из
     # выцветших карт старой Стаи; знак присвоения (апостроф) читается даже
-    # в тени кадра; правила при нём как ошейник — он и закон в одном лице.
+    # в тени кадра; под пальто спрятан выцветший ошейник старой Стаи;
+    # правила при нём как ошейник — он и закон в одном лице.
     "еретик": (
         "Heretic the Way-Leaver, lean wiry scarred stray dog in a patchwork "
         "coat stitched from faded old maps, chalk-white apostrophe-shaped "
         "mark over one narrowed eye, small slate rule-tags braided into his "
-        "collar"
+        "collar, a faded old-Pack collar hidden beneath the coat"
     ),
     "свернувший с пути": (
         "Heretic the Way-Leaver, lean wiry scarred stray dog in a patchwork "
         "coat stitched from faded old maps, chalk-white apostrophe-shaped "
         "mark over one narrowed eye, small slate rule-tags braided into his "
-        "collar"
+        "collar, a faded old-Pack collar hidden beneath the coat"
+    ),
+    # Пятёрка псов: у каждой свой видимый «почерк», чтобы в кадре читались
+    # отдельными фигурами, а не общим силуэтом стаи.
+    "баркод": (
+        "Barcode the counting mutt, charcoal dog in a striped scarf woven "
+        "from a calendar, focused intently counting passers-by"
+    ),
+    "стежка": (
+        "Stezhka the early-hearer, ash-grey dog with a patch on one ear, "
+        "always a step ahead of the pack, ear tilted to a faint sound"
+    ),
+    "вектор": (
+        "Vector the stubborn one, straight-backed brindle dog standing "
+        "rigid against the wind, muzzle aimed dead ahead"
+    ),
+    "пиксель": (
+        "Pixel the spark-catcher, small speckled dog with a faint glowing "
+        "digital spark held between his teeth"
+    ),
+    "безымянная": (
+        "Nameless, the dog the old game could never count — a pale dog with "
+        "an empty collar, gazing where no one else looks"
     ),
 }
 

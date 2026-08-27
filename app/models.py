@@ -349,7 +349,8 @@ class Income(Base):
 
     kind="stars" — Telegram Stars за смену пути (amount_stars), выводятся
     владельцем через Fragment; kind="ton" — прямые переводы в казну
-    (amount_nanotons). unit_ref — тот же идемпотент, что у гранта.
+    (amount_nanotons); network помечает TON-строки (mainnet/testnet), чтобы
+    сверка казны не смешивала контуры. unit_ref — тот же идемпотент, что у гранта.
     """
 
     __tablename__ = "incomes"
@@ -360,6 +361,7 @@ class Income(Base):
     amount_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     round_id: Mapped[int | None] = mapped_column(ForeignKey("rounds.id"), nullable=True, index=True)
     player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True, index=True)
+    network: Mapped[str] = mapped_column(String(16), default="mainnet")
     unit_ref: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
     note: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -58,6 +58,9 @@ _SQLITE_COLUMN_DDL = {
         "last_error": "ALTER TABLE payouts ADD COLUMN last_error VARCHAR(200)",
         "comment_override": "ALTER TABLE payouts ADD COLUMN comment_override VARCHAR(120)",
     },
+    "incomes": {
+        "network": "ALTER TABLE incomes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
+    },
 }
 
 
@@ -138,6 +141,11 @@ async def init_db() -> None:
             # Свободный комментарий перевода (возвраты при паузе игры).
             await conn.execute(text(
                 "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)"
+            ))
+            # Метка сети в ledger доходов: сверка казны не смешивает контуры
+            # TON (mainnet/testnet). Старые строки по умолчанию — mainnet.
+            await conn.execute(text(
+                "ALTER TABLE incomes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
             ))
             # План Хозяина Ошибки не влезал в VARCHAR(255): ронял тик до
             # создания следующего дня. Расширяем до TEXT, но только когда это

@@ -257,6 +257,100 @@ async def test_record_adjustment_validates_input() -> None:
         await ops.record_manual_adjustment(None, ops.MANUAL_OUT_KIND, 0)
 
 
+async def test_treasury_expected_state_filters_by_network(ton_on, monkeypatch) -> None:
+    """Сверка казны считает только приходы активного контура: Income других
+    сетей больше не раздувают ожидания (регрессия на смешение mainnet/testnet)."""
+    from app.stakes import current_network
+
+    monkeypatch.setattr(settings, "treasury_address", "0:" + "44" * 32)
+    monkeypatch.setattr(
+        ton_pay, "fetch_account_state", AsyncMock(return_value=(to_nano(3), None, "tonapi"))
+    )
+    active = current_network()
+    other = "testnet" if active == "mainnet" else "mainnet"
+    try:
+        async with SessionLocal() as db:
+            db.add_all(
+                [
+                    Income(kind="ton", amount_nanotons=to_nano(3), unit_ref="seed-net-a", network=active),
+                    Income(kind="ton", amount_nanotons=to_nano(9), unit_ref="seed-net-b", network=other),
+                    Income(kind="ton", amount_nanotons=to_nano(15), unit_ref="seed-net-c", network=""),
+                ]
+            )
+            await db.commit()
+        async with SessionLocal() as session:
+            state = await ops.treasury_expected_state(session)
+            # На балансе 3 Gram, учтён только приход активной сети — дрейфа нет.
+            assert state is not None
+            assert state.expected_nanotons == to_nano(3)
+            assert state.drift_nanotons == 0
+            assert await ops._treasury_balance_anomaly(session) is None
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                delete(Income).where(
+                    Income.unit_ref.in_(["seed-net-a", "seed-net-b", "seed-net-c"])
+                )
+            )
+            await db.commit()
+
+
+async def test_manual_refund_creates_net_payout_and_is_idempotent(ton_on) -> None:
+    """Ручной возврат «не засчитанной» ставки: создаётся refund-выплата (за
+    вычетом газа), ставка помечается возвращённой, повторный вызов не дублирует."""
+    from app.stakes import create_manual_refund
+
+    now = datetime.now(timezone.utc)
+    try:
+        async with SessionLocal() as db:
+            round_row = Round(
+                day_index=97_961,
+                status=RoundStatus.CLOSED,
+                win_rule=WinRule.MAJORITY,
+                rule_commitment="c",
+                chapter_title="t",
+                chapter_text="x",
+                lore_summary="l",
+                opens_at=now - timedelta(hours=25),
+                voting_ends_at=now - timedelta(hours=1),
+                tally_ends_at=now,
+            )
+            player = Player(
+                id=930_962,
+                username="refund_me",
+                wallet_address=RAW,
+            )
+            db.add_all([round_row, player])
+            await db.flush()
+            stake = Stake(
+                round_id=round_row.id, player_id=player.id,
+                amount_nanotons=to_nano(1), tx_hash="ref-1g",
+                status="pending",
+                network="testnet" if settings.is_testnet else "mainnet",
+            )
+            db.add(stake)
+            await db.commit()
+            stake_id = stake.id
+        async with SessionLocal() as session:
+            first = await create_manual_refund(session, stake_id)
+            assert first.startswith("возврат")
+            second = await create_manual_refund(session, stake_id)
+            assert "уже" in second
+            rows = (
+                await session.execute(select(Payout).where(Payout.kind == "refund"))
+            ).scalars().all()
+        refunds = [p for p in rows if p.round_id == round_row.id]
+        assert len(refunds) == 1
+        assert refunds[0].amount_nanotons == to_nano(1 - settings.payout_fee_gram)
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(delete(Payout).where(Payout.kind == "refund"))
+            await db.execute(delete(Stake).where(Stake.tx_hash == "ref-1g"))
+            await db.execute(delete(Player).where(Player.id == 930_962))
+            await db.execute(delete(Round).where(Round.day_index == 97_961))
+            await db.commit()
+
+
 async def test_set_game_paused_is_idempotent() -> None:
     await _wipe_pause()
     try:

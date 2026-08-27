@@ -27,6 +27,21 @@ def test_season_key_format() -> None:
     assert season_key(datetime(2026, 1, 1)) == "2026-01"  # наивное время = UTC
 
 
+def test_closed_month_loop_forces_dom_one(monkeypatch) -> None:
+    """Замкнутый месячный цикл: якорь форсируется на 1-е число месяца, чтобы
+    арка всегда была ровно один календарный месяц независимо от даты сброса."""
+    from app.season import default_anchor
+
+    monkeypatch.setattr(settings, "closed_month_loop", True)
+    anchor = default_anchor(_utc(2026, 8, 24, 15, 0))
+    assert anchor["dom"] == 1 and anchor["key"] == "2026-08"
+
+    # Выключили — якорь снова от фактической даты сброса.
+    monkeypatch.setattr(settings, "closed_month_loop", False)
+    anchor2 = default_anchor(_utc(2026, 8, 24, 15, 0))
+    assert anchor2["dom"] == 24 and anchor2["key"] == "2026-08"
+
+
 def _one_month(monkeypatch) -> None:
     """Legacy-режим: арка = один календарный месяц (для точных границ)."""
     from app.config import settings

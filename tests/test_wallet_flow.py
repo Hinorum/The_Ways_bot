@@ -424,12 +424,12 @@ async def test_wallet_view_includes_today_stake(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ton_enabled", True)
     uid = next_uid()
     address = "UQHD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnH"
-    await _seed_open_day_with_stake(uid, day_index=99_097, amount_nanotons=100_000_000, address=address)
+    await _seed_open_day_with_stake(uid, day_index=99_097, amount_nanotons=600_000_000, address=address)
     try:
         message = make_message("private", uid, "/wallet")
         await cmd_wallet(message)
         text = message.answer.call_args.args[0]
-        assert "0.1 Gram" in text
+        assert "0.6 Gram" in text
         assert "Ставка сегодня" in text
         assert "привязанный кошелёк" in text.lower()
     finally:

@@ -19,9 +19,9 @@ def _open_round(day_index: int, rule=WinRule.MAJORITY, sealed=False) -> Round:
         chapter_text="x",
         lore_summary="l",
         season="2026-08",
-        opens_at=datetime(2026, 8, 10, 11, tzinfo=timezone.utc),
-        voting_ends_at=datetime(2026, 8, 11, 10, tzinfo=timezone.utc),
-        tally_ends_at=datetime(2026, 8, 11, 11, tzinfo=timezone.utc),
+        opens_at=datetime(2026, 8, 1, 11, tzinfo=timezone.utc),
+        voting_ends_at=datetime(2026, 8, 2, 10, tzinfo=timezone.utc),
+        tally_ends_at=datetime(2026, 8, 2, 11, tzinfo=timezone.utc),
         vote_counts_json="{}",
     )
 

@@ -390,6 +390,7 @@ async def _stash_refund(
                     amount_nanotons=transfer.value_nanotons,
                     round_id=round_id,
                     player_id=ledger_player_id,
+                    network=current_network(),
                     unit_ref=transfer.tx_hash,
                     note=f"in:{ledger_result};src:…{transfer.source[-10:]}"[:200],
                 )
@@ -429,6 +430,7 @@ async def _ledger_incoming(
             amount_nanotons=transfer.value_nanotons,
             round_id=round_id,
             player_id=player_id,
+            network=current_network(),
             unit_ref=transfer.tx_hash,
             note=f"in:{result};src:…{transfer.source[-10:]}"[:200],
         )
@@ -605,6 +607,7 @@ async def _process_revote(session, transfer: Transfer, player: Player, round_id:
             amount_nanotons=transfer.value_nanotons,
             round_id=round_id,
             player_id=player.id,
+            network=current_network(),
             unit_ref=transfer.tx_hash,
             note=f"rv:{round_id}",
         )
