@@ -1251,9 +1251,11 @@ async def cmd_change(message: Message) -> None:
             await message.answer(
                 "Выбери способ оплаты:\n\n"
                 "⭐ <b>Stars</b> — надёжно и мгновенно (кнопка оплаты в Telegram).\n"
-                "💎 <b>Gram</b> — перевод казначею в зоне платы за смену "
-                f"({settings.revote_ton:g}…{settings.stake_min_ton:g} Gram). Мемо "
-                "не обязателен: сумма сама зачтётся как оплата смены.",
+                "💎 <b>Gram</b> — перевод казначею: от "
+                f"{settings.revote_ton:g} до 0.49 Gram (строго меньше минимума ставки "
+                f"{settings.stake_min_ton:g} Gram). Мемо — только если приложишь, то "
+                "точь-в-точь `rv:день`; без мемо сумма из той же вилки зачтётся "
+                "сама как оплата смены.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_revote_keyboard(round_id),
             )
@@ -1428,13 +1430,15 @@ async def on_payton(callback: CallbackQuery) -> None:
         return
     address = settings.active_treasury_address
     await callback.message.answer(
-        f"{money_mark(raw)} Переведи {settings.revote_ton:g} Gram (или больше, но меньше "
-        f"минимума ставки {settings.stake_min_ton:g} Gram) на адрес казначея:\n"
+        f"{money_mark(raw)} Переведи от {settings.revote_ton:g} до 0.49 Gram "
+        f"(строго меньше минимума ставки {settings.stake_min_ton:g} Gram) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
         f"С комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
-        "Если кошелёк приложит мемо — оплата привяжется мгновенно и любой суммой. "
-        "Без мемо сумма из вилки платы за смену всё равно зачтётся автоматически, "
-        "ведь ставкой она быть не может (минимум ставки выше). Грант придёт в течение минуты.\n\n"
+        "Эту сумму ставкой быть не может — потолок ниже минимума ставки. "
+        "Ровно 0.5 Gram не подойдёт: это уже минимальная ставка, а не оплата смены пути "
+        "(бот примет её как ставку дня). Если кошелёк приложит мемо — оплата привяжется "
+        "мгновенно и любой суммой из вилки. Без мемо сумма из той же вилки зачтётся "
+        "автоматически. Грант придёт в течение минуты.\n\n"
         "💡 Надёжнее и без кошелька — Stars: кнопка оплаты прямо в Telegram.\n"
         "Кошелёк должен быть привязан: /wallet. Неиспользованный до конца дня грант сгорает.",
         parse_mode=ParseMode.HTML,
