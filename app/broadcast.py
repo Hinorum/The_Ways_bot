@@ -314,38 +314,6 @@ async def _economics_own_session(row: Round) -> dict:
         return await day_economics(own, row)
 
 
-def winner_card(round_row: Round):
-    return next(
-        (card for card in round_row.cards if card.position == round_row.winner_card),
-        None,
-    )
-
-
-def winner_photo(round_row: Round) -> FSInputFile | None:
-    """Фото для поста итогов: «мир после выбора» этого дня.
-
-    Легаси-дни с готовой картинкой победившей карты показывают её; новые дни
-    (карты без генерации) получают обложку дня — она и есть последствия
-    канона. Совсем пропавший файл дорисовывается локальным шаблоном; без
-    победителя фото нет.
-    """
-    card = winner_card(round_row)
-    if card is None:
-        return None
-    if card.image_path:
-        path = Path(card.image_path)
-        if path.exists():
-            return FSInputFile(path)
-    cover = (
-        Path(round_row.cover_path)
-        if round_row.cover_path
-        else Path(settings.media_dir) / f"day{round_row.day_index}_cover.jpg"
-    )
-    if not cover.exists():
-        render_cover(cover, round_row.chapter_title, round_row.chapter_text)
-    return FSInputFile(cover)
-
-
 _BROADCAST_PARALLELISM = 8
 
 
@@ -362,27 +330,10 @@ async def _deliver_day(
     if finished is not None:
         if results_text is None:
             results_text = await results_message(finished)
-        photo = winner_photo(finished)
-        sent_together = False
-        if photo is not None and results_text:
-            # Один пост: обложка дня + канон + итоги дня в подписи к фото.
-            # Telegram режет подписи фото на 1024 знака — если «Итоги дня»
-            # (с экономикой и эпилогом) не помещаются, возвращаемся к двум
-            # сообщениям, чтобы не терять цифры и текст.
-            caption = f"Канон дня: {winner_card(finished).title}\n\n{results_text}"
-            if len(caption) <= 1024:
-                await bot.send_photo(chat_id, photo=photo, caption=caption)
-                sent_together = True
-        if not sent_together:
-            if photo is not None:
-                card = winner_card(finished)
-                await bot.send_photo(
-                    chat_id,
-                    photo=photo,
-                    caption=f"Канон дня: {card.title}"[:1000],
-                )
-            if results_text:
-                await bot.send_message(chat_id, results_text)
+        # Итоги дня — только текстом. Фото победившей ветки не постим: это был
+        # дубль обложки нового дня, а вечерний костёр уже дал отдельный кадр.
+        if results_text:
+            await bot.send_message(chat_id, results_text)
     media, story_in_caption = build_day_post(round_row)
     if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
@@ -507,6 +458,44 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
     outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
     delivered = sum(1 for ok in outcomes if ok)
     logger.info("Шёпот дня разослан в %d из %d чатов", delivered, len(chat_ids))
+    return delivered
+
+
+async def whisper_photo_to_chats(bot: Bot | None, photo, caption: str) -> int:
+    """Вечерний кадр: фото с подписью-микросценой во все живые чаты.
+
+    Параллелен whisper_to_chats, только мимо send_photo (чтобы кадр костра
+    летел вместе с текстом). Возвращает число доставленных чатов.
+    """
+    if bot is None or not caption:
+        return 0
+    chat_ids = await active_chat_ids()
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(chat_id: int) -> bool:
+        async with semaphore:
+            try:
+                await bot.send_photo(chat_id, photo=photo, caption=caption)
+                return True
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after + 1)
+                try:
+                    await bot.send_photo(chat_id, photo=photo, caption=caption)
+                    return True
+                except Exception:
+                    return False
+            except TelegramForbiddenError:
+                await deactivate_chat(chat_id)
+                return False
+            except Exception as exc:
+                lowered = str(exc).lower()
+                if any(mark in lowered for mark in _FORGET_MARKS):
+                    await deactivate_chat(chat_id)
+                return False
+
+    outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
+    delivered = sum(1 for ok in outcomes if ok)
+    logger.info("Вечерний кадр доставлен в %d из %d чатов", delivered, len(chat_ids))
     return delivered
 
 

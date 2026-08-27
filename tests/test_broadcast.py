@@ -221,44 +221,21 @@ def _finished(day_index: int, media_dir) -> Round:
     return finished
 
 
-async def test_finished_day_canon_and_results_in_one_post(tmp_path, monkeypatch) -> None:
-    """Итоги дня склеены с обложкой в один пост: канон и «Итог дня» в подписи фото."""
+async def test_finished_day_results_sent_as_text_no_photo(tmp_path, monkeypatch) -> None:
+    """Итоги дня — только текстом: без фото победившей ветки (это был дубль
+    обложки нового дня). Текст «Итог дня» уходит обычным сообщением."""
     media_dir = tmp_path
     monkeypatch.setattr(settings, "media_dir", str(media_dir))
     finished = _finished(9110, media_dir)
     next_day = _round(9111, media_dir)
-    monkeypatch.setattr(
-        "app.broadcast.winner_photo",
-        lambda finished: SimpleNamespace(file_id=None),
-    )
     bot = _bot({})
     results = "🎊 Итог дня 1\n📜 Канон: Путь 1\nканон-текст"
 
     await _deliver_day(bot, 777_010, next_day, finished, results_text=results)
 
-    caption = bot.send_photo.call_args.kwargs.get("caption", "")
-    assert "Канон дня: " in caption and "Итог дня" in caption
-    # Результаты НЕ уходят отдельным текстовым сообщением.
     sent_texts = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
-    assert results not in sent_texts
-
-
-async def test_long_results_fall_back_to_two_posts(tmp_path, monkeypatch) -> None:
-    """«Итоги дня» длиннее лимита подписи фото (1024) не режутся: шлём два поста."""
-    media_dir = tmp_path
-    monkeypatch.setattr(settings, "media_dir", str(media_dir))
-    finished = _finished(9112, media_dir)
-    next_day = _round(9113, media_dir)
-    monkeypatch.setattr(
-        "app.broadcast.winner_photo",
-        lambda finished: SimpleNamespace(file_id=None),
-    )
-    bot = _bot({})
-    long_results = "🎊 Итог дня 1\n" + ("Длинный текст экономики и эпилога. " * 90)
-
-    await _deliver_day(bot, 777_012, next_day, finished, results_text=long_results)
-
-    caption = bot.send_photo.call_args.kwargs.get("caption", "")
-    assert "Канон дня: " in caption and "Итог дня" not in caption
-    sent_texts = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
-    assert long_results in sent_texts  # ушёл отдельным сообщением целиком
+    assert results in sent_texts
+    # Ни один фото-пост не несёт «Итог дня» в подписи: картинку итога не шлём.
+    for call in bot.send_photo.await_args_list:
+        caption = call.kwargs.get("caption", "") or ""
+        assert "Итог дня" not in caption

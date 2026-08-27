@@ -58,6 +58,81 @@ async def _prepare_job(round_id: int) -> None:
         logger.exception("Прегенерация следующего дня не удалась — откроем синхронно")
 
 
+# Кадр вечернего костра. Темы-константы держим здесь, чтобы вечерний «привал»
+# оценивался как самостоятельная сцена: стая у огня, невыбранные карты,
+# воздух висящей развилки. 1 кадр в день — отдельная генерация от обложки.
+_EVENING_CAMP_SCENE = (
+    "a small circle of warm campfire light in the dark around the stray dog "
+    "pack at night, the dogs lying close to the fire facing several weathered "
+    "cards laid on the ground, one card reflected in their eyes, heavy unspoken "
+    "tension in the air of a choice not yet made, faint moving shadows at the "
+    "edge of the firelight, pinprick stars above"
+)
+_EVENING_CAMP_ART = "day{day_index}_camp.jpg"
+
+
+def _campfire_bible(round_row) -> dict:
+    """Минимальная библия вечернего кадра: костёр, стая, невыбранные карты."""
+    place = (getattr(round_row, "place", None) or "").strip()
+    scene = _EVENING_CAMP_SCENE
+    if place:
+        scene = f"{scene}, the {place} stretching dark beyond the fire"
+    return {
+        "shots": {"cover": {"scene": scene, "composition": ""}},
+        "palette": "deep indigo and ember orange",
+        "lighting": "low firelight, long soft shadows",
+        "motifs": ["a card glinting faintly in the firelight"],
+    }
+
+
+async def _campfire_art(day_index: int, round_row) -> str | None:
+    """Кадр вечернего костра: 1 генерация/день. None — кадр не получился."""
+    from pathlib import Path
+
+    from app.art_director import build_image_prompt, short_image_prompt
+    from app.story import fetch_day_image, render_cover
+
+    dest = Path(settings.media_dir) / _EVENING_CAMP_ART.format(day_index=day_index)
+    seed = 40_000 + day_index * 11
+    bible = _campfire_bible(round_row)
+    fetched = await fetch_day_image(
+        build_image_prompt(bible, "cover", seed=seed),
+        short_image_prompt(bible, "cover", seed=seed),
+        dest,
+        seed=seed,
+        width=1280,
+        height=720,
+    )
+    if not fetched:
+        await asyncio.to_thread(
+            render_cover,
+            dest,
+            f"Вечерний привал · день {day_index}",
+            round_row.chapter_title or "",
+        )
+    return str(dest) if dest.exists() else None
+
+
+async def _day_candidates(session, round_id: int) -> list[tuple[str, str]]:
+    """Публичные карты дня: (название, последствие) по позициям.
+
+    Возвращаются только публичные данные — названия и последствия видны всем
+    игрокам. Никаких цифр голосов и победителя: их вечер не называет.
+    """
+    from sqlalchemy import select
+
+    from app.models import Card
+
+    rows = (
+        await session.execute(
+            select(Card)
+            .where(Card.round_id == round_id)
+            .order_by(Card.position)
+        )
+    ).scalars()
+    return [(c.title, c.consequence or "") for c in rows if c.title]
+
+
 async def _micro_event_job(round_id: int, day_index: int) -> None:
     """Вечерний привал: микросцена-продолжение утренней главы в прайм-тайм,
     чтобы вечер жил между утром и итогами. Падения полностью некритичны."""
@@ -91,19 +166,27 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
             from app.council import page_for_run_day
 
             council_page = page_for_run_day(run_day)
+            candidates = _day_candidates(session, round_id)
             text = (
                 council_page
                 if council_page is not None
                 else await _compose_whisper(
                     day_index, season_hint, chapter_excerpt,
                     intrigue=intrigue,
+                    candidates=candidates,
                 )
             )
             session.add(WatcherState(key=marker, value="1"))
             await session.commit()
-        from app.broadcast import whisper_to_chats
+        from aiogram.types import FSInputFile
 
-        await whisper_to_chats(_bot, text)
+        from app.broadcast import whisper_photo_to_chats, whisper_to_chats
+
+        camp_path = await _campfire_art(day_index, round_row)
+        if camp_path and text:
+            await whisper_photo_to_chats(_bot, FSInputFile(camp_path), text)
+        else:
+            await whisper_to_chats(_bot, text)
     except Exception:
         logger.exception("Вечерняя микросцена не удалась (не мешает тику)")
 
@@ -113,9 +196,12 @@ async def _compose_whisper(
     season_hint: str,
     chapter_excerpt: str = "",
     intrigue: bool = False,
+    candidates: list[tuple[str, str]] | None = None,
 ) -> str:
     """Микросцена вечера: нейротекст с офлайн-фолбэком. Не раскрывает ни эхи,
-    ни расклад голосов — только продолжает утреннюю сцену одной репликой."""
+    ни расклад голосов — только продолжает утреннюю сцену одной репликой. Если
+    переданы кандидаты (публичные карты дня), текст сильнее «чувствует»
+    висящую развилку и переплетённость путей — без имён победителя."""
     import random as _random
 
     from app.story import DM_SYSTEM_PROMPT, _chat_completion, text_is_clean
@@ -149,6 +235,17 @@ async def _compose_whisper(
     except Exception:
         hint = ""
 
+    cards_line = ""
+    if candidates:
+        names = "», «".join(title for title, _ in candidates if title)
+        if names:
+            cards_line = (
+                f"\nКарты вечера на столе — пути, которые стая ещё не выбрала: "
+                f"«{names}». Решение не принято, но мир уже ощущает тяжесть "
+                f"этой развилки: пути тянут в разные стороны, и стая чувствует "
+                f"переплетённость выбора кожей.\n"
+            )
+
     task = (
         "Вечерняя ИНТРИГА: поставь утреннюю примету под сомнение одной "
         "деталяю или вопросом, которого никто не произнёс вслух; "
@@ -156,9 +253,11 @@ async def _compose_whisper(
         if intrigue
         else (
             "Напиши микросцену вечера: 2-4 предложения (до 450 знаков). "
-            "Стая у карт, сцена дотянулась до заката; одна прямая реплика "
-            "персонажа в его манере речи; финал — недоговорённость перед "
-            "закрытием развилки."
+            "Стая у карт костра, сцена дотянулась до заката; одна прямая "
+            "реплика персонажа в его манере речи; финал — недоговорённость "
+            "перед закрытием развилки. Пусть сквозит трепет от того, как "
+            "близко решение и как переплетены ещё не выбранные пути — "
+            "шерсть встаёт дыбом от тяжести выбора."
         )
     )
     messages = [
@@ -173,9 +272,10 @@ async def _compose_whisper(
                     if chapter_excerpt
                     else ""
                 )
+                + cards_line
                 + task
-                + "Без цифр голосов, без намёков на текущий расклад. "
-                "Ответь чистым текстом, без JSON."
+                + "Без цифр голосов, без имён победителя и без намёков на "
+                "текущий расклад. Ответь чистым текстом, без JSON."
             ),
         },
     ]
@@ -200,6 +300,9 @@ async def _compose_whisper(
         "Хозяин Ошибки сегодня не считал вслух. Тишина от него страшнее любого счёта.",
         "Тени легли к картам, хотя света уже не было. Вечер здесь не спрашивает разрешения у физики.",
         "Стая переглянулась: до закрытия развилки оставалась ночь, а решение всё ещё было только одно — на всех.",
+        "Костёр выхватывал из темноты то одну карту, то другую, и каждая на миг становилась настоящей. Стая молчала — но в этом молчании слышалось, как передвигаются ещё не выбранные пути.",
+        "Лапа Вектора зависла над картами и легла на пустое место между ними. «Сначала мир», — сказал он, и собак передёрнуло от того, что это значило.",
+        "Сполохи озаряли лица по очереди, и у каждого путь на миг проступал в глазах. Развилка почти что выбрала саму себя — но никто ещё не решился это признать.",
     ]
     rng = _random.Random(f"whisper:{day_index}")
     return rng.choice(fallback)

@@ -167,55 +167,6 @@ def test_story_prompt_demands_full_narrative() -> None:
     assert RULE_PHRASES[WinRule.MAJORITY] in prompt
 
 
-def test_winner_photo_reuses_generated_file(tmp_path, monkeypatch) -> None:
-    """Итоги получают фото победившей карты — без новой генерации (легаси)."""
-    from app.broadcast import winner_photo
-
-    finished = Round(
-        day_index=9,
-        status=RoundStatus.CLOSED,
-        win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
-        chapter_title="t",
-        chapter_text="text",
-        lore_summary="lore",
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc),
-        tally_ends_at=datetime.now(timezone.utc),
-        winner_card=2,
-    )
-    image = tmp_path / "day8_card2.jpg"
-    image.write_bytes(b"\xff\xd8\xfffakejpeg")
-    finished.cards = [
-        Card(position=i, title=f"C{i}", description="d", consequence="Канон.",
-             tag="care", image_path=str(image))
-        for i in range(3)
-    ]
-    photo = winner_photo(finished)
-    assert photo is not None
-
-    # Легаси-файл на месте — показывается именно он.
-    assert image.exists()
-
-    # Новый мир: у карт нет генерации — итоги показывает ОБЛОЖКА дня
-    # («после выбора»), а не перерисованная карта.
-    for card in finished.cards:
-        card.image_path = ""
-    finished.cover_path = str(tmp_path / "day8_cover.jpg")
-    (tmp_path / "day8_cover.jpg").write_bytes(b"\xff\xd8\xfffakejpeg")
-    photo = winner_photo(finished)
-    assert photo is not None
-
-    # Обложки нет — рисуется локальный шаблон, а не падение.
-    (tmp_path / "day8_cover.jpg").unlink()
-    monkeypatch.setattr("app.broadcast.render_cover", lambda p, t, body="": p.write_bytes(b"x"))
-    photo = winner_photo(finished)
-    assert photo is not None and (tmp_path / "day8_cover.jpg").exists()
-
-    # Нет победителя — нет фото.
-    finished.winner_card = None
-    assert winner_photo(finished) is None
-
 
 def _seed_beat(day: int) -> "StoryBeat":
     return StoryBeat(

@@ -239,3 +239,36 @@ def scheduler_mod_running() -> bool:
     from app.scheduler import scheduler as sched
 
     return bool(sched.running)
+
+
+async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypatch) -> None:
+    """Вечерний привал ощущает публичные карты дня (называя их), но не
+    раскрывает ни расклад, ни победителя."""
+    from app.scheduler import _compose_whisper
+
+    captured: dict = {}
+
+    async def fake_chat_completion(messages, timeout=None):
+        captured["user"] = messages[1]["content"]
+        return [{"choices": [{"message": {"content": "Вечерняя сцена у огня."}}]}]
+
+    monkeypatch.setattr("app.story._chat_completion", fake_chat_completion)
+
+    text = await _compose_whisper(
+        7,
+        "до Дня Первого Лая 3 дн.",
+        "Утренняя глава начиналась с тишины.",
+        intrigue=False,
+        candidates=[("Тропа Истока", "стайка вернётся к порталу"), ("Пепел Моста", "мост замолчит")],
+    )
+
+    assert text == "Вечерняя сцена у огня."
+    user = captured["user"]
+    # называем обе публичные карты дня
+    assert "Тропа Истока" in user and "Пепел Моста" in user
+    # вечер передаёт трепет переплетённости выбора
+    assert "переплетённость" in user
+    # запрет на раскрытие расклада и победителя
+    assert "цифр голосов" in user and "имён победителя" in user
+    assert "намёков на текущий расклад" in user
+
