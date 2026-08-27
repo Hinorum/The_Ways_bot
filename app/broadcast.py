@@ -278,11 +278,11 @@ async def deactivate_chat(chat_id: int) -> None:
             logger.info("Чат %s помечен неактивным", chat_id)
 
 
-async def results_message(finished: Round, session=None) -> str:
-    """Сухие итоги + экономика дня + эпилог от нейросети (если он написан).
+async def results_body(finished: Round, session=None) -> str:
+    """Сухие итоги + экономика дня (БЕЗ нейро-эпилога).
 
-    session можно передать готовую (тесты, вызовы внутри транзакции);
-    иначе открывается своя краткоживущая сессия.
+    Быстрая, только БД — это то, что уходит пользователям СРАЗУ после вскрытия
+    итогов, пока эпилог ещё пишется нейросетью. session можно передать готовую.
     """
     from app.tally import day_economics, format_economics
 
@@ -301,6 +301,16 @@ async def results_message(finished: Round, session=None) -> str:
             economics = format_economics(stats)
             if economics:
                 text += f"\n\n{economics}"
+    return text
+
+
+async def results_message(finished: Round, session=None) -> str:
+    """Полные итоги дня: сухой блок + экономика + эпилог от нейросети (если готов).
+
+    session можно передать готовую (тесты, вызовы внутри транзакции);
+    иначе открывается своя краткоживущая сессия.
+    """
+    text = await results_body(finished, session)
     epilogue = getattr(finished, "epilogue_text", "") or ""
     if epilogue:
         text += f"\n\n{epilogue}"
@@ -388,7 +398,11 @@ async def announce_new_day(
     round_row: Round,
     finished: Round | None = None,
 ) -> list[int]:
-    """Итоги прошлого дня (если передан) + обложка и карты нового дня.
+    """Обложка и карты НОВОГО дня; итоги прошлого дня — если передан finished.
+
+    В автопереходе итоги постятся отдельно (announce_results) сразу после
+    вскрытия, а сюда новый день передаётся без finished — чтобы не дублировать
+    итоги. Ручной /advance по-прежнему передаёт finished и постит всё вместе.
 
     Чаты доставляются параллельно ограниченным пулом: последовательная
     рассылка (~7 сообщений и 4 аплоада на чат) упирается в часы уже на
@@ -421,6 +435,81 @@ async def announce_new_day(
         len(delivered),
         len(chat_ids),
     )
+    return delivered
+
+
+async def _broadcast_text(bot: Bot, text: str) -> int:
+    """Одно текстовое сообщение во все живые чаты с одним ретраем и флуд-контролем.
+
+    Возвращает число доставленных чатов; провалы не критичны.
+    """
+    if not text.strip():
+        return 0
+    chat_ids = await active_chat_ids()
+    if not chat_ids:
+        return 0
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(chat_id: int) -> int | None:
+        async with semaphore:
+            try:
+                await bot.send_message(chat_id, text)
+                return chat_id
+            except TelegramRetryAfter as exc:
+                logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
+                await asyncio.sleep(exc.retry_after + 1)
+                try:
+                    await bot.send_message(chat_id, text)
+                    return chat_id
+                except Exception:
+                    return None
+            except TelegramForbiddenError:
+                await deactivate_chat(chat_id)
+                return None
+            except Exception as exc:
+                logger.warning("Текст не доставлен в чат %s: %s", chat_id, exc)
+                if any(mark in str(exc).lower() for mark in _FORGET_MARKS):
+                    await deactivate_chat(chat_id)
+                return None
+
+    outcomes = await asyncio.gather(*(worker(chat_id) for chat_id in chat_ids))
+    return len([c for c in outcomes if c is not None])
+
+
+async def announce_results(bot: Bot | None, finished: Round) -> int:
+    """Постит СРАЗУ только итоги прошлого дня (без нейро-эпилога и без нового дня).
+
+    Отделено от announce_new_day, чтобы итоги уходили пользователям немедленно
+    после вскрытия, не дожидаясь нейро-контента нового дня. Возвращает число
+    доставленных чатов.
+    """
+    if bot is None:
+        return 0
+    try:
+        text = await results_body(finished)
+    except Exception:
+        logger.exception("Итоги дня %s не собраны — отдаём сухой шаблон", getattr(finished, "day_index", "?"))
+        text = ""
+    if not text:
+        return 0
+    delivered = await _broadcast_text(bot, text)
+    logger.info("Итоги дня %s разосланы: доставлено %d чатов", getattr(finished, "day_index", "?"), delivered)
+    return delivered
+
+
+async def announce_epilogue(bot: Bot | None, finished: Round) -> int:
+    """Доносит нейро-эпилог отдельным коротким постом, когда он дописан.
+
+    Итоги ушли сразу без эпилога; здесь эпилог приходит следом. Возвращает
+    число доставленных чатов.
+    """
+    if bot is None:
+        return 0
+    epilogue = (getattr(finished, "epilogue_text", "") or "").strip()
+    if not epilogue:
+        return 0
+    delivered = await _broadcast_text(bot, epilogue)
+    logger.info("Эпилог дня %s разослан: доставлено %d чатов", getattr(finished, "day_index", "?"), delivered)
     return delivered
 
 

@@ -16,14 +16,11 @@ from app.rounds import (
     _now,
     claim_announcement,
     close_voting,
-    create_next_round_detailed,
     ensure_current_round,
     finish_tally,
     get_latest_round,
-    patch_prepared_day,
     prepare_next_day,
     utc_aware,
-    write_epilogue,
 )
 from app.story import _TEASER_FALLBACKS
 from app.tally import award_points
@@ -486,14 +483,7 @@ async def tick(bot: Bot | None = None) -> None:
             finished, closed_here = await finish_tally(session, current)
             if closed_here:
                 await award_points(session, finished)
-                await write_epilogue(session, finished)
-                # Фаза 2 прегенерации: заготовка завтра собрана до вскрытия
-                # итогов — теперь итог дня известен и вплетается в её начало.
-                try:
-                    await patch_prepared_day(session, finished)
-                except Exception:
-                    logger.exception("Патч заготовки итогом дня не удался — день откроется как есть")
-                # Финализируем всегда, а не только при включённом TON:
+                # Финализуем всегда, а не только при включённом TON:
                 # если флаг погасили посреди дня со ставками, долг игрокам
                 # должен остаться видимым (очередь+алерты), а не исчезнуть.
                 from app.stakes import finalize_day_payouts
@@ -502,11 +492,86 @@ async def tick(bot: Bot | None = None) -> None:
                 # Вознаграждения победителям: мгновенный пинок диспетчера,
                 # деньги уходят в течение пары минут после итогов.
                 asyncio.create_task(_payout_dispatch_job())
+                # ИТОГИ СРАЗУ: быстрый пост (только БД), без нейро-эпилога и
+                # без ожидания нового дня — пользователи видят результат немедленно.
+                asyncio.create_task(_announce_results_job(finished.id))
+                # Тяжёлая часть уходит в фон: эпилог (нейро) → обложка →
+                # материализация нового дня → пост дня → личные эха.
+                # Новый день откроется «чуть позже», когда будет готов контент.
+                asyncio.create_task(_finalize_new_day_job(finished.id))
+
+
+async def _announce_results_job(finished_id: int) -> None:
+    """Мгновенная рассылка сухих итогов дня (без эпилога и нового дня).
+
+    Дёргается отдельной джобой сразу после вскрытия, чтобы не ждать
+    нейро-контент нового дня. Своя сессия — запущена из тика после закрытия
+    его собственной транзакции.
+    """
+    try:
+        from app.broadcast import announce_results
+        from app.models import Round
+
+        async with SessionLocal() as session:
+            finished = await session.get(Round, finished_id)
+            if finished is None:
+                logger.warning("Итоги дня %s: раунд не найден", finished_id)
+                return
+            await announce_results(_bot, finished)
+    except Exception:
+        logger.exception("Итоги дня %s не разосланы (не мешает тику)", finished_id)
+
+
+async def _finalize_new_day_job(finished_id: int) -> None:
+    """Тяжёлая доработка нового дня — фоном, по готовности нейро-контента.
+
+    Итоги уже разосланы отдельно (_announce_results_job). Здесь: эпилог →
+    пост эпилога → обложка победившей ветки → материализация нового дня →
+    пост дня → личные эха. Итоги не дублируются: announce_new_day зовётся
+    без finished. Свои краткоживущие сессии (нельзя переиспользовать сессию
+    тика — она за пределами этого контекста).
+    """
+    from app.models import Round
+
+    try:
+        from app.broadcast import announce_epilogue, announce_new_day
+        from app.rounds import create_next_round_detailed, patch_prepared_day, write_epilogue
+
+        # 1. Эпилог подтверждает выбор и закрепляется в БД (идемпотентно).
+        # cards грузим сразу: write_epilogue/patch_prepared_day ходят по ним
+        # синхронно, ленивая подгрузка вне await дала бы MissingGreenlet.
+        async with SessionLocal() as session:
+            finished = (
+                await session.execute(
+                    select(Round).where(Round.id == finished_id).options(selectinload(Round.cards))
+                )
+            ).scalar_one_or_none()
+            if finished is None:
+                logger.warning("Доработка дня %s: раунд не найден", finished_id)
+                return
+            await write_epilogue(session, finished)
+            # Фаза 2 прегенерации: заготовка завтра собрана до вскрытия
+            # итогов — теперь итог дня известен и вплетается в её начало.
+            try:
+                await patch_prepared_day(session, finished)
+            except Exception:
+                logger.exception("Патч заготовки итогом дня не удался — день откроется как есть")
+        # 2. Дописываем эпилог отдельным корочким постом (итоги уже ушли без него).
+        async with SessionLocal() as session:
+            finished = await session.get(Round, finished_id)
+            if finished is not None:
+                await announce_epilogue(_bot, finished)
+        # 3. Материализуем и открываем новый день (по готовой заготовке).
+        async with SessionLocal() as session:
             nxt, created = await create_next_round_detailed(session)
-            if created:
-                await announce_new_day(bot, nxt, finished if closed_here else None)
-            if closed_here and settings.personal_echo:
-                asyncio.create_task(_personal_echo_job(finished.id))
+        if created:
+            # finished не передаём: итоги уже разосланы отдельным постом.
+            await announce_new_day(_bot, nxt)
+        # 4. Личные эха победителям — как и раньше, фоном после итогов.
+        if settings.personal_echo:
+            asyncio.create_task(_personal_echo_job(finished_id))
+    except Exception:
+        logger.exception("Доработка дня %s упала (итоги уже ушли отдельно)", finished_id)
 
 
 async def _payout_dispatch_job() -> None:

@@ -179,6 +179,10 @@ async def test_tick_finishes_day_and_opens_next() -> None:
     try:
         await tick(None)
         assert await _status_of(9551) == RoundStatus.CLOSED
+        # Итоги формируются в тике сразу (до создания нового дня). Пост нового
+        # дня уходит фоном, когда готов нейро-контент, — ждём фоновые джобы,
+        # чтобы проверить, что день всё же открылся и день-итог завершён.
+        await _drain_background()
         async with SessionLocal() as db:
             fresh = (
                 await db.execute(select(Round).where(Round.day_index == 9552).limit(1))
