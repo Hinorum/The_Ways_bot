@@ -189,6 +189,67 @@ async def test_drift_detected_then_manual_out_silences_alert(ton_on, monkeypatch
         await _wipe_money_rows()
 
 
+async def test_single_stake_not_double_counted(ton_on, monkeypatch) -> None:
+    """Регрессия: один перевод 1 Gram (подтверждённая ставка + её Income-строка)
+    не даёт фантомной «пропажи». Раньше ставка считалась дважды (Stake в staked
+    + Income kind=ton в revotes), и ровно на её сумму появлялось ложное
+    расхождение «баланс ниже ожиданий БД»."""
+    monkeypatch.setattr(settings, "treasury_address", "0:" + "33" * 32)
+    balance = to_nano(1)
+    monkeypatch.setattr(
+        ton_pay, "fetch_account_state", AsyncMock(return_value=(balance, None, "tonapi"))
+    )
+    now = datetime.now(timezone.utc)
+    try:
+        async with SessionLocal() as db:
+            round_row = Round(
+                day_index=97_960,
+                status=RoundStatus.CLOSED,
+                win_rule=WinRule.MAJORITY,
+                rule_commitment="c",
+                chapter_title="t",
+                chapter_text="x",
+                lore_summary="l",
+                opens_at=now - timedelta(hours=25),
+                voting_ends_at=now - timedelta(hours=1),
+                tally_ends_at=now,
+            )
+            player = Player(id=930_961, username="one_gram")
+            db.add_all([round_row, player])
+            await db.flush()
+            db.add_all(
+                [
+                    Stake(
+                        round_id=round_row.id, player_id=player.id,
+                        amount_nanotons=to_nano(1), tx_hash="ok-1g",
+                        status="confirmed",
+                        network="testnet" if settings.is_testnet else "mainnet",
+                    ),
+                    Income(
+                        kind="ton", amount_nanotons=to_nano(1),
+                        unit_ref="ok-1g", round_id=round_row.id, player_id=player.id,
+                        note="in:stake:ok",
+                    ),
+                ]
+            )
+            await db.commit()
+        async with SessionLocal() as session:
+            state = await ops.treasury_expected_state(session)
+            assert state is not None
+            # 1 Gram на цепи = 1 Gram прихода БД (ровно один учёт): дрейфа нет.
+            assert state.balance_nanotons == to_nano(1)
+            assert state.expected_nanotons == to_nano(1)
+            assert state.drift_nanotons == 0
+            assert await ops._treasury_balance_anomaly(session) is None
+    finally:
+        await _wipe_money_rows()
+        async with SessionLocal() as db:
+            await db.execute(delete(Stake).where(Stake.tx_hash == "ok-1g"))
+            await db.execute(delete(Player).where(Player.id == 930_961))
+            await db.execute(delete(Round).where(Round.day_index == 97_960))
+            await db.commit()
+
+
 async def test_record_adjustment_validates_input() -> None:
     with pytest.raises(ValueError):
         await ops.record_manual_adjustment(None, "manual_sideways", to_nano(1))

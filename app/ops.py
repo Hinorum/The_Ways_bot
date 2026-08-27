@@ -285,11 +285,16 @@ class TreasuryDrift(NamedTuple):
 async def treasury_expected_state(session) -> TreasuryDrift | None:
     """Баланс цепочки против ожиданий БД; None — баланс недоступен.
 
-    Ожидаемый остаток = подтверждённые ставки + revote-переводы + ручные
-    пополнения − ручные выводы − все выплаты (sent уже ушли, pending/sending
-    ещё уйдут). Допуск покрывает сгоревший газ исходящих переводов.
+    Ожидаемый остаток = все входящие переводы казны (ставки и revote-оплата,
+    это строки Income kind="ton") + ручные пополнения − ручные выводы − все
+    выплаты (sent уже ушли, pending/sending ещё уйдут). Допуск покрывает
+    сгоревший газ исходящих переводов.
+
+    ВАЖНО: подтверждённые ставки отдельно НЕ суммируем — каждый входящий
+    перевод уже создаёт строку Income kind="ton" (ton_watch._ledger_incoming /
+    _process_revote), и ставка дважды посчиталась бы (двойной учёт 1 Gram —
+    неправдоподобные «пропажи» на ровном месте).
     """
-    from app.models import Stake
     from app.ton_pay import fetch_account_state
 
     try:
@@ -328,15 +333,6 @@ async def treasury_expected_state(session) -> TreasuryDrift | None:
             )
         ).scalar_one()
     )
-    staked = int(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(Stake.amount_nanotons), 0)).where(
-                    Stake.status == "confirmed", Stake.network == network,
-                )
-            )
-        ).scalar_one()
-    )
     revotes = int(
         (
             await session.execute(
@@ -364,7 +360,7 @@ async def treasury_expected_state(session) -> TreasuryDrift | None:
             )
         ).scalar_one()
     )
-    expected = staked + revotes + manual_in - manual_out - sent - unpaid
+    expected = revotes + manual_in - manual_out - sent - unpaid
     # Газ сгорает на каждом исходящем переводе; допуск = база + запас по числу.
     from app.ton_utils import to_nano
 

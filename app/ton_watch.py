@@ -334,18 +334,25 @@ def _decode_comment(in_msg: dict) -> str:
 
 
 async def _stash_refund(
-    session, transfer: Transfer, round_id: int | None, comment: str | None = None
+    session,
+    transfer: Transfer,
+    round_id: int | None,
+    comment: str | None = None,
+    *,
+    ledger_result: str | None = None,
+    ledger_player_id: int | None = None,
 ) -> str:
-    """Авто-возврат перевода, который не может стать ставкой или оплатой.
+    """Авто-возврат перевода + запись в ledger доходов за один коммит.
 
     Идемпотентно по tx_hash: повторная обработка той же транзакции не плодит
     вторую выплату. Отправка — обычным порядком через dispatch_pending_payouts.
 
-    Древние переводы (старе WATCH_REFUND_MAX_AGE_DAYS) не возвращаются: после
+    Древние переводы (старше WATCH_REFUND_MAX_AGE_DAYS) не возвращаются: после
     сброса базы курсор обнуляется и история казны перечитывается целиком —
     без лимита старый спам вечно рождал бы новые dead-letter возвраты.
     comment — свободный текст перевода вместо служебного memo «way:…»
     (возвраты при паузе игры объясняют игроку, что идут техработы).
+    ledger_result — если передан, создаётся запись Income в том же коммите.
     """
     age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
     if age_days > max(0, settings.watch_refund_max_age_days):
@@ -372,6 +379,21 @@ async def _stash_refund(
             comment_override=comment[:120] if comment else None,
         )
     )
+    if ledger_result is not None:
+        existing_income = await session.execute(
+            select(Income.id).where(Income.unit_ref == transfer.tx_hash).limit(1)
+        )
+        if existing_income.scalar_one_or_none() is None:
+            session.add(
+                Income(
+                    kind="ton",
+                    amount_nanotons=transfer.value_nanotons,
+                    round_id=round_id,
+                    player_id=ledger_player_id,
+                    unit_ref=transfer.tx_hash,
+                    note=f"in:{ledger_result};src:…{transfer.source[-10:]}"[:200],
+                )
+            )
     await session.commit()
     logger.info("Перевод %s возвращён отправителю", transfer.tx_hash[:16])
     return "refund_queued"
@@ -426,19 +448,15 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
             select(Player).where(Player.wallet_address == normalize_address(transfer.source))
         )
         player = player_result.scalar_one_or_none()
+        player_id = player.id if player is not None else None
         if await is_game_paused(session):
-            # Стоп-кран включён: никакой игры — каждый входящий перевод
-            # уезжает обратно отправителю с объяснением. Ставки/оплаты смены
-            # пути не создаются даже от известных игроков.
             result = await _stash_refund(
-                session, transfer, None, comment=PAUSE_REFUND_COMMENT
-            )
-            await _ledger_incoming(
                 session,
                 transfer,
-                player.id if player is not None else None,
                 None,
-                f"paused:{result}",
+                comment=PAUSE_REFUND_COMMENT,
+                ledger_result=f"paused:{'refund_queued'}",
+                ledger_player_id=player_id,
             )
             if player is not None and result == "refund_queued":
                 await _dm_stake(
@@ -449,24 +467,25 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 )
             return f"paused_{result}"
         if player is None:
-            # Деньги от неопознанного кошелька нельзя оставить в казнее молча.
-            result = await _stash_refund(session, transfer, None)
-            await _ledger_incoming(session, transfer, None, None, result)
-            return result
+            return await _stash_refund(
+                session, transfer, None, ledger_result="unknown"
+            )
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)
             if status in ("revote_closed", "revote_too_small"):
-                await _stash_refund(session, transfer, revote_round_id)
+                await _stash_refund(
+                    session,
+                    transfer,
+                    revote_round_id,
+                    ledger_result=f"revote:{status}",
+                    ledger_player_id=player.id,
+                )
                 await _dm_stake(
                     bot,
                     player.id,
                     f"↩️ Оплата {from_nano(transfer.value_nanotons):g} Gram возвращается: "
                     + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
-                )
-            if status != "duplicate_tx":
-                await _ledger_incoming(
-                    session, transfer, player.id, revote_round_id, f"revote:{status}"
                 )
             return status
         round_result = await session.execute(
@@ -477,7 +496,9 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         )
         round_row = round_result.scalar_one_or_none()
         if round_row is None:
-            return await _stash_refund(session, transfer, None)
+            return await _stash_refund(
+                session, transfer, None, ledger_result="no_round"
+            )
         result = await register_stake(
             session,
             round_row,
@@ -488,8 +509,13 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         )
         amount = f"{from_nano(transfer.value_nanotons):g}"
         if result in ("already_staked", "closed"):
-            # Ставка-строка не создана: без авто-возврата перевод исчез бы из учёты.
-            await _stash_refund(session, transfer, round_row.id)
+            await _stash_refund(
+                session,
+                transfer,
+                round_row.id,
+                ledger_result=f"stake:{result}",
+                ledger_player_id=player.id,
+            )
             reason = "ставка на этот день уже есть" if result == "already_staked" else "день уже закрылся"
             await _dm_stake(bot, player.id, f"↩️ Перевод {amount} Gram возвращается: {reason}.")
         elif result == "too_small":
@@ -498,6 +524,9 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 player.id,
                 f"↩️ Ставка {amount} Gram не принята (меньше минимума) — вернём после закрытия дня.",
             )
+            await _ledger_incoming(
+                session, transfer, player.id, round_row.id, f"stake:{result}"
+            )
         elif result == "ok":
             age = datetime.now(timezone.utc).timestamp() - transfer.utime
             if age >= settings.stake_confirm_seconds:
@@ -505,7 +534,10 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     await _dm_stake(
                         bot, player.id, f"✅ Ставка {amount} Gram на день {round_row.day_index} принята."
                     )
-        if result != "duplicate_tx":
+            await _ledger_incoming(
+                session, transfer, player.id, round_row.id, f"stake:{result}"
+            )
+        elif result != "duplicate_tx":
             await _ledger_incoming(
                 session, transfer, player.id, round_row.id, f"stake:{result}"
             )
@@ -752,7 +784,7 @@ async def watch_once(bot: Bot | None = None) -> None:
         since = await _read_cursor(session)
     transfers, api_ok, source = await _collect_transfers(since)
     processed_through = since
-    for transfer in transfers:  # по возрастанию utime — старые раньше новых
+    for i, transfer in enumerate(transfers):
         try:
             status = await process_transfer(transfer, bot=bot)
             logger.info(
@@ -764,10 +796,11 @@ async def watch_once(bot: Bot | None = None) -> None:
                 transfer.utime,
             )
         except Exception as exc:
-            # Курсор дальше не двигаем: незакрытый перевод попадёт в следующий цикл.
             logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
             break
         processed_through = max(processed_through, transfer.utime)
+        if i % 50 == 49:
+            await asyncio.sleep(0.05)
     try:
         await confirm_aged_pending(bot)
     except Exception:

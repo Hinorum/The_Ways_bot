@@ -32,11 +32,15 @@ def test_villain_stage_boundaries() -> None:
     assert villain_stage(29, 28) == 3  # финальный день — всегда кризис
 
 
-def test_run_arc_is_relative_to_reset_not_calendar() -> None:
+def test_run_arc_is_relative_to_reset_not_calendar(monkeypatch) -> None:
     """Сброс 24-го: день 1 забега = акт 1, арка длится 61 день (2 месяца)."""
     from datetime import timedelta as _td
 
     from app.season import act_line, is_run_finale, run_position
+
+    # Первый сезон короткий (first_season_months=1 → 31 день). Чтобы проверить
+    # двухмесячную арку «61 день», фиксируем первый сезон в два месяца.
+    monkeypatch.setattr(settings, "first_season_months", 2)
 
     anchor = {"dom": 24, "key": "2026-08"}
     day_one = datetime(2026, 8, 24, tzinfo=timezone.utc)
@@ -65,8 +69,11 @@ def test_villain_event_deterministic_per_season() -> None:
     assert len(events) >= 2
 
 
-async def test_villain_block_progresses_and_persists(session: AsyncSession) -> None:
+async def test_villain_block_progresses_and_persists(session: AsyncSession, monkeypatch) -> None:
     """Ступени открываются по одной; события копятся; новый забег стартует заново."""
+    # Двухмесячная арка (61 дн.), чтобы день 30 был серединой (ступень 2),
+    # а не финалом короткого первого сезона.
+    monkeypatch.setattr(settings, "first_season_months", 2)
     anchor = {"dom": 1, "key": "2026-08"}
     moment = datetime(2026, 8, 2, tzinfo=timezone.utc)
     block = await _villain_block(session, moment, anchor)
@@ -123,8 +130,8 @@ def test_story_prompt_forbids_invented_yesterday_on_empty_canon() -> None:
     assert "Отголосок вчера" in with_canon
 
 
-def test_status_line_shows_act_one_after_midmonth_reset() -> None:
-    """Сброс в кризисном календаре: пост дня показывает акт 1 забега."""
+def test_status_line_no_footer_for_non_crisis_days() -> None:
+    """Футер сезона НЕ показывается для дней вне кризиса (первые N-7 дней)."""
     from app.broadcast import status_text
     from app.season import set_run_anchor_cache
 
@@ -149,12 +156,11 @@ def test_status_line_shows_act_one_after_midmonth_reset() -> None:
             for i in range(3)
         ]
         text = status_text(round_row)
-        assert "акт 1" in text
-        # Отсчёт и пролог считаются от ОТКРЫТИЯ дня (день 1 арки 61 дн.):
-        # раньше брали момент закрытия — титул пролога уезжал на день вперёд.
-        assert "осталось 60 дн." in text
-        assert "Пролог дня: «Приход»" in text
-        assert "Нрав стаи" in text  # характер стаи теперь в статусе
+        # Футер НЕ показывается для дней вне кризиса.
+        assert "акт 1" not in text
+        assert "осталось" not in text
+        assert "Пролог дня:" not in text
+        assert "Нрав стаи" not in text
         assert "Кризис сезона" not in text
     finally:
         set_run_anchor_cache(None)

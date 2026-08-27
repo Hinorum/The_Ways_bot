@@ -165,7 +165,7 @@ async def test_today_delivers_text_even_when_media_group_fails(monkeypatch, tmp_
     message.answer_media_group.assert_awaited_once()
     assert message.answer.await_count == 1
     status_text_sent = message.answer.call_args.args[0]
-    assert "День проверки /today" in status_text_sent
+    # Заголовок теперь только на обложке (caption), не дублируется в статусе.
     assert "I. Путь 0" in status_text_sent
 
 

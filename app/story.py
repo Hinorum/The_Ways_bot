@@ -106,11 +106,11 @@ DM_SYSTEM_PROMPT = (
 
 # Хвост стиля без фиксированной палитры: цвет приходит из арт-библии дня
 # (палитра + якорь предыдущего дня), иначе ротация палитр между днями
-# перечёркивается захардкоженным «teal and violet».
+# перечёркивается захардкоженным «teal and violet». Серия — flat 2D vector
+# cozy-dystopia (см. промпт-пак): смелые контуры, матовые цвета, без живописи.
 STYLE_SUFFIX = (
-    ", dark fairy-tale digital painting, dramatic rim light, glow of an open portal, "
-    "volumetric fog, intricate detail, cinematic composition, "
-    "no text, no letters, no watermark"
+    ", flat 2D vector cartoon, cozy-dystopia, bold clean outlines, muted matte colors, "
+    "glow of an open portal, no text, no letters, no watermark"
 )
 
 
@@ -520,7 +520,10 @@ async def generate_chapter(
         tint_lines=tint_lines, focus_line=focus_line,
     )
     if not settings.use_free_story_llm:
-        return authored
+        # Офлайн-глава тоже проходит полировку типографики (кавычки-ёлочки,
+        # корректные тире), иначе рукописный офлайн и нейро-конспект жили по
+        # разным правилам оформления.
+        return _polish_chapter(authored)
     neural = await _free_story_llm(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
@@ -587,15 +590,17 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
         data["place"] = None
     data.setdefault(
         "cover_prompt",
-        f"dark fairy-tale digital painting, wide shot, day {day_index} of a portal-hopping "
-        "stray dog pack saga, glowing unstable gateway, teal and violet palette, no text",
+        f"flat 2D vector cartoon, cozy-dystopia, bold clean outlines, muted matte colors, "
+        f"wide shot, day {day_index} of a portal-hopping stray dog pack saga, "
+        "glowing unstable gateway, dusty teal and burnt orange palette, no text",
     )
     for card in cards:
         tag = card.get("tag")
         card["tag"] = tag if tag in {"risk", "care", "cunning"} else "care"
         card.setdefault(
             "image_prompt",
-            f"dark fairy-tale tarot, {card.get('title', '')}, stray dog before a glitching portal, no text",
+            f"flat 2D vector cartoon tarot card, cozy-dystopia, bold outlines, {card.get('title', '')}, "
+            "stray dog before a glitching portal, no text",
         )
     # Порядок карт перемешивается детерминированно: иначе модели почти всегда
     # возвращают риск/забота/хитрость по порядку, и Путь I становится предсказуемым.

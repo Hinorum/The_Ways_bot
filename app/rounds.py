@@ -200,19 +200,25 @@ async def get_run_anchor(session: AsyncSession) -> dict:
 
     Кэш в season обновляется здесь же: синхронные посты дня (broadcast)
     берут якорь оттуда без обращения к БД.
+
+    При смене сезона (эпохи) оси перекатываются детерминированно: мир
+    обновляется вместе с аркой, а дрейф от голосов стаи начинается заново.
     """
     from app.season import (
         RUN_START_KEY,
+        current_season,
         default_anchor,
         parse_anchor,
+        season_base_axes,
         set_run_anchor_cache,
     )
     from app.models import WatcherState
 
     row = await session.get(WatcherState, RUN_START_KEY)
     anchor = parse_anchor(row.value if row is not None else None)
+    moment = _now()
     if anchor is None:
-        anchor = default_anchor(_now())
+        anchor = default_anchor(moment)
         payload = json.dumps(anchor, ensure_ascii=False)
         if row is None:
             session.add(WatcherState(key=RUN_START_KEY, value=payload))
@@ -220,17 +226,29 @@ async def get_run_anchor(session: AsyncSession) -> dict:
             row.value = payload
         await session.commit()
     else:
-        # Легаси-якорь без характера: роллим один раз и закрепляем.
-        missing = [axis for axis in ("order_axis", "moral_axis") if axis not in anchor]
-        if missing:
-            import random as _random
+        # Смена сезона: перекат осей + обновление номера сезона.
+        detected_season = current_season(anchor, moment)
+        stored_season = anchor.get("season", 1)
+        if detected_season != stored_season:
+            axes = season_base_axes(anchor.get("key", ""), detected_season)
+            anchor["season"] = detected_season
+            anchor["order_axis"] = axes[0]
+            anchor["moral_axis"] = axes[1]
+            if row is not None:
+                row.value = json.dumps(anchor, ensure_ascii=False)
+                await session.commit()
+        else:
+            # Легаси-якорь без характера: роллим один раз и закрепляем.
+            missing = [axis for axis in ("order_axis", "moral_axis") if axis not in anchor]
+            if missing:
+                import random as _random
 
-            from app.season import _AXIS_START_POOL
+                from app.season import _AXIS_START_POOL
 
-            for axis in missing:
-                anchor[axis] = _random.choice(_AXIS_START_POOL)
-            row.value = json.dumps(anchor, ensure_ascii=False)
-            await session.commit()
+                for axis in missing:
+                    anchor[axis] = _random.choice(_AXIS_START_POOL)
+                row.value = json.dumps(anchor, ensure_ascii=False)
+                await session.commit()
     set_run_anchor_cache(anchor)
     return anchor
 
@@ -1419,14 +1437,16 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     except Exception:
         logger.warning("Шаг отношений NPC дня %s не удался", round_row.day_index, exc_info=True)
     # Нрав стаи: оси характера дрейфуют по тегу победившего пути
-    # (забота → добро, хитрость → расчёт и подлость, риск → хаос).
+    # (забота → добро+порядок, хитрость → расчёт+порядок, риск → хаос+зло).
     try:
         from app.models import WatcherState as WS
         from app.season import RUN_START_KEY, apply_alignment_drift, set_run_anchor_cache
 
         anchor = await get_run_anchor(session)
         order, moral, changed = apply_alignment_drift(
-            anchor, getattr(winning_card, "tag", None) or "care"
+            anchor,
+            getattr(winning_card, "tag", None) or "care",
+            seed=round_row.day_index,
         )
         if changed:
             row = await session.get(WS, RUN_START_KEY)

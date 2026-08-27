@@ -106,12 +106,15 @@ PROLOGUE_HINTS: dict[int, str] = {
 
 
 
-def prologue_block(run_day: int, alignment_label: str | None = None) -> str | None:
+def prologue_block(run_day: int, alignment_label: str | None = None, season: int = 1) -> str | None:
     """Блок пролога для промпта главы. None — день вне пролога.
 
-    Характер забега вплетается с первых дней: пролог знакомит не только
-    с миром, но и с тем, КАКАЯ стая в него пришла.
+    Сезон 1: полный 7-дневный пролог — знакомство с миром и лицами.
+    Сезон 2+: короткий 3-дневный пролог — возвращение и память.
+    Характер забега вплетается с первых дней.
     """
+    if season >= 2:
+        return _season2_prologue(run_day, alignment_label)
     beat = PROLOGUE_BEATS.get(run_day)
     if beat is None:
         return None
@@ -132,7 +135,55 @@ def prologue_block(run_day: int, alignment_label: str | None = None) -> str | No
     return beat["block"] + align + tail + hint_line
 
 
-def prologue_title(run_day: int) -> str | None:
+# Сезон 2+: короткий пролог «Возвращение». Стая уже знает мир —
+# но мир изменился. Не знакомство, а проверка: что осталось, а что — нет.
+_SEASON2_PROLOGUE_BEATS: dict[int, dict[str, str]] = {
+    1: {
+        "title": "Возвращение",
+        "block": (
+            "ПРОЛОГ ВОЗВРАЩЕНИЯ, день 1 — «Тихий дом». Стая вернулась в сеть порталов "
+            "после Лая. Мир тот же — но миски стоят на других местах, и порталы "
+            "пахнут иначе. Не объясняй, что изменилось: просто покажи, как стая "
+            "узнаёт знакомое и чужое одновременно."
+        ),
+    },
+    2: {
+        "title": "Память",
+        "block": (
+            "ПРОЛОГ ВОЗВРАЩЕНИЯ, день 2 — «Чужие следы». Архив хранит записи "
+            "прошлого сезона: стая находит свои старые папки. Покажи реакцию "
+            "каждой собаки на свой старый след — без объяснений, только жест или реплику."
+        ),
+    },
+    3: {
+        "title": "Новый Лай",
+        "block": (
+            "ПРОЛОГ ВОЗВРАЩЕНИЯ, день 3 — «Новый Лай». Первый Лай нового сезона "
+            "звучит иначе: тише, но ближе. Стая стоит у развилки, и каждая собака "
+            "помнит, как стояла здесь в прошлый раз. Один вопрос: идти ли туда же?"
+        ),
+    },
+}
+
+
+def _season2_prologue(run_day: int, alignment_label: str | None = None) -> str | None:
+    """Короткий пролог для сезонов 2+: 3 дня вместо 7,.reflective, не expository."""
+    beat = _SEASON2_PROLOGUE_BEATS.get(run_day)
+    if beat is None:
+        return None
+    align = (
+        f" Характер стаи не изменился: она по-прежнему {alignment_label.lower()}. "
+        "Но мир вокруг — другой."
+        if alignment_label
+        else ""
+    )
+    return beat["block"] + align
+
+
+def prologue_title(run_day: int, season: int = 1) -> str | None:
     """Короткий титул дня пролога для статусной строки анонса."""
-    beat = PROLOGUE_BEATS.get(run_day)
+    if season >= 2:
+        beat = _SEASON2_PROLOGUE_BEATS.get(run_day)
+    else:
+        beat = PROLOGUE_BEATS.get(run_day)
     return beat["title"] if beat else None

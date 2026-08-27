@@ -152,6 +152,13 @@ async def test_anomaly_flags_deficit_and_drift_and_stays_quiet_when_funded(
                     Stake(round_id=round_row.id, player_id=911,
                           amount_nanotons=to_nano(5), tx_hash="g1",
                           status="confirmed", network=network),
+                    # Производство: каждый входящий перевод ставки дополнительно
+                    # пишет строку Income kind="ton" (_ledger_incoming), которую
+                    # сверка и считает входящим — не двойной учёт ставки.
+                    Income(kind="ton", amount_nanotons=to_nano(5),
+                           unit_ref=f"g1-inc-{os.urandom(4).hex()}",
+                           round_id=round_row.id, player_id=911,
+                           note="in:stake:ok"),
                     Payout(round_id=round_row.id, player_id=911, kind="prize",
                            amount_nanotons=to_nano(4),
                            dest_address="0:" + os.urandom(16).hex(), network=network),
@@ -206,6 +213,11 @@ async def test_income_revotes_counted_in_expected_float(monkeypatch) -> None:
                     Stake(round_id=round_row.id, player_id=912,
                           amount_nanotons=to_nano(5), tx_hash="g2",
                           status="confirmed", network=network),
+                    # Вход ставки тоже пишет Income kind="ton" (_ledger_incoming) —
+                    # сверка считает его, иначе ставка была бы посчитана дважды.
+                    Income(kind="ton", amount_nanotons=to_nano(5),
+                           unit_ref=f"stk-tx-{os.urandom(4).hex()}",
+                           round_id=round_row.id, player_id=912, note="in:stake:ok"),
                     Income(kind="ton", amount_nanotons=to_nano(0.3),
                            unit_ref=f"rv-tx-{os.urandom(4).hex()}",
                            round_id=round_row.id, player_id=912, note="rv:832"),
@@ -216,7 +228,7 @@ async def test_income_revotes_counted_in_expected_float(monkeypatch) -> None:
             )
             await db.commit()
 
-            # Ожидание с учётом revote: 5 + 0.3 − 4 (pending) ≈ 1.3 G; сходится.
+            # Ожидание с учётом ставки (5) и revote (0.3): 5 + 0.3 − 4 (pending) ≈ 1.3 G.
             expected_left = (
                 to_nano(5) + to_nano(0.3) - to_nano(4) - to_nano(settings.payout_fee_gram)
             )

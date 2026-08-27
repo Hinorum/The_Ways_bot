@@ -67,7 +67,6 @@ def status_text(
 ) -> str:
     from app.models import RULE_PHRASES
 
-    mark = day_mark(str(round_row.id)) if show_title else ""
     sealed = bool(getattr(round_row, "sealed", False))
     if round_row.status.value == "open":
         if sealed:
@@ -107,38 +106,57 @@ def status_text(
         )
     else:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
-    # Дубль заголовка (инцидент): титул живёт на обложке, история — в тексте.
-    head = f"{mark} {round_row.chapter_title}\n\n" if show_title else ""
+    banner = _season_banner_line(round_row)
+    # Дубль заголовка (инцидент): титул и история могут жить на обложке — тогда
+    # status_text их не повторяет (show_title/include_story false). Для легаси-дней
+    # без объединённой подписи титул и глава возвращаются в текстовый пост.
+    head = ""
+    if show_title:
+        head += f"{day_mark(str(round_row.id))} {round_row.chapter_title}\n\n"
     if include_story:
         head += f"{_clamp(round_row.chapter_text, 2600)}\n\n"
     text = (
         f"{head}{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
+    if banner:
+        text = f"📢 {banner}\n\n{text}"
     season_line = _season_status_line(round_row)
     if season_line:
         text += f"\n{season_line}"
     return text[:_MAX_TEXT_LEN]
 
 
+def _season_banner_line(round_row: Round) -> str | None:
+    """Баннер нового сезона: показывается один раз в день 1 сезона >1."""
+    try:
+        from app.season import get_cached_anchor, season_banner
+
+        moment = round_row.opens_at or round_row.voting_ends_at
+        if getattr(moment, "tzinfo", None) is None:
+            from datetime import timezone as _tz
+
+            moment = moment.replace(tzinfo=_tz.utc)
+        cached = get_cached_anchor(moment)
+        return season_banner(cached, moment)
+    except Exception:
+        return None
+
+
 def _season_status_line(round_row: Round) -> str | None:
-    """Строка сезона в статусе дня: акты забега и дистанция до Первого Лая.
+    """Строка сезона в статусе дня: показывает обратный отсчёт только в кризисе.
 
     Якорь забега берётся из кэша season (обновляется при каждой генерации
     дня и тике), поэтому синхронный код обходится без БД.
     """
     try:
         from app.season import (
-            act_line,
-            alignment_label,
-            anchor_axes,
+            crisis_act,
             get_cached_anchor,
             is_run_finale,
+            run_days_left,
             run_position,
         )
 
-        # Позиция забега считается от ОТКРЫТИЯ дня (opens_at). Раньше брали
-        # voting_ends_at — завтрашний момент, и титул пролога показывал
-        # следующий день («Пять собак» на дне Лайнера).
         moment = round_row.opens_at or round_row.voting_ends_at
         if getattr(moment, "tzinfo", None) is None:
             from datetime import timezone as _tz
@@ -146,18 +164,12 @@ def _season_status_line(round_row: Round) -> str | None:
             moment = moment.replace(tzinfo=_tz.utc)
         cached = get_cached_anchor(moment)
         run_day, total = run_position(cached, moment)
-        order, moral = anchor_axes(cached)
-        mood = f" · 🎭 Нрав стаи: {alignment_label(order, moral)}"
         if is_run_finale(run_day, total):
-            return "🐺 Сегодня — День Первого Лая. Финал сезона." + mood
-        line = f"🌙 {act_line(run_day, total)}{mood}"
-        from app.prologue import prologue_title
-
-        title = prologue_title(run_day)
-        if title:
-            sep = " · " if mood else " "
-            line += f"{sep}Пролог дня: «{title}»."
-        return line
+            return "🐺 Сегодня — День Первого Лая. Финал сезона."
+        if not crisis_act(run_day, total):
+            return None
+        left = run_days_left(run_day, total)
+        return f"🐺 До финала: {left} дн."
     except Exception:
         return None
 
