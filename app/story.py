@@ -139,28 +139,43 @@ def _looks_like_image(content: bytes) -> bool:
     return png or jpeg or webp
 
 
-# ---------- Предохранитель 429 (общий IP Render троттлится целиком) ----------
+# ---------- Предохранитель 429 (пер-модель, с потолком) ----------
+# 429 у бесплатного Pollinations обычно распространяется на весь IP, но
+# троттлит модели по-разному. Раньше единственная 429 глушила ВСЕ кадры дня
+# и ВСЕ модели до истечения retry-after (иногда минуту+). Теперь охлаждение
+# держится отдельно на модель-виновницу и ограничено потолком: соседняя
+# модель из лестницы всё ещё может отдать кадр, а затяжной backoff не
+# замораживает рендер всего дня до конца.
 
-_THROTTLED_UNTIL_MONOTONIC = 0.0
+_THROTTLED_UNTIL: dict[str, float] = {}
+_THROTTLE_CAP_SECONDS = 45
 
 
-def _note_429(cooldown_seconds: int) -> None:
-    global _THROTTLED_UNTIL_MONOTONIC
+def _note_429(model: str, cooldown_seconds: int) -> None:
     import time as _time
 
-    _THROTTLED_UNTIL_MONOTONIC = _time.monotonic() + max(10, cooldown_seconds)
+    _THROTTLED_UNTIL[model] = _time.monotonic() + min(max(10, cooldown_seconds), _THROTTLE_CAP_SECONDS)
 
 
-def _throttle_active() -> bool:
+def _throttle_active(model: str | None = None) -> bool:
     import time as _time
 
-    return _time.monotonic() < _THROTTLED_UNTIL_MONOTONIC
+    if model is not None:
+        return _time.monotonic() < _THROTTLED_UNTIL.get(model, 0.0)
+    return any(_time.monotonic() < until for until in _THROTTLED_UNTIL.values())
 
 
-def _throttle_left_seconds() -> int:
+def _throttle_left_seconds(model: str | None = None) -> int:
     import time as _time
 
-    return max(0, int(_THROTTLED_UNTIL_MONOTONIC - _time.monotonic()))
+    if model is not None:
+        return max(0, int(_THROTTLED_UNTIL.get(model, 0.0) - _time.monotonic()))
+    return max([0] + [int(until - _time.monotonic()) for until in _THROTTLED_UNTIL.values()], default=0)
+
+
+def _reset_throttle() -> None:
+    """Очищает охлаждение (для тестов/ручного сброса)."""
+    _THROTTLED_UNTIL.clear()
 
 
 def _save_image(image: Image.Image, path: Path) -> None:
@@ -442,11 +457,14 @@ async def fetch_free_image(
     ]
     for model, seconds, attempts in plans:
         for attempt in range(1, attempts + 1):
-            # Предохранитель 429: провайдер троттлит общий IP — дальнейшие
-            # попытки этого цикла бессмысленны, кадр честно уходит в PIL.
-            if _throttle_active():
-                logger.warning("Pollinations охлаждается до %d с — кадр %s в фолбэк", _throttle_left_seconds(), dest.name)
-                return False
+            # Предохранитель 429: именно эта модель охлаждается. Не обрываем
+            # весь кадр — соседняя модель (sana/turbo) может ещё отдать картинку.
+            if _throttle_active(model):
+                logger.warning(
+                    "Pollinations %s охлаждается до %d с — пробуем другую модель",
+                    model, _throttle_left_seconds(model),
+                )
+                break
             url = (
                 f"{base}?width={width}&height={height}&nologo=true&private=true&model={model}"
                 f"&seed={seed if seed is not None else random.randint(1, 999999)}"
@@ -458,13 +476,13 @@ async def fetch_free_image(
                     response = await client.get(url)
                     if response.status_code == 429:
                         retry_after = response.headers.get("retry-after")
-                        _note_429(int(retry_after) if retry_after and retry_after.isdigit() else 60)
+                        _note_429(model, int(retry_after) if retry_after and retry_after.isdigit() else 60)
                         logger.warning(
-                            "Pollinations %s: 429 (retry-after %s) — остальные попытки кадра пропущены",
+                            "Pollinations %s: 429 (retry-after %s) — охлаждение модели, пробуем другую",
                             model,
                             retry_after or "—",
                         )
-                        return False
+                        break
                     if response.status_code != 200:
                         logger.warning("Pollinations %s: HTTP %d (попытка %d)", model, response.status_code, attempt)
                         continue
@@ -548,12 +566,23 @@ async def generate_chapter(
     return _polish_chapter(neural or authored)
 
 
+class _LLMRateLimited(Exception):
+    """Внутренний сигнал: провайдер сбросил на 429 — пробуем следующую модель."""
+
+
 async def _chat_completion(messages: list[dict], timeout: int | None = None) -> tuple[dict, str] | None:
     """OpenAI-совместимый запрос по цепочке провайдеров и моделей.
 
     Если задан LLM_API_KEY — сначала кастомный провайдер (Hugging Face, Groq,
     OpenRouter, локальная Ollama), затем бесплатный Pollinations. Первый
     валидный ответ побеждает; иначе None и вызывающий код уходит в офлайн-лор.
+
+    Устойчивость здесь общая для ВСЕХ текстовых генераторов (эпилог, открывающее
+    эхо, тизер, шёпот, арт-библия — у части из них отдельных повторов нет вовсе):
+      - 429: читаем retry-after (с потолком) и переходим к следующей модели,
+        не обрушая весь вызов;
+      - полный сбой цепочки: один повтор всего провайдера после короткой паузы,
+        чтобы краткий сетевой blip не обнулял генерацию.
     """
     if timeout is None:
         timeout = settings.llm_timeout_seconds
@@ -561,21 +590,33 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
     if settings.llm_api_key:
         providers.append((settings.llm_base_url, settings.llm_api_key, settings.llm_model_chain))
     providers.append(("https://text.pollinations.ai/openai", "", settings.story_model_chain))
-    for base_url, key, models in providers:
-        for model in models:
-            try:
-                headers = {"Authorization": f"Bearer {key}"} if key else {}
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        base_url,
-                        json={"model": model, "messages": messages, "temperature": 0.85, "max_tokens": 3500},
-                        headers=headers,
-                    )
-                    response.raise_for_status()
-                    return response.json(), model
-            except Exception as exc:
-                logger.warning("LLM %s @ %s не ответил: %s", model, base_url, exc)
-                continue
+    for overall_attempt in range(1, 3):
+        for base_url, key, models in providers:
+            for model in models:
+                try:
+                    headers = {"Authorization": f"Bearer {key}"} if key else {}
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(
+                            base_url,
+                            json={"model": model, "messages": messages, "temperature": 0.85, "max_tokens": 3500},
+                            headers=headers,
+                        )
+                        if response.status_code == 429:
+                            retry_after = response.headers.get("retry-after", "")
+                            pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
+                            logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
+                            await asyncio.sleep(pause)
+                            raise _LLMRateLimited()
+                        response.raise_for_status()
+                        return response.json(), model
+                except _LLMRateLimited:
+                    continue
+                except Exception as exc:
+                    logger.warning("LLM %s @ %s не ответил: %s", model, base_url, exc)
+                    continue
+        if overall_attempt == 1:
+            logger.warning("Все модели LLM недоступны — повтор цепочки через 3 с")
+            await asyncio.sleep(3)
     return None
 
 
@@ -847,6 +888,9 @@ async def _free_story_llm(
                         used_model, text_len, min_chars, attempt,
                     )
                     continue
+                # Верхний потолок: болезненно длинная глава режется по границе
+                # предложения, а не заводит день с простыней и риском обрыва в ТГ.
+                data["text"] = _clamp_sentence(str(data.get("text", "")), 4600)
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data
             logger.warning("Модель %s вернула не 3 карты (попытка %d)", used_model, attempt)
@@ -894,10 +938,12 @@ async def generate_epilogue(
     if not text:
         return ""
     # Потолок согласован с Round.epilogue_text (String(700)).
-    if len(text) > 680:
-        cut = text[:680]
-        stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
-        text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
+    text = _clamp_sentence(text, 680)
+    # Нижний порог: эпилог просят 350-600 знаков; конспект короче 140 — мусор,
+    # пустой срез лучше недочётного, чем дырка в каноне.
+    if len(text) < 140:
+        logger.warning("Эпилог %d знаков (<140) отброшен", len(text))
+        return ""
     if not text_is_clean(text):
         logger.warning("Эпилог отброшен стоп-фильтром")
         return ""
@@ -963,10 +1009,12 @@ async def generate_opening_echo(
         logger.warning("Открывающее эхо отброшено (пустое или нечистое)")
         return ""
     text = text.strip('"«»')
-    if len(text) > 520:
-        cut = text[:520]
-        stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
-        text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
+    text = _clamp_sentence(text, 520)
+    # Нижний порог: открывающий абзац просят 250-450 знаков — короче 120 это
+    # бессвязный огрызок; пусть возьмётся детерминированная офлайн-строка.
+    if len(text) < 120:
+        logger.warning("Открывающее эхо %d знаков (<120) отброшено", len(text))
+        return ""
     logger.info("Открывающее эхо дня %d написано моделью %s", day_index + 1, used_model)
     return polish_typography(text)
 
@@ -1005,18 +1053,89 @@ async def generate_teaser(day_index: int, rule_phrase: str) -> str:
     if not text or not text_is_clean(text):
         logger.warning("Тизер отброшен (пустой или нечистый)")
         return ""
-    if len(text) > 320:
-        cut = text[:320]
-        stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
-        text = cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
+    text = _clamp_sentence(text, 320)
+    # Тизер — 1-2 фразы; короче 60 это обрубок без недосказанности.
+    if len(text) < 60:
+        logger.warning("Тизер %d знаков (<60) отброшен", len(text))
+        return ""
     logger.info("Тизер подсчёта написан моделью %s", used_model)
     return polish_typography(text)
 
 
+_REPAIR_CLOSES = (1, 2, 3)
+
+
+def _clamp_sentence(text: str, limit: int) -> str:
+    """Обрезает текст по потолку, режа по последнему знаку в границе.
+
+    Иначе — без знака в границе — режет жёстко и добавляет многоточие.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    stop = max(cut.rfind("."), cut.rfind("!"), cut.rfind("…"))
+    return cut[: stop + 1] if stop > 0 else cut.rstrip(" ,;:-") + "…"
+
+
 def _extract_json(content: str) -> dict:
+    """Вытаскивает первый корректный JSON-объект из ответа модели.
+
+    raw_decode парсит по токенам и знает про кавычки/экранирование, поэтому в
+    отличие от наивного среза по первому/последнему {..} он переживает:
+      - текст до/после JSON («Вот ваш JSON: …» -> разбирает);
+      - фигурные скобки ВНУТРИ строковых значений (rfind('}') их бы ломал);
+      - незакрытый JSON (finish_reason=length при max_tokens): докручивает
+        недостающие скобки, а не выходит сразу в офлайн.
+    Не разобралось — ValueError, вызывающий код повторит попытку или уйдёт в
+    офлайн-версию.
+    """
     text = content.strip()
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end <= start:
+    if start == -1:
         raise ValueError("JSON не найден в ответе модели")
-    return json.loads(text[start : end + 1])
+    body = text[start:]
+    decoder = json.JSONDecoder()
+    try:
+        obj, _ = decoder.raw_decode(body, 0)
+        if isinstance(obj, dict):
+            return obj
+        raise ValueError("JSON не является объектом")
+    except json.JSONDecodeError:
+        # Модель обрезана на токенном лимите и не закрыла структуру: докручиваем
+        # недостающие закрывающие скобки по уровню глубины, затем откатываемся к
+        # последней корректной границе поля (срез по ",« после строки/}).
+        for closes in _REPAIR_CLOSES:
+            try:
+                obj, _ = decoder.raw_decode(body + "}" * closes, 0)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+        for cut_at in _truncation_points(body):
+            try:
+                obj, _ = decoder.raw_decode(body[:cut_at], 0)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+        raise ValueError("JSON в ответе модели не разобран (обрезан?)")
+
+
+def _truncation_points(body: str):
+    """Кандидаты на срез обрезанного JSON от конца к началу — по границам полей.
+
+    Обычный токенный обрез режет после конца очередного поля (за запятой/строкой),
+    оставляя хвост незакрытым. Режем по последним «,\n», «},», «}», «],» от конца к
+    началу, чтобы вытащить максимально полный JSON. Не пытаемся резать внутри
+    строк: raw_decode сам отвергнет битый срез.
+    """
+    seen: list[int] = []
+    i = len(body)
+    for token in (",\n", ",\r\n", "},\n", "],\n", "}\n"):
+        pos = body.rfind(token, 0, i)
+        while pos != -1 and len(seen) < 24:
+            seen.append(pos + len(token))
+            pos = body.rfind(token, 0, pos)
+    # уникальные, убывающие от конца к началу
+    yield from sorted({p for p in seen if p > 0}, reverse=True)

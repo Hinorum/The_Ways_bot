@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 
@@ -292,9 +293,16 @@ async def plan_day_art(
         {"role": "system", "content": ART_SYSTEM_PROMPT},
         {"role": "user", "content": _build_art_prompt(chapter, beats, anchor)},
     ]
+    # Сетевой сбой уже ретраится внутри _chat_completion; здесь — повторный
+    # заход на случай, если модель очнулась/сменилась между попытками. Так же,
+    # как у генератора главы (_free_story_llm), — без асимметрии.
     for attempt in range(1, 3):
         result = await _chat_completion(messages)
         if result is None:
+            if attempt == 1:
+                logger.warning("Арт-библия: все модели недоступны — повтор через 3 с")
+                await asyncio.sleep(3)
+                continue
             break
         payload, used_model = result
         try:

@@ -682,13 +682,25 @@ async def test_generate_epilogue_parses_and_falls_back(monkeypatch) -> None:
 
     async def good(messages, timeout=45):
         return (
-            {"choices": [{"message": {"content": "  Пёс вздохнул. Тропа остыла. "}}]},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "Пёс вздохнул. Тропа остыла, и порталы притихли на одну долгую "
+                                "секунду — будто мир перевёл дух после выбора. Где-то в архиве "
+                                "щелкнула папка. Завтра стая услышит, как пахнет новая развилка. "
+                            )
+                        }
+                    }
+                ]
+            },
             "model-x",
         )
 
     monkeypatch.setattr(story, "_chat_completion", good)
     text = await story.generate_epilogue(3, "T", "c", "I — 1", RULE_PHRASES[WinRule.MAJORITY])
-    assert text == "Пёс вздохнул. Тропа остыла."
+    assert text.startswith("Пёс вздохнул. Тропа остыла")
 
     async def silent(messages, timeout=45):
         return None

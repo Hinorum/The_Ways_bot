@@ -348,30 +348,60 @@ def test_watcher_state_value_is_unlimited_text() -> None:
     assert column_type.length is None
 
 
-def test_pollinations_429_breaker_blocks_until_cooldown(monkeypatch) -> None:
-    """429 ставит паузу: следующие кадры не дёргают провайдер впустую."""
+def test_pollinations_429_breaker_is_per_model_and_capped(monkeypatch) -> None:
+    """429 охлаждает ТОЛЬКО модель-виновницу и с потолком: соседняя модель
+    лестницы может ещё отдать кадр, а затяжной backoff не вмораживает весь день."""
     from app import story
 
-    monkeypatch.setattr(story, "_THROTTLED_UNTIL_MONOTONIC", 0.0)
+    story._reset_throttle()
     assert story._throttle_active() is False
 
-    story._note_429(60)
-    assert story._throttle_active() is True
-    assert 0 < story._throttle_left_seconds() <= 60
+    story._note_429("flux", 60)
+    # Охлаждена именно flux, и backoff срезан потолком (<=45), а не 60.
+    assert story._throttle_active("flux") is True
+    assert 0 < story._throttle_left_seconds("flux") <= story._THROTTLE_CAP_SECONDS
+    # Другая модель не тронута — пер-модельное охлаждение.
+    assert story._throttle_active("sana") is False
+    assert story._throttle_active() is True  # общий признак ещё активен
 
-    async def explode_client(*args, **kwargs):
-        raise AssertionError("в период охлаждения сеть не должна дёргаться")
+    story._reset_throttle()
+    assert story._throttle_active() is False
 
-    monkeypatch.setattr(story.httpx, "AsyncClient", explode_client)
+
+async def test_pollinations_429_skips_hot_model_but_tries_others(monkeypatch) -> None:
+    """Во время охлаждения flux следующий кадр не дёргает flux, но пробует sana."""
+    from app import story
+
+    story._reset_throttle()
     from pathlib import Path as _Path
 
-    result = _asyncio.run(
-        story.fetch_free_image("prompt", _Path("unused.jpg"), seed=1, width=64, height=64)
-    )
-    assert result is False
+    calls: list[str] = []
 
-    monkeypatch.setattr(story, "_THROTTLED_UNTIL_MONOTONIC", 0.0)
-    assert story._throttle_active() is False
+    class FakeResponse:
+        status_code = 200
+        content = b"\xff\xd8\xff\xe0junkjunkjunkjunkjunk"  # JPEG magic, >5000 будет ниже
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            calls.append(url)
+            return FakeResponse()
+
+    monkeypatch.setattr(story.httpx, "AsyncClient", FakeClient)
+    # flux охлаждена (имитируем уже полученный 429 ранее).
+    story._note_429("flux", 300)
+    result = await story.fetch_free_image("prompt" * 200, _Path("unused.jpg"), seed=1, width=64, height=64)
+    # flux пропущена; sana/turbo дёргаются, но контент карикатурно мал -> ложь.
+    assert result is False
+    assert all("flux" not in u and ("sana" in u or "turbo" in u) for u in calls)
 
 
 async def test_image_stub_roundtrip(session) -> None:
