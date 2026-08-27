@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Income, Payout, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Round, RoundStatus, Stake, WatcherState
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,17 @@ ALERT_QUEUE_KEY = "alert_queue_ts"
 ALERT_DEAD_KEY = "alert_dead_ts"
 ALERT_TICK_KEY = "alert_tick_ts"
 ALERT_BALANCE_KEY = "alert_balance_ts"
+ALERT_REFUND_KEY = "alert_refund_ts"
+ALERT_STAKE_KEY = "alert_stake_ts"
 _ALERT_COOLDOWN = timedelta(hours=1)
 _WATCHER_STALE_AFTER = timedelta(minutes=30)
 _QUEUE_OLD_AFTER = timedelta(minutes=30)
+# Возврат ставки (refund) считается «застрявшим», когда ждёт отправки дольше
+# этого окна: игрок остаётся с зависшими деньгами, хранителю нужно узнать.
+_REFUND_OLD_AFTER = timedelta(minutes=30)
+# Перевод, который так и не подтвердился в срок — необработанная ставка.
+# Порог — двойное окно подтверждения ставки из настроек.
+_STAKE_CONFIRM_STALE_MULT = 2
 # Тики идут каждые 15 секунд: тишина дольше пары минут — процесс болен.
 _TICK_STALE_AFTER = timedelta(minutes=5)
 # Допуск сверки баланса казначея с БД: сгоревший газ исходящих переводов
@@ -112,6 +120,37 @@ async def snapshot() -> dict:
                 select(func.count()).select_from(Payout).where(Payout.status == "failed")
             )
         ).scalar_one()
+        # Разбивка очереди по типу выплаты: призы игрокам против возвратов ставок
+        # и долей казны. Именно здесь видно, сколько игроков не получили ставку
+        # обратно, не ныряя в /payouts.
+        pending_by_kind = {
+            kind: count
+            for kind, count in (
+                await session.execute(
+                    select(Payout.kind, func.count())
+                    .where(Payout.status.in_(["pending", "sending"]))
+                    .group_by(Payout.kind)
+                )
+            ).all()
+        }
+        dead_by_kind = {
+            kind: count
+            for kind, count in (
+                await session.execute(
+                    select(Payout.kind, func.count())
+                    .where(Payout.status == "failed")
+                    .group_by(Payout.kind)
+                )
+            ).all()
+        }
+        # Необработанные переводы: ставки, что увидели в цепочке, но ещё не
+        # подтвердили по возрасту (или зависли). Прямой ответ на «сколько
+        # переводов висит в необработанных».
+        pending_stakes = (
+            await session.execute(
+                select(func.count()).select_from(Stake).where(Stake.status == "pending")
+            )
+        ).scalar_one()
         cursor_iso = await _get_state(session, "ton_watch_beat_iso")
         payload = {
             "status": "ok",
@@ -119,6 +158,9 @@ async def snapshot() -> dict:
             "last_tick_age": _age_seconds(await _get_state(session, TICK_KEY)),
             "round": None,
             "payout_queue": int(queue_count),
+            "payout_pending_by_kind": pending_by_kind,
+            "payout_dead_by_kind": dead_by_kind,
+            "pending_stakes": int(pending_stakes),
             "oldest_payout_age": None,
             "dead_letter_payouts": int(dead_count),
             "watcher_beat_age": None,
@@ -247,6 +289,74 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
                     f"{', '.join(str(row_id) for row_id, _r in dead[:10])}{reason_note}. "
                     "Разбор: /payouts → /payout <id> retry|spam перед сбросом игры.",
                 )
+        # 3b. Возврат ставки (refund) висит неотправленным: игрок не получил
+        #     деньги обратно. Отдельный целевой алерт, а не общий «очередь стоит».
+        oldest_refund = (
+            await session.execute(
+                select(func.min(Payout.created_at)).where(
+                    Payout.kind == "refund",
+                    Payout.status.in_(["pending", "sending"]),
+                    Payout.amount_nanotons > 0,
+                )
+            )
+        ).scalar_one()
+        refund_dead = (
+            await session.execute(
+                select(func.count())
+                .select_from(Payout)
+                .where(Payout.kind == "refund", Payout.status == "failed")
+            )
+        ).scalar_one()
+        if oldest_refund is not None:
+            moment = (
+                oldest_refund
+                if oldest_refund.tzinfo
+                else oldest_refund.replace(tzinfo=timezone.utc)
+            )
+            age_min = int((_now() - moment).total_seconds() // 60)
+            if age_min >= _REFUND_OLD_AFTER.total_seconds() // 60:
+                problems.append(f"возврат ставки ждёт {age_min} мин")
+                tail = ""
+                if refund_dead:
+                    tail = f" Плюс {refund_dead} безнадёжных возврата (failed)."
+                if await _throttled(session, ALERT_REFUND_KEY):
+                    await notify_admins(
+                        bot,
+                        "⚠️ Возврат ставки не доставлен: игрок не получил деньги "
+                        f"обратно уже {age_min} мин.{tail} Разбор: /payouts",
+                    )
+        # 3c. Необработанные переводы-ставки висят дольше двойного окна
+        #     подтверждения — ставки копятся, никто не получает ни статус, ни
+        #     возврат. Прямой ответ на «сколько переводов не обработано».
+        if settings.ton_enabled:
+            stale_threshold = settings.stake_confirm_seconds * _STAKE_CONFIRM_STALE_MULT
+            oldest_stake = (
+                await session.execute(
+                    select(func.min(Stake.created_at)).where(Stake.status == "pending")
+                )
+            ).scalar_one()
+            if oldest_stake is not None:
+                moment = (
+                    oldest_stake
+                    if oldest_stake.tzinfo
+                    else oldest_stake.replace(tzinfo=timezone.utc)
+                )
+                if (_now() - moment).total_seconds() >= stale_threshold:
+                    pending_stakes_count = (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Stake)
+                            .where(Stake.status == "pending")
+                        )
+                    ).scalar_one()
+                    problems.append(f"ставок не обработано: {pending_stakes_count}")
+                    if await _throttled(session, ALERT_STAKE_KEY):
+                        await notify_admins(
+                            bot,
+                            "⚠️ Переводы-ставки не обрабатываются: "
+                            f"{pending_stakes_count} висят без подтверждения дольше "
+                            "положенного. /stakes",
+                        )
         # 4. Сверка баланса казначея с учётом БД. Две беды разного рода:
         #    дефицит под очередь (пополни — и всё уйдёт само) и расхождение
         #    с ожиданиями (ручной вывод, потерянные средства, чужой доступ).

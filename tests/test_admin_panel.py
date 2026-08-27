@@ -4,6 +4,7 @@
 нажатием, с кнопкой обновления — без раскрытия игрокам.
 """
 
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,7 +13,7 @@ from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
-from app.models import Payout, Round, RoundStatus, WinRule
+from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
 from app.rounds import _POT_CACHE
 
 
@@ -176,3 +177,85 @@ async def test_panel_advance_go_runs_command(monkeypatch) -> None:
     sent = [c.args[0] for c in callback.message.answer.await_args_list if c.args]
     assert any("День 98001 открыт." in t for t in sent)
     callback.answer.assert_awaited_with("День переключён.")
+
+
+async def test_panel_shows_payout_breakdown_and_unprocessed(session, monkeypatch) -> None:
+    """Пульт делит очередь по типу и показывает необработанные переводы."""
+    from sqlalchemy import delete as _d
+
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    now = datetime.now(timezone.utc)
+    uid = 960_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + "ef" * 32
+    async with SessionLocal() as db:
+        db.add(Player(id=uid, username=f"u{uid}", wallet_address=wallet))
+        rnd = Round(
+            day_index=97_600, status=RoundStatus.OPEN, win_rule=WinRule.MAJORITY,
+            rule_commitment="c", chapter_title="t", chapter_text="x", lore_summary="l",
+            opens_at=now, voting_ends_at=now + timedelta(hours=1),
+            tally_ends_at=now + timedelta(hours=2),
+        )
+        db.add(rnd)
+        await db.flush()
+        db.add_all(
+            [
+                Payout(round_id=None, player_id=uid, kind="refund",
+                       amount_nanotons=120_000_000, dest_address=wallet, status="pending"),
+                Payout(round_id=None, player_id=uid, kind="prize",
+                       amount_nanotons=200_000_000, dest_address=wallet, status="pending"),
+                Stake(round_id=rnd.id, player_id=uid, amount_nanotons=90_000_000,
+                      tx_hash="panel-tx", status="pending"),
+            ]
+        )
+        await db.commit()
+    try:
+        async with SessionLocal() as g:
+            text = await _admin_panel_text(g)
+        assert "ждёт возвратов" in text
+        assert "ждёт призов" in text
+        assert "Переводов не обработано: 1" in text
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(_d(Stake).where(Stake.player_id == uid))
+            await db.execute(_d(Payout).where(Payout.player_id == uid))
+            await db.execute(_d(Round).where(Round.day_index == 97_600))
+            await db.execute(_d(Player).where(Player.id == uid))
+            await db.commit()
+
+
+async def test_panel_stakes_button_lists_unprocessed(monkeypatch) -> None:
+    """Кнопка «Ставки» на пульте показывает необработанное и статусы ставок."""
+    from sqlalchemy import delete as _d
+
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    now = datetime.now(timezone.utc)
+    uid = 961_000 + int.from_bytes(os.urandom(2), "big")
+    async with SessionLocal() as db:
+        db.add(Player(id=uid, username="staker"))
+        rnd = Round(
+            day_index=97_601, status=RoundStatus.OPEN, win_rule=WinRule.MAJORITY,
+            rule_commitment="c", chapter_title="t", chapter_text="x", lore_summary="l",
+            opens_at=now, voting_ends_at=now + timedelta(hours=1),
+            tally_ends_at=now + timedelta(hours=2),
+        )
+        db.add(rnd)
+        await db.flush()
+        db.add(Stake(round_id=rnd.id, player_id=uid, amount_nanotons=70_000_000,
+                     tx_hash="panel-stake-tx", status="pending"))
+        await db.commit()
+    try:
+        callback = make_callback(4242)
+        callback.data = "panel:stakes"
+        await on_panel_action(callback)
+        texts = [c.args[0] for c in callback.message.answer.await_args_list if c.args]
+        assert any("СТАВКИ ХРАНИТЕЛЮ" in t for t in texts)
+        assert any("Необработанных переводов-ставок: 1" in t for t in texts)
+        assert any("staker" in t for t in texts)
+        callback.answer.assert_awaited_with("Ставки ниже.")
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(_d(Stake).where(Stake.player_id == uid))
+            await db.execute(_d(Round).where(Round.day_index == 97_601))
+            await db.execute(_d(Player).where(Player.id == uid))
+            await db.commit()

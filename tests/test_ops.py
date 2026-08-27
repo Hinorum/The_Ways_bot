@@ -22,6 +22,7 @@ from app.models import (
     Player,
     Round,
     RoundStatus,
+    Stake,
     Vote,
     WatcherState,
     WinRule,
@@ -642,3 +643,172 @@ async def test_epilogue_with_profanity_falls_back_to_empty(
 
     monkeypatch.setattr("app.story._chat_completion", fake_completion)
     assert await generate_epilogue(1, "Тропа", "дорога заросла", "1/2/3", "закон") == ""
+
+
+# ---------- Разбивка очереди и целевые алерты (возвраты, необработанное) ----------
+
+
+def _open_round(day_index: int) -> Round:
+    now = datetime.now(timezone.utc)
+    return Round(
+        day_index=day_index,
+        status=RoundStatus.OPEN,
+        win_rule=WinRule.MAJORITY,
+        rule_commitment="c",
+        chapter_title="t",
+        chapter_text="x",
+        lore_summary="l",
+        opens_at=now - timedelta(hours=1),
+        voting_ends_at=now + timedelta(hours=1),
+        tally_ends_at=now + timedelta(hours=2),
+    )
+
+
+async def _fresh_watcher_marks() -> None:
+    """Свежие тик и сердцебиение: фоновые алерты watcher'а не спамят в тесте."""
+    from app import ops
+    from app import ton_watch
+
+    now = datetime.now(timezone.utc).isoformat()
+    async with SessionLocal() as db:
+        await db.execute(
+            WatcherState.__table__.delete().where(
+                WatcherState.key.in_([ops.TICK_KEY, ton_watch.BEAT_KEY])
+            )
+        )
+        db.add_all(
+            [
+                WatcherState(key=ops.TICK_KEY, value=now),
+                WatcherState(key=ton_watch.BEAT_KEY, value=now),
+            ]
+        )
+        await db.commit()
+
+
+async def test_snapshot_reports_unprocessed_and_payout_by_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/health и пульт видят: сколько необработанных ставок и сколько выплат
+    по типу ждёт возврата / приза против безнадёжных (failed)."""
+    from app import ops
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    uid = 950_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + os.urandom(16).hex()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=2)
+    async with SessionLocal() as db:
+        db.add(Player(id=uid, username=f"u{uid}", wallet_address=wallet))
+        rnd = _open_round(704_001)
+        db.add(rnd)
+        await db.flush()
+        db.add_all(
+            [
+                Payout(round_id=None, player_id=uid, kind="refund",
+                       amount_nanotons=to_nano(0.3), dest_address=wallet,
+                       status="pending", created_at=old),
+                Payout(round_id=None, player_id=uid, kind="prize",
+                       amount_nanotons=to_nano(0.5), dest_address=wallet,
+                       status="pending", created_at=old),
+                Payout(round_id=None, player_id=uid, kind="refund",
+                       amount_nanotons=to_nano(0.1), dest_address=wallet,
+                       status="failed", created_at=old),
+                Stake(round_id=rnd.id, player_id=uid, amount_nanotons=to_nano(0.2),
+                      tx_hash="snap-tx", status="pending", created_at=old),
+            ]
+        )
+        await db.commit()
+    try:
+        snap = await ops.snapshot()
+        assert snap["pending_stakes"] >= 1
+        assert snap["payout_pending_by_kind"].get("refund", 0) >= 1
+        assert snap["payout_pending_by_kind"].get("prize", 0) >= 1
+        assert snap["payout_dead_by_kind"].get("refund", 0) >= 1
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(Payout.__table__.delete().where(Payout.player_id == uid))
+            await db.execute(Stake.__table__.delete().where(Stake.player_id == uid))
+            await db.execute(Round.__table__.delete().where(Round.day_index == 704_001))
+            player = await db.get(Player, uid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()
+
+
+async def test_stuck_refund_alert_is_targeted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Возврат ставки, что так и не ушёл, будит хранителя конкретным алертом."""
+    from app import ops
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    bot = SimpleNamespace(send_message=AsyncMock())
+    uid = 951_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + os.urandom(16).hex()
+    async with SessionLocal() as db:
+        db.add(Player(id=uid, username=f"u{uid}", wallet_address=wallet))
+        db.add(
+            Payout(round_id=None, player_id=uid, kind="refund",
+                   amount_nanotons=to_nano(0.4), dest_address=wallet,
+                   status="pending",
+                   created_at=datetime.now(timezone.utc) - timedelta(hours=3))
+        )
+        await db.commit()
+    try:
+        await _fresh_watcher_marks()
+        problems = await ops.check_anomalies(bot=bot)
+        assert any("возврат ставки" in p for p in problems)
+        sent = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
+        assert any("Возврат ставки" in t for t in sent)
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(Payout.__table__.delete().where(Payout.player_id == uid))
+            await db.execute(
+                WatcherState.__table__.delete().where(
+                    WatcherState.key.in_([ops.ALERT_REFUND_KEY, ops.TICK_KEY])
+                )
+            )
+            player = await db.get(Player, uid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()
+
+
+async def test_unprocessed_pending_stakes_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Переводы-ставки, что висят без подтверждения дольше окна, — алерт админу."""
+    from app import ops
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "stake_confirm_seconds", 40)  # порог = 80 с
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    bot = SimpleNamespace(send_message=AsyncMock())
+    uid = 952_000 + int.from_bytes(os.urandom(2), "big")
+    async with SessionLocal() as db:
+        db.add(Player(id=uid, username=f"u{uid}"))
+        rnd = _open_round(705_001)
+        db.add(rnd)
+        await db.flush()
+        db.add(
+            Stake(round_id=rnd.id, player_id=uid, amount_nanotons=to_nano(0.2),
+                  tx_hash="pending-tx", status="pending",
+                  created_at=datetime.now(timezone.utc) - timedelta(minutes=15))
+        )
+        await db.commit()
+    try:
+        await _fresh_watcher_marks()
+        problems = await ops.check_anomalies(bot=bot)
+        assert any("ставок не обработано" in p for p in problems)
+        sent = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
+        assert any("Переводы-ставки не обрабатываются" in t for t in sent)
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(Stake.__table__.delete().where(Stake.player_id == uid))
+            await db.execute(Round.__table__.delete().where(Round.day_index == 705_001))
+            await db.execute(
+                WatcherState.__table__.delete().where(
+                    WatcherState.key.in_([ops.ALERT_STAKE_KEY, ops.TICK_KEY])
+                )
+            )
+            player = await db.get(Player, uid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()

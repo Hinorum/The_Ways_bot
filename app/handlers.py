@@ -1620,6 +1620,51 @@ async def _payouts_text() -> str:
     return "\n".join(lines)
 
 
+async def _stakes_panel_text() -> str:
+    """Ставки для пульта: необработанные (pending) по всем дням + сводка."""
+    from app.ops import snapshot
+
+    snap = await snapshot()
+    pending_total = snap.get("pending_stakes") or 0
+    lines = [
+        "🎲 <b>СТАВКИ ХРАНИТЕЛЮ</b>",
+        f"⏳ Необработанных переводов-ставок: {pending_total}",
+        "",
+    ]
+    async with SessionLocal() as session:
+        days = (
+            (await session.execute(select(Round).order_by(Round.day_index.desc()).limit(3)))
+            .scalars()
+            .all()
+        )
+        shown = 0
+        for day in days:
+            rows = (
+                await session.execute(
+                    select(Stake, Player.username, Player.first_name)
+                    .join(Player, Player.id == Stake.player_id)
+                    .where(Stake.round_id == day.id)
+                    .order_by(Stake.id.asc())
+                    .limit(20)
+                )
+            ).all()
+            if not rows:
+                continue
+            shown += 1
+            lines.append(f"День {day.day_index} ({day.status.value}):")
+            for stake, username, first_name in rows:
+                who = username or first_name or f"игрок {stake.player_id}"
+                state = {"confirmed": "✅", "pending": "⏳", "rejected": "↩️"}.get(
+                    stake.status, stake.status
+                )
+                lines.append(
+                    f"  {who}: {from_nano(stake.amount_nanotons):g} Gram {state}"
+                )
+    if not shown:
+        lines.append("Ставок за последние дни нет.")
+    return "\n".join(lines)
+
+
 # Инцидент-регрессия: декоратор висел на _payout_text, которая ВОЗВРАЩАЕТ
 # строку. Aiogram автоотправляет результат хендлера только если это
 # TelegramMethod — голый str выбрасывался, и команда /payouts молчала.
@@ -2046,6 +2091,30 @@ async def _admin_panel_text(session=None) -> str:
     dead = snap.get("dead_letter_payouts")
     oldest_note = f", старейшая {int(oldest // 60)} мин" if oldest else ""
     lines.append(f"💸 Выплаты: в очереди {queue}{oldest_note} · failed {dead}")
+    # Разбивка по типу: сколько игроков ждут приз, сколько — возврат ставки.
+    pending_by_kind = snap.get("payout_pending_by_kind") or {}
+    dead_by_kind = snap.get("payout_dead_by_kind") or {}
+    p_refund = int(pending_by_kind.get("refund", 0))
+    p_prize = int(pending_by_kind.get("prize", 0))
+    p_other = max(0, int(queue) - p_refund - p_prize)
+    d_refund = int(dead_by_kind.get("refund", 0))
+    parts = []
+    if p_refund:
+        parts.append(f"ждёт возвратов {p_refund}")
+    if p_prize:
+        parts.append(f"ждёт призов {p_prize}")
+    if p_other:
+        parts.append(f"долей {p_other}")
+    if dead and d_refund:
+        parts.append(f"failed-возвратов {d_refund}")
+    if parts:
+        lines.append(f"  · {', '.join(parts)}")
+    pending_stakes = snap.get("pending_stakes") or 0
+    if settings.ton_enabled:
+        stakes_note = f"⏳ Переводов не обработано: {pending_stakes}"
+        if not pending_stakes:
+            stakes_note += " · всё обработано"
+        lines.append(stakes_note)
     if settings.ton_enabled:
         lines.append(
             f"👀 Watcher: {snap.get('watcher_source') or '—'}, "
@@ -2095,6 +2164,7 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🔄 Обновить", callback_data="panel:view"),
                 InlineKeyboardButton(text="💸 Выплаты", callback_data="panel:payouts"),
+                InlineKeyboardButton(text="🎲 Ставки", callback_data="panel:stakes"),
             ],
             [
                 InlineKeyboardButton(text="🏛 Казначей", callback_data="panel:treasury"),
@@ -2147,6 +2217,10 @@ async def on_panel_action(callback: CallbackQuery) -> None:
         if action == "payouts":
             await callback.message.answer(await _payouts_text())
             await callback.answer("Список ниже.")
+            return
+        if action == "stakes":
+            await callback.message.answer(await _stakes_panel_text())
+            await callback.answer("Ставки ниже.")
             return
         if action == "adjust":
             await callback.message.answer(
