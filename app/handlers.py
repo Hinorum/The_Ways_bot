@@ -100,8 +100,15 @@ async def cmd_start(message: Message) -> None:
     if settings.ton_enabled:
         lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
         lines.append("/top — копилки и лидеры")
+        pool_pct = int(
+            100
+            - settings.owner_rake_pct
+            - settings.leaderboard_rake_pct
+            - settings.weekly_pot_pct
+            - settings.pack_fund_pct
+        )
         lines.append(
-            "\n💰 Фонд дня: 96% — поставившим на верный путь; остальное — "
+            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный путь; остальное — "
             "Фонд Стаи, копилки недели и месяца (/top) и хранителю. Подробности: /stake."
         )
     lines.append(
@@ -957,7 +964,10 @@ _STAKE_HOWTO = (
     "3. Нажми кнопку с картой пути — когда угодно до закрытия голосования.\n\n"
     "Порядок не важен: голос и перевод засчитываются в любой последовательности, "
     "важно успеть до дедлайна «Голосование до». Одна ставка на игрока в день. "
-    "Перевод, не ставший ставкой (нет кошелька, ставка уже есть, день закрылся), вернётся автоматически."
+    "Перевод, не ставший ставкой (нет кошелька, ставка уже есть, день закрылся), "
+    "вернётся автоматически. Исключение — зона платы за смену пути "
+    "({revote:g}…{min:g} Gram): если игрок уже выбрал путь сегодня, перевод "
+    "зачтётся как оплата смены и без мемо."
 )
 
 
@@ -967,6 +977,7 @@ async def _stake_view_text(user) -> str:
     head = _STAKE_HOWTO.format(
         mark=money_mark(str(user.id)),
         min=settings.stake_min_ton,
+        revote=settings.revote_ton,
         treasury=settings.active_treasury_address or "(адрес казначея ещё не настроен)",
     )
     status = ""
@@ -1240,8 +1251,9 @@ async def cmd_change(message: Message) -> None:
             await message.answer(
                 "Выбери способ оплаты:\n\n"
                 "⭐ <b>Stars</b> — надёжно и мгновенно (кнопка оплаты в Telegram).\n"
-                "💎 <b>Gram</b> — перевод казначею с комментарием (memo) rv:… — кошелёк должен "
-                "приложить комментарий, иначе оплата не привяжется и вернётся.",
+                "💎 <b>Gram</b> — перевод казначею в зоне платы за смену "
+                f"({settings.revote_ton:g}…{settings.stake_min_ton:g} Gram). Мемо "
+                "не обязателен: сумма сама зачтётся как оплата смены.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_revote_keyboard(round_id),
             )
@@ -1416,12 +1428,13 @@ async def on_payton(callback: CallbackQuery) -> None:
         return
     address = settings.active_treasury_address
     await callback.message.answer(
-        f"{money_mark(raw)} Переведи {settings.revote_ton:g} Gram (или больше) на адрес казначея:\n"
+        f"{money_mark(raw)} Переведи {settings.revote_ton:g} Gram (или больше, но меньше "
+        f"минимума ставки {settings.stake_min_ton:g} Gram) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
-        f"Обязательно с комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
-        "В кошельке при переводе включи поле «Комментарий» и вставь его целиком — "
-        "без лишних пробелов. Если кошелёк не приложит mемо, оплата не привяжется и "
-        "вернётся. Грант придёт в течение минуты.\n\n"
+        f"С комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
+        "Если кошелёк приложит мемо — оплата привяжется мгновенно и любой суммой. "
+        "Без мемо сумма из вилки платы за смену всё равно зачтётся автоматически, "
+        "ведь ставкой она быть не может (минимум ставки выше). Грант придёт в течение минуты.\n\n"
         "💡 Надёжнее и без кошелька — Stars: кнопка оплаты прямо в Telegram.\n"
         "Кошелёк должен быть привязан: /wallet. Неиспользованный до конца дня грант сгорает.",
         parse_mode=ParseMode.HTML,
