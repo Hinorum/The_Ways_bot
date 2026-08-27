@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from aiogram.exceptions import TelegramForbiddenError
 
-from app.broadcast import announce_new_day
+from app.broadcast import _deliver_day, announce_new_day
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Card, Chat, Round, RoundStatus, WinRule
@@ -210,3 +210,55 @@ def test_intro_frame_attached_only_to_day_one(tmp_path, monkeypatch) -> None:
     for card in second_day.cards:
         card.image_path = ""
     assert len(day_media_group(second_day)) == 1  # обычный день — без интро
+
+
+def _finished(day_index: int, media_dir) -> Round:
+    finished = _round(day_index, media_dir)
+    finished.status = RoundStatus.CLOSED
+    finished.sealed = False
+    finished.winner_card = 1
+    finished.vote_counts_json = '{"0":2,"1":1,"2":4}'
+    return finished
+
+
+async def test_finished_day_canon_and_results_in_one_post(tmp_path, monkeypatch) -> None:
+    """Итоги дня склеены с обложкой в один пост: канон и «Итог дня» в подписи фото."""
+    media_dir = tmp_path
+    monkeypatch.setattr(settings, "media_dir", str(media_dir))
+    finished = _finished(9110, media_dir)
+    next_day = _round(9111, media_dir)
+    monkeypatch.setattr(
+        "app.broadcast.winner_photo",
+        lambda finished: SimpleNamespace(file_id=None),
+    )
+    bot = _bot({})
+    results = "🎊 Итог дня 1\n📜 Канон: Путь 1\nканон-текст"
+
+    await _deliver_day(bot, 777_010, next_day, finished, results_text=results)
+
+    caption = bot.send_photo.call_args.kwargs.get("caption", "")
+    assert "Канон дня: " in caption and "Итог дня" in caption
+    # Результаты НЕ уходят отдельным текстовым сообщением.
+    sent_texts = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
+    assert results not in sent_texts
+
+
+async def test_long_results_fall_back_to_two_posts(tmp_path, monkeypatch) -> None:
+    """«Итоги дня» длиннее лимита подписи фото (1024) не режутся: шлём два поста."""
+    media_dir = tmp_path
+    monkeypatch.setattr(settings, "media_dir", str(media_dir))
+    finished = _finished(9112, media_dir)
+    next_day = _round(9113, media_dir)
+    monkeypatch.setattr(
+        "app.broadcast.winner_photo",
+        lambda finished: SimpleNamespace(file_id=None),
+    )
+    bot = _bot({})
+    long_results = "🎊 Итог дня 1\n" + ("Длинный текст экономики и эпилога. " * 90)
+
+    await _deliver_day(bot, 777_012, next_day, finished, results_text=long_results)
+
+    caption = bot.send_photo.call_args.kwargs.get("caption", "")
+    assert "Канон дня: " in caption and "Итог дня" not in caption
+    sent_texts = [c.args[1] if len(c.args) > 1 else "" for c in bot.send_message.await_args_list]
+    assert long_results in sent_texts  # ушёл отдельным сообщением целиком

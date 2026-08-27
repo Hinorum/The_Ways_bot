@@ -360,17 +360,29 @@ async def _deliver_day(
     """Полный пакет дня в один чат. Итоги передаются готовым текстом:
     экономика дня считается один раз на рассылку, а не на каждый чат."""
     if finished is not None:
-        photo = winner_photo(finished)
-        if photo is not None:
-            card = winner_card(finished)
-            await bot.send_photo(
-                chat_id,
-                photo=photo,
-                caption=f"Канон дня: {card.title}"[:1000],
-            )
         if results_text is None:
             results_text = await results_message(finished)
-        await bot.send_message(chat_id, results_text)
+        photo = winner_photo(finished)
+        sent_together = False
+        if photo is not None and results_text:
+            # Один пост: обложка дня + канон + итоги дня в подписи к фото.
+            # Telegram режет подписи фото на 1024 знака — если «Итоги дня»
+            # (с экономикой и эпилогом) не помещаются, возвращаемся к двум
+            # сообщениям, чтобы не терять цифры и текст.
+            caption = f"Канон дня: {winner_card(finished).title}\n\n{results_text}"
+            if len(caption) <= 1024:
+                await bot.send_photo(chat_id, photo=photo, caption=caption)
+                sent_together = True
+        if not sent_together:
+            if photo is not None:
+                card = winner_card(finished)
+                await bot.send_photo(
+                    chat_id,
+                    photo=photo,
+                    caption=f"Канон дня: {card.title}"[:1000],
+                )
+            if results_text:
+                await bot.send_message(chat_id, results_text)
     media, story_in_caption = build_day_post(round_row)
     if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
