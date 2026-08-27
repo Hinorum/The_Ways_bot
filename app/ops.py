@@ -168,8 +168,6 @@ async def snapshot() -> dict:
             # Диагностика окружения: видно, что реально дошло до процесса.
             "ton_enabled": bool(settings.ton_enabled),
             "ton_network": "testnet" if settings.is_testnet else "mainnet",
-            "treasury_address_set": bool(settings.active_treasury_address),
-            "treasury_mnemonic_set": bool(settings.active_treasury_mnemonic),
         }
         if oldest_pending is not None:
             moment = oldest_pending if oldest_pending.tzinfo else oldest_pending.replace(tzinfo=timezone.utc)

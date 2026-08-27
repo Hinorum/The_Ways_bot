@@ -32,7 +32,7 @@ _MAX_TEXT_LEN = 3900
 _FORGET_MARKS = ("forbidden", "not found", "kicked", "deactivated", "migrated")
 
 
-def cards_keyboard(round_id: int, remember: bool = False) -> InlineKeyboardMarkup:
+def cards_keyboard(round_id: int, remember: bool = False, day_index: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="Путь I", callback_data=f"vote:{round_id}:0"),
@@ -42,11 +42,15 @@ def cards_keyboard(round_id: int, remember: bool = False) -> InlineKeyboardMarku
     ]
     if remember:
         # Кнопка памяти живёт только в дни, когда в главу реально всплыло эхо.
+        # Кодируем и PK раунда (для отметки MemoryHit), и его day_index (для
+        # поиска всплывших эхо) — после /resetgame id уже не равен day_index.
+        if day_index is None:
+            day_index = round_id
         rows.append(
             [
                 InlineKeyboardButton(
                     text="🧠 Я помню этот след",
-                    callback_data=f"remember:{round_id}",
+                    callback_data=f"remember:{round_id}:{day_index}",
                 )
             ]
         )
@@ -359,7 +363,7 @@ async def _deliver_day(
             show_title=not story_in_caption,
             include_story=not story_in_caption,
         ),
-        reply_markup=cards_keyboard(round_row.id, remember=remember),
+        reply_markup=cards_keyboard(round_row.id, remember=remember, day_index=round_row.day_index),
     )
 
 

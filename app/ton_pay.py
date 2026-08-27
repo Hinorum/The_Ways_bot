@@ -468,13 +468,34 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                         payout.last_error = reason[:200]
                     await session.commit()
                     return 0
-        # Фиксируем «взятые в работу» ДО вещания: падение сервиса между
-        # broadcast и коммитом не приведёт к повторной отправке.
+        # Атомарный клейм «взятых в работу» ДО вещания. Условный UPDATE по
+        # status='pending' — единственный процесс (одна копия диспетчера)
+        # переведёт строку в sending: rowcount==1. Вторая копия (двойной
+        # процесс: закрытие дня + ton-settle + ручной кик) получит 0 и НЕ
+        # возьмёт строку — иначе оба вещали бы один перевод и задваивали
+        # трату казны. Падение после клейма обратимо: _reset_retriable вернёт
+        # sending → pending на следующем цикле, а memo-антидубль (attempts>1)
+        # уберёт повтор уже ушедшего перевода.
+        claimed_ids: set[int] = set()
         for payout in payouts:
-            if payout.dest_address:
-                payout.attempts += 1
-                payout.status = "sending"
+            if not payout.dest_address:
+                continue
+            gate = await session.execute(
+                update(Payout)
+                .where(Payout.id == payout.id, Payout.status == "pending")
+                .values(status="sending")
+            )
+            if gate.rowcount != 1:
+                # Строку уже забрала другая копия — не трогаем и не вещаем.
+                continue
+            payout.attempts += 1
+            payout.status = "sending"
+            claimed_ids.add(payout.id)
         await session.commit()
+        # Работаем только строками, что реально забрали мы: сама рассылка
+        # (claimed) плюс «без адреса» (их ниже пометим failed). Строки другой
+        # копии диспетчера в эту сессию НЕ трогаем.
+        payouts = [p for p in payouts if p.id in claimed_ids or not p.dest_address]
         # Сверка с историей нужна только для повторов: свежая выплата
         # (attempts == 0) вещаться ещё не могла. Один проход истории на цикл.
         markers: set[str] = set()

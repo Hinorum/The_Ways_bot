@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 
@@ -38,6 +39,29 @@ logger = logging.getLogger(__name__)
 
 MARKER_KEY = "leaderboard_settled_through"
 WEEKLY_MARKER_KEY = "weekly_settled_through"
+
+# Приложение живёт в одном процессе, но закрытие дня (tick) и плановый
+# сброс копилок могут вызывать settle-функции параллельно из разных задач
+# одного цикла событий. Без взаимной блокировки два вызова прочитали бы
+# метку «ещё не закрыто», построили Пэйауты и задвоили копилку. Мьютекс
+# сериализует такие перекрытия внутри процесса.
+
+_month_settle_lock: asyncio.Lock | None = None
+_week_settle_lock: asyncio.Lock | None = None
+
+
+def _month_settle():
+    global _month_settle_lock
+    if _month_settle_lock is None:
+        _month_settle_lock = asyncio.Lock()
+    return _month_settle_lock
+
+
+def _week_settle():
+    global _week_settle_lock
+    if _week_settle_lock is None:
+        _week_settle_lock = asyncio.Lock()
+    return _week_settle_lock
 
 _MEDALS = ("🥇", "🥈", "🥉")
 
@@ -75,6 +99,12 @@ async def _top_correct_voters(session, since: datetime, until: datetime) -> list
 
 
 async def settle_month_if_due(bot: Bot | None = None) -> bool:
+    """Выплачивает копилку прошедших месяцев (безопасно при параллельных вызовах)."""
+    async with _month_settle():
+        return await _settle_month_locked(bot)
+
+
+async def _settle_month_locked(bot: Bot | None = None) -> bool:
     """Выплачивает копилку прошедших месяцев, если наступил новый месяц.
 
     Возвращает True, если выплата создана. Идемпотентно по метке в watcher_state:
@@ -259,6 +289,12 @@ async def _memory_nomination(session, period_start: datetime, period_end: dateti
 
 
 async def settle_week_if_due(bot: Bot | None = None) -> bool:
+    """Выплачивает копилку прошедших недель (безопасно при параллельных вызовах)."""
+    async with _week_settle():
+        return await _settle_week_locked(bot)
+
+
+async def _settle_week_locked(bot: Bot | None = None) -> bool:
     """Выплачивает копилку прошедших недель топ-3, если началась новая неделя.
 
     Возвращает True, если выплата создана. Идемпотентно по метке в

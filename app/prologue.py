@@ -167,7 +167,7 @@ _SEASON2_PROLOGUE_BEATS: dict[int, dict[str, str]] = {
 
 
 def _season2_prologue(run_day: int, alignment_label: str | None = None) -> str | None:
-    """Короткий пролог для сезонов 2+: 3 дня вместо 7,.reflective, не expository."""
+    """Короткий пролог для сезонов 2+: 3 дня вместо 7, рефлексивный, без экспозиции."""
     beat = _SEASON2_PROLOGUE_BEATS.get(run_day)
     if beat is None:
         return None

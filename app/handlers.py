@@ -67,6 +67,46 @@ async def _ensure_round():
         return await ensure_current_round(session)
 
 
+def _commands_help() -> list[str]:
+    """Справочный блок команд — общий для /start и /help."""
+    lines = [
+        "<b>Команды каравана</b>",
+        "/today — карты дня · /lore — Архив Начала и канон прожитых троп",
+        "/score — твои Следы и хроника · /calling — призвание",
+        "/best — бестиарий Сети",
+        "/help — эта памятка",
+    ]
+    if settings.revote_enabled:
+        lines.append(
+            "/change — сменить тропу (⭐ или Gram)"
+            if settings.ton_enabled
+            else f"/change — сменить тропу (⭐ {settings.revote_stars})"
+        )
+    if settings.ton_enabled:
+        lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
+        lines.append("/top — копилки и лидеры")
+        pool_pct = int(
+            100
+            - settings.owner_rake_pct
+            - settings.leaderboard_rake_pct
+            - settings.weekly_pot_pct
+            - settings.pack_fund_pct
+        )
+        lines.append(
+            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный путь; остальное — "
+            "Фонд Стаи, копилки недели и месяца (/top) и хранителю. Подробности: /stake."
+        )
+    return lines
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    """Памятка команд без стартового вступления."""
+    lines = [f"{day_mark(str(message.from_user.id))} <b>{settings.world_name}</b>", ""]
+    lines.extend(_commands_help())
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
@@ -84,33 +124,8 @@ async def cmd_start(message: Message) -> None:
         "",
         "🐾 Сутки Стаи: голосование идёт до закрытия дня — итоги и новая",
         "развилка приходят сами, сразу после него.",
-        "",
-        "<b>Команды каравана</b>",
-        "/today — карты дня · /lore — Архив Начала и канон прожитых троп",
-        "/score — твои Следы и хроника · /calling — призвание",
-        "/best — бестиарий Сети",
     ]
-    if settings.revote_enabled:
-        revote_cost = (
-            "/change — сменить тропу (⭐ или Gram)"
-            if settings.ton_enabled
-            else f"/change — сменить тропу (⭐ {settings.revote_stars})"
-        )
-        lines.append(revote_cost)
-    if settings.ton_enabled:
-        lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
-        lines.append("/top — копилки и лидеры")
-        pool_pct = int(
-            100
-            - settings.owner_rake_pct
-            - settings.leaderboard_rake_pct
-            - settings.weekly_pot_pct
-            - settings.pack_fund_pct
-        )
-        lines.append(
-            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный путь; остальное — "
-            "Фонд Стаи, копилки недели и месяца (/top) и хранителю. Подробности: /stake."
-        )
+    lines.extend(_commands_help())
     lines.append(
         "\n⚠️ Игра, а не вклад: бот и хранитель не отвечают за утраченные "
         "средства. Ты сам решаешь, на что ставишь."
@@ -162,7 +177,7 @@ async def cmd_today(message: Message) -> None:
             show_title=not story_in_caption,
             include_story=not story_in_caption,
         ),
-        reply_markup=cards_keyboard(round_row.id, remember=await _remember_flag(round_row.day_index)),
+        reply_markup=cards_keyboard(round_row.id, remember=await _remember_flag(round_row.day_index), day_index=round_row.day_index),
     )
 
 
@@ -481,20 +496,21 @@ async def cmd_best(message: Message) -> None:
     await message.answer(text)
 
 
-@router.callback_query(F.data.startswith("remember:"))
+@router.callback_query(F.data.regexp(r"^remember:\d+:\d+$"))
 async def on_remember(callback: CallbackQuery) -> None:
     """«Я помню этот след» — старт квиза: откуда всплывший след?
 
     Кнопка живёт только в дни с реальным всплытием эха. Варианты — истина
     плюс две приманки из давнего канона; расклад детерминирован парой
-    игрок+день, одна попытка на день.
+    игрок+день, одна попытка на день. Данные: round_id (PK раунда) и
+    day_index (день для поиска всплывших эхо) — после /resetgame они разнятся.
     """
     parts = callback.data.split(":")
-    if len(parts) != 2:
+    if len(parts) != 3:
         await callback.answer("Некорректная метка.", show_alert=True)
         return
     try:
-        round_id = int(parts[1])
+        round_id, day_index = int(parts[1]), int(parts[2])
     except ValueError:
         await callback.answer("Некорректная метка.", show_alert=True)
         return
@@ -505,7 +521,7 @@ async def on_remember(callback: CallbackQuery) -> None:
 
     async with SessionLocal() as session:
         player = await upsert_player(session, callback.from_user)
-        echoes = await surfaced_echoes_for_round(session, round_id)
+        echoes = await surfaced_echoes_for_round(session, day_index)
         if not echoes:
             await callback.answer("Сегодня в главе не пахло старым.", show_alert=True)
             return
@@ -525,7 +541,7 @@ async def on_remember(callback: CallbackQuery) -> None:
             return
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=f"📖 {option[:60]}", callback_data=f"remember:pick:{round_id}:{index}")]
+                [InlineKeyboardButton(text=f"📖 {option[:60]}", callback_data=f"remember:pick:{round_id}:{day_index}:{index}")]
                 for index, option in enumerate(quiz["options"])
             ]
         )
@@ -537,11 +553,11 @@ async def on_remember(callback: CallbackQuery) -> None:
 async def on_remember_pick(callback: CallbackQuery) -> None:
     """Ответ на квиз памяти: верно — отметка и нюх; мимо — архив молчит."""
     parts = callback.data.split(":")
-    if len(parts) != 4:
+    if len(parts) != 5:
         await callback.answer("Некорректный выбор.", show_alert=True)
         return
     try:
-        round_id, index = int(parts[2]), int(parts[3])
+        round_id, day_index, index = int(parts[2]), int(parts[3]), int(parts[4])
     except ValueError:
         await callback.answer("Некорректный выбор.", show_alert=True)
         return
@@ -555,7 +571,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
         if await session.get(WatcherState, marker) is not None:
             await callback.answer("Сегодня архив уже закрыл твой вопрос.", show_alert=True)
             return
-        echoes = await surfaced_echoes_for_round(session, round_id)
+        echoes = await surfaced_echoes_for_round(session, day_index)
         true_titles = [echo.title for echo in echoes]
         # Пересобираем тот же расклад: серверу нечего хранить в кнопке.
         from sqlalchemy import select as _select
@@ -652,6 +668,13 @@ async def on_vote(callback: CallbackQuery) -> None:
 def _economy_text() -> str:
     """Распределение фонда дня — по живым настройкам, без дублей."""
     pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
+    pool_pct = int(
+        100
+        - settings.owner_rake_pct
+        - settings.leaderboard_rake_pct
+        - settings.weekly_pot_pct
+        - settings.pack_fund_pct
+    )
 
     def pct(value: float) -> str:
         # Русская типографика: дробный процент через запятую (0,5%),
@@ -663,7 +686,7 @@ def _economy_text() -> str:
 
     return (
         "\n\nРаспределение фонда дня:\n"
-        f"• 96% — поставившим на верный путь, пропорционально ставкам "
+        f"• {pool_pct}% — поставившим на верный путь, пропорционально ставкам "
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
         f"• {pct(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
         f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник её делят три призовых места "
@@ -1211,6 +1234,16 @@ async def cmd_top(message: Message) -> None:
     await message.answer(_format_top(week_rows, week_pot_ton, month_rows, month_pot_ton))
 
 
+def _revote_gram_ceiling() -> float:
+    """Верх вилки Gram-оплаты смены пути: строго ниже минимальной ставки.
+
+    Приём revote-переводов идёт по вилке [revote_ton, stake_min_ton) — «до
+    X» в тексте обязано быть ровно на один доцентный шаг ниже минимума,
+    иначе при смене настроек название врёт проверке конфига.
+    """
+    return round(settings.stake_min_ton - 0.01, 4)
+
+
 def _revote_keyboard(round_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=f"⭐ {settings.revote_stars} Stars", callback_data=f"paystars:{round_id}")]
@@ -1252,7 +1285,7 @@ async def cmd_change(message: Message) -> None:
                 "Выбери способ оплаты:\n\n"
                 "⭐ <b>Stars</b> — надёжно и мгновенно (кнопка оплаты в Telegram).\n"
                 "💎 <b>Gram</b> — перевод казначею: от "
-                f"{settings.revote_ton:g} до 0.49 Gram (строго меньше минимума ставки "
+                f"{settings.revote_ton:g} до {_revote_gram_ceiling():g} Gram (строго меньше минимума ставки "
                 f"{settings.stake_min_ton:g} Gram). Мемо — только если приложишь, то "
                 "точь-в-точь `rv:день`; без мемо сумма из той же вилки зачтётся "
                 "сама как оплата смены.",
@@ -1430,7 +1463,7 @@ async def on_payton(callback: CallbackQuery) -> None:
         return
     address = settings.active_treasury_address
     await callback.message.answer(
-        f"{money_mark(raw)} Переведи от {settings.revote_ton:g} до 0.49 Gram "
+        f"{money_mark(raw)} Переведи от {settings.revote_ton:g} до {_revote_gram_ceiling():g} Gram "
         f"(строго меньше минимума ставки {settings.stake_min_ton:g} Gram) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
         f"С комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
@@ -1561,7 +1594,7 @@ async def cmd_advance(message: Message) -> None:
                 show_title=not story_in_caption,
                 include_story=not story_in_caption,
             ),
-            reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index)),
+            reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index), day_index=nxt.day_index),
         )
 
 
@@ -2622,6 +2655,26 @@ async def on_private_fallback(message: Message) -> None:
 def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+
+    @router.outer_middleware()
+    async def _close_wallet_dialog_on_command(handler, event: Message, data: dict) -> None:
+        """Любая команда, кроме /wallet, закрывает открытый диалог привязки.
+
+        Специфичные хендлеры команд перехватывают апдейт раньше, чем
+        on_private_fallback, поэтому там закрыть диалог невозможно — делаем
+        это на уровне маршрутизатора: прошёл команду — значит ожидание адреса
+        прервано. /wallet не трогаем: он сам продолжает/открывает привязку.
+        """
+        if isinstance(event, Message) and event.chat.type == ChatType.PRIVATE:
+            text = (event.text or "").strip()
+            if text.startswith("/") and not text.startswith("/wallet"):
+                uid = event.from_user.id if event.from_user else 0
+                try:
+                    await _dialog_close(uid)
+                except Exception:
+                    logger.exception("Не удалось закрыть диалог кошелька (uid=%s)", uid)
+        return await handler(event, data)
+
     _register_error_handler(dispatcher)
     return dispatcher
 

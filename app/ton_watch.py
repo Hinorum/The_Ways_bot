@@ -494,20 +494,29 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)
-            if status in ("revote_closed", "revote_too_small"):
+            if status in ("revote_closed", "revote_too_small", "revote_no_vote"):
                 await _stash_refund(
                     session,
                     transfer,
-                    revote_round_id,
+                    revote_round_id if status != "revote_no_vote" else None,
                     ledger_result=f"revote:{status}",
                     ledger_player_id=player.id,
                 )
-                await _dm_stake(
-                    bot,
-                    player.id,
-                    f"↩️ Оплата {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                    + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
-                )
+                if status == "revote_no_vote":
+                    await _dm_stake(
+                        bot,
+                        player.id,
+                        f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                        "за смену пути платить нечего — ты ещё не выбрал путь в этот день. "
+                        "Первый выбор бесплатный: жми карту дня, без оплаты.",
+                    )
+                else:
+                    await _dm_stake(
+                        bot,
+                        player.id,
+                        f"↩️ Оплата {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                        + ("день уже закрыт." if status == "revote_closed" else "сумма меньше нужной."),
+                    )
             return status
         # Авто-грант по сумме: кошелёк не всегда доносит rv:-мемо. Сумма из
         # вилки [revote_ton, stake_min_ton) ставкой быть не может (минимальная
@@ -699,6 +708,13 @@ async def _process_revote(session, transfer: Transfer, player: Player, round_id:
         return "revote_closed"
     if transfer.value_nanotons < to_nano(settings.revote_ton):
         return "revote_too_small"
+    # Как и в автогранте без мемо: если пути ещё нет, менять нечего — грант
+    # не выдаём, иначе игрок платил бы за бесполезный жетон.
+    from app.voting import get_vote
+
+    vote = await get_vote(session, round_row.id, player.id)
+    if vote is None:
+        return "revote_no_vote"
     return await _grant_revote(session, transfer, player, round_row, f"rv:{round_id}")
 
 
