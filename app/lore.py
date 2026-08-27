@@ -285,9 +285,12 @@ def compose_chapter(
         title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
         cards = _cards(rng, day_index)
         active_echoes = list(echoes or [])
+        # Пролог «Приход» (день 1): правил мира ещё нет и Первый Лай звучит
+        # только на шестой день знакомства — офлайн-сборка обязана это знать.
+        prologue_quiet = bool(season_block) and "«Приход»" in season_block
         text = _chapter_text(
             day_index, echo, place, history_tags, last, win_rule,
-            sealed=sealed, salt=salt, rng=rng,
+            sealed=sealed, salt=salt, rng=rng, prologue_quiet=prologue_quiet,
         )
         if villain_line:
             # План Хозяина Ошибки: в текст уходит только каноническое событие
@@ -507,6 +510,7 @@ def _chapter_text(
     sealed: bool = False,
     salt: str = "",
     rng: random.Random | None = None,
+    prologue_quiet: bool = False,
 ) -> str:
     if rng is None:
         rng = _rng(day_index, f"{salt}|closing:{'|'.join(tags)}")
@@ -514,6 +518,32 @@ def _chapter_text(
         law_line = _SEAL_VOICE
     else:
         law_line = _law_voice(win_rule) if win_rule is not None else ""
+
+    if day_index == 1 and prologue_quiet:
+        # Пролог «Приход»: мир ещё не объяснён — ни закона, ни Первого Лая.
+        quiet_openings = (
+            (
+                "Стая вышла из Последнего Пути под моросью чужого неба. Ворота "
+                "гудят в полтоны громче, чем следовало, и пахнет озоном, мокрой "
+                "пылью и чужими снами. Никто не произносит ни слова: собаки умеют "
+                "молчать вместе."
+            ),
+            (
+                "Порог встретил туманом по грудь. За ним — поляна, миски без еды "
+                "и три тропы, расходящиеся как лучи. Безымянная первой ступила на "
+                "чужую землю и обернулась: остальные поняли без слов."
+            ),
+            (
+                "Дождь стучал по обломкам таблички с чужим именем города. Стая "
+                "жалась к воротам: за спиной остался старый мир, впереди — только "
+                "запах озона и тихое гудение, похожее на ожидание."
+            ),
+        )
+        text = quiet_openings[rng.randrange(len(quiet_openings))]
+        if last:
+            old_title = last.split(":")[0].strip()
+            text += f" Счёт обнулён, но память сети жива: однажды стая уже выбирала «{old_title}»."
+        return text + " Одна карта на всех. Завтра мир будет другим."
 
     if day_index == 1:
         # Пул вступлений: каждый перезапуск начинает сезон по-разному.

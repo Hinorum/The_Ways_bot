@@ -25,8 +25,8 @@ from sqlalchemy import func, select
 from app.broadcast import (
     POSITIONS,
     announce_new_day,
+    build_day_post,
     cards_keyboard,
-    day_media_group,
     results_message,
     status_text,
 )
@@ -91,7 +91,12 @@ async def cmd_start(message: Message) -> None:
         "/best — бестиарий Сети",
     ]
     if settings.revote_enabled:
-        lines.append("/change — сменить тропу (⭐ или Gram)")
+        revote_cost = (
+            "/change — сменить тропу (⭐ или Gram)"
+            if settings.ton_enabled
+            else f"/change — сменить тропу (⭐ {settings.revote_stars})"
+        )
+        lines.append(revote_cost)
     if settings.ton_enabled:
         lines.append("/wallet — привязать кошелёк · /stake — как ставить Gram")
         lines.append("/top — копилки и лидеры")
@@ -132,8 +137,8 @@ async def _remember_flag(day_index: int) -> bool:
 @router.message(Command("today"))
 async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
+    media, story_in_caption = build_day_post(round_row)
     try:
-        media = day_media_group(round_row)
         if len(media) >= 2:
             await message.answer_media_group(media)
         elif media:
@@ -143,8 +148,13 @@ async def cmd_today(message: Message) -> None:
         # Картинки — украшение, текст дня обязан дойти даже при сбое Telegram
         # или пропавших файлов: игрок должен видеть развилку и кнопки.
         logger.warning("Медиа дня %s не ушли (%s) — доставляем текст", round_row.day_index, exc)
+        story_in_caption = False
     await message.answer(
-        status_text(round_row),
+        status_text(
+            round_row,
+            show_title=not story_in_caption,
+            include_story=not story_in_caption,
+        ),
         reply_markup=cards_keyboard(round_row.id, remember=await _remember_flag(round_row.day_index)),
     )
 
@@ -1173,12 +1183,14 @@ async def cmd_top(message: Message) -> None:
 
 
 def _revote_keyboard(round_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"⭐ {settings.revote_stars} Stars", callback_data=f"paystars:{round_id}")],
-            [InlineKeyboardButton(text=f"💎 {settings.revote_ton:g} Gram", callback_data=f"payton:{round_id}")],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text=f"⭐ {settings.revote_stars} Stars", callback_data=f"paystars:{round_id}")]
+    ]
+    if settings.ton_enabled:
+        rows.append(
+            [InlineKeyboardButton(text=f"💎 {settings.revote_ton:g} Gram", callback_data=f"payton:{round_id}")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _revote_status(user) -> tuple[str, int | None]:
@@ -1493,12 +1505,19 @@ async def cmd_advance(message: Message) -> None:
     else:
         # Ни одного подписанного чата — покажем всё прямо здесь.
         await message.answer(await results_message(round_row))
-        media = day_media_group(nxt)
+        media, story_in_caption = build_day_post(nxt)
         if len(media) >= 2:
             await message.answer_media_group(media)
         elif media:
             await message.answer_photo(photo=media[0].media, caption=media[0].caption)
-        await message.answer(status_text(nxt), reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index)))
+        await message.answer(
+            status_text(
+                nxt,
+                show_title=not story_in_caption,
+                include_story=not story_in_caption,
+            ),
+            reply_markup=cards_keyboard(nxt.id, remember=await _remember_flag(nxt.day_index)),
+        )
 
 
 @router.message(Command("resetgame"))
@@ -1932,7 +1951,7 @@ _PANEL_FOOTER = (
     "/treasury — казначей: баланс и пара ключей\n"
     "/adjust — сверка казны: ручной вывод или пропажа средств ⚖️\n"
     "/pause … /resume — стоп-кран игры (техработы) ⏸\n"
-    "/revenue — касса (Stars/Gram) · /health — снимок JSON\n"
+    "/revenue — касса (Stars/Gram)\n"
     "/resetgame confirm [keepstory] — полный сброс ⚠️\n"
     "Картинки-заглушки дорисовываются сами через 15 мин после анонса."
 )

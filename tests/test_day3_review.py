@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.config import settings
 from app.models import Card, Round, RoundStatus, WinRule
@@ -17,6 +18,7 @@ from app.story import (
     generate_chapter,
     polish_typography,
 )
+from app.broadcast import status_text
 
 
 CHAPTER = {
@@ -134,3 +136,86 @@ def test_status_prologue_title_matches_open_day() -> None:
     text = status_text(round_row)
     assert "Пролог дня: «Лайнер»" in text
     assert "Пять собак" not in text
+
+
+# ---------- Объединение поста дня (жалоба на дубль заголовка) ----------
+
+
+def _round_with_story(day_index: int, tmp_path, story_len: int):
+    from app.broadcast import build_day_post
+
+    cover = Path(tmp_path) / f"day{day_index}_cover.jpg"
+    cover.write_bytes(b"\xff\xd8\xfffakejpeg")
+    round_row = Round(
+        id=90_600 + day_index,
+        day_index=day_index,
+        status=RoundStatus.OPEN,
+        win_rule=WinRule.MAJORITY,
+        rule_commitment="c",
+        chapter_title=f"День {day_index}. Портал лает",
+        chapter_text="Утро началось с чужого эха в мисках." * max(1, story_len // 40),
+        lore_summary="л",
+        cover_path=str(cover),
+        opens_at=datetime.now(timezone.utc),
+        voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
+        tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
+    )
+    round_row.cards.append(
+        Card(position=0, title="Тропа", description="d", consequence="c", image_path="")
+    )
+    return round_row, build_day_post
+
+
+def test_short_story_merges_into_cover_caption(tmp_path) -> None:
+    round_row, build = _round_with_story(1, tmp_path, 60)
+    media, story_in_caption = build(round_row)
+    assert len(media) == 1
+    assert story_in_caption is True
+    # Заголовок и история в одном посте — дубля нет.
+    assert "Портал лает" in media[0].caption
+    assert "Утро началось с чужого эха" in media[0].caption
+    assert len(media[0].caption) <= 1024
+
+    status = status_text(
+        round_row,
+        show_title=not story_in_caption,
+        include_story=not story_in_caption,
+    )
+    assert "День 1. Портал лает" not in status  # дубля заголовка нет
+    assert "Утро началось с чужого эха" not in status  # история не повторяется
+    assert "I. Тропа" in status  # развилка и служебные строки на месте
+
+
+def test_long_story_keeps_separate_messages(tmp_path) -> None:
+    round_row, build = _round_with_story(2, tmp_path, 1500)
+    media, story_in_caption = build(round_row)
+    assert story_in_caption is False  # глава длиннее подписи
+    assert "Портал лает" in media[0].caption and "стая идёт" not in media[0].caption
+    status = status_text(round_row, show_title=not story_in_caption)
+    # Титул ровно один раз (на обложке), история целиком в тексте.
+    assert media[0].caption.count("Портал лает") == 1
+    assert status.count("Портал лает") == 1
+    assert len(status) <= 4096
+
+
+# ---------- Тихий пролог: день 1 без Лая и без закона ----------
+
+
+def test_prologue_day1_quiet_no_bark_no_law() -> None:
+    from app.lore import compose_chapter
+
+    block = (
+        "ПРОЛОГ, день 1 знакомства — «Приход». Новая арка начинается с "
+        "воспоминания о Последнем Пути."
+    )
+    chapter = compose_chapter(
+        1,
+        [],
+        win_rule=WinRule.MEDIAN,
+        season_block=block,
+        salt="quiet-prologue",
+    )
+    assert "Первый Лай" not in chapter["text"]
+    assert "Середина знает меру" not in chapter["text"]
+    assert "Закон" not in chapter["text"].split("Одна карта на всех")[0]
+    assert "Одна карта на всех." in chapter["text"]

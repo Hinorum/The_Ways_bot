@@ -62,10 +62,12 @@ def _utc(value: datetime) -> datetime:
     return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
 
 
-def status_text(round_row: Round) -> str:
+def status_text(
+    round_row: Round, *, show_title: bool = True, include_story: bool = True
+) -> str:
     from app.models import RULE_PHRASES
 
-    mark = day_mark(str(round_row.id))
+    mark = day_mark(str(round_row.id)) if show_title else ""
     sealed = bool(getattr(round_row, "sealed", False))
     if round_row.status.value == "open":
         if sealed:
@@ -105,9 +107,12 @@ def status_text(round_row: Round) -> str:
         )
     else:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
+    # Дубль заголовка (инцидент): титул живёт на обложке, история — в тексте.
+    head = f"{mark} {round_row.chapter_title}\n\n" if show_title else ""
+    if include_story:
+        head += f"{_clamp(round_row.chapter_text, 2600)}\n\n"
     text = (
-        f"{mark} {round_row.chapter_title}\n\n{_clamp(round_row.chapter_text, 2600)}\n\n"
-        f"{cards}\n\n{phase}{bank_line}\n{deadline}"
+        f"{head}{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
     season_line = _season_status_line(round_row)
     if season_line:
@@ -150,7 +155,8 @@ def _season_status_line(round_row: Round) -> str | None:
 
         title = prologue_title(run_day)
         if title:
-            line += f" Пролог дня: «{title}»."
+            sep = " · " if mood else " "
+            line += f"{sep}Пролог дня: «{title}»."
         return line
     except Exception:
         return None
@@ -198,11 +204,26 @@ def _intro_media(round_row: Round) -> InputMediaPhoto | None:
     return InputMediaPhoto(media=FSInputFile(path), caption=caption[:1000])
 
 
-def day_media_group(round_row: Round) -> list[InputMediaPhoto]:
-    """Свежий набор медиа на каждый чат: aiogram мутирует объекты при отправке.
+def _merged_cover_caption(round_row: Round) -> str | None:
+    """Подпись обложки с историей ЦЕЛИКОМ — если влезает в лимит 1024.
 
-    Новый мир: обложка «после вчерашнего выбора» (+ стартовый кадр в день 1).
-    Легаси-дни с готовыми фото-картами показываются по-старому — четыре кадра.
+    Жалоба хранителя: заголовок дня дублировался в подписи фото и в начале
+    текстового поста. Короткие главы объединяются с картинкой в один пост;
+    длинные едут отдельным сообщением, но титул всё равно не дублируется
+    (status_text(show_title=False)).
+    """
+    body = (round_row.chapter_text or "").strip()
+    if not body:
+        return None
+    caption = f"{day_mark(str(round_row.id))} {round_row.chapter_title}\n\n{body}"
+    return caption if len(caption) <= 1024 else None
+
+
+def build_day_post(round_row: Round) -> tuple[list[InputMediaPhoto], bool]:
+    """Медиа дня + флаг «история уже внутри подписи обложки».
+
+    Новый мир: обложка (объединённая подпись, если помещается) (+ стартовый
+    кадр в день 1). Легаси-дни с готовыми фото-картами показываются как раньше.
     """
     media = [_cover_media(round_row)]
     cards = sorted(round_row.cards, key=lambda item: item.position)
@@ -211,10 +232,22 @@ def day_media_group(round_row: Round) -> list[InputMediaPhoto]:
     )
     if legacy:
         media.extend(_card_media(card) for card in cards)
-        return media
+        return media, False
+    merged_caption = _merged_cover_caption(round_row)
+    if merged_caption is not None:
+        media[0].caption = merged_caption
+        merged = True
+    else:
+        merged = False
     intro = _intro_media(round_row)
     if intro is not None:
         media.append(intro)
+    return media, merged
+
+
+def day_media_group(round_row: Round) -> list[InputMediaPhoto]:
+    """Совместимая обёртка: только медиа (без флага слияния)."""
+    media, _story_in_caption = build_day_post(round_row)
     return media
 
 
@@ -326,7 +359,7 @@ async def _deliver_day(
         if results_text is None:
             results_text = await results_message(finished)
         await bot.send_message(chat_id, results_text)
-    media = day_media_group(round_row)
+    media, story_in_caption = build_day_post(round_row)
     if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
     elif media:
@@ -336,7 +369,11 @@ async def _deliver_day(
         await bot.send_photo(chat_id, photo=media[0].media, caption=media[0].caption)
     await bot.send_message(
         chat_id,
-        status_text(round_row),
+        status_text(
+            round_row,
+            show_title=not story_in_caption,
+            include_story=not story_in_caption,
+        ),
         reply_markup=cards_keyboard(round_row.id, remember=remember),
     )
 
