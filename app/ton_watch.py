@@ -316,18 +316,37 @@ async def _toncenter_page(since_utime: int, before_lt: str | None = None) -> tup
     return transfers, _PAGE_OK
 
 
+# Кошелёк изредка добавляет к комментарию невидимые символы (нулевая ширина,
+# неразрывные пробелы, BOM) — они ломали бы строгий разбор rv:-memo.
+_COMMENT_NOISE = str.maketrans(
+    {
+        "\ufeff": "",
+        "\u200b": "",
+        "\u200c": "",
+        "\u200d": "",
+        "\u00a0": " ",
+        "\u202f": " ",
+    }
+)
+
+
+def _clean_comment(text: str) -> str:
+    """Убирает невидимые символы из комментария, сохраняя остальное как есть."""
+    return str(text).translate(_COMMENT_NOISE)
+
+
 def _decode_comment(in_msg: dict) -> str:
     raw = in_msg.get("raw_message") or ""
     if raw:
-        return raw
+        return _clean_comment(raw)
     msg_data = in_msg.get("msg_data") or {}
     decoded = msg_data.get("decoded_comment") or ""
     if decoded:
-        return decoded
+        return _clean_comment(decoded)
     text_b64 = msg_data.get("text")
     if text_b64:
         try:
-            return base64.b64decode(text_b64).decode("utf-8", "ignore")
+            return _clean_comment(base64.b64decode(text_b64).decode("utf-8", "ignore"))
         except Exception:
             return ""
     return ""
@@ -518,8 +537,28 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 ledger_result=f"stake:{result}",
                 ledger_player_id=player.id,
             )
-            reason = "ставка на этот день уже есть" if result == "already_staked" else "день уже закрылся"
-            await _dm_stake(bot, player.id, f"↩️ Перевод {amount} Gram возвращается: {reason}.")
+            # Ставка — от stake_min_ton, а плата за смену пути (revote_ton) —
+            # ниже минимума. Значит повторный «ставкоподобный» перевод за того,
+            # кто уже поставил и чья сумма не дотягивает до минимума, — это
+            # почти наверняка «недоехавший» revote: кошелёк не приложил rv:-мемо
+            # или исказил его. Объясняем внятно, а не путанным «ставка уже есть».
+            suspected_revote = (
+                result == "already_staked"
+                and transfer.value_nanotons < to_nano(settings.stake_min_ton)
+            )
+            if suspected_revote:
+                await _dm_stake(
+                    bot,
+                    player.id,
+                    f"↩️ Перевод {amount} Gram возвращается: эта сумма ниже минимума "
+                    f"ставки ({settings.stake_min_ton:g} Gram). Если ты менял путь — "
+                    "бот не распознал твой комментарий rv:… (кошелёк не приложил "
+                    "мемо или исказил его). Зайди в /change и выбери Stars, либо "
+                    "переведи снова, вставив мемо точь-в-точь.",
+                )
+            else:
+                reason = "ставка на этот день уже есть" if result == "already_staked" else "день уже закрылся"
+                await _dm_stake(bot, player.id, f"↩️ Перевод {amount} Gram возвращается: {reason}.")
         elif result == "too_small":
             await _dm_stake(
                 bot,

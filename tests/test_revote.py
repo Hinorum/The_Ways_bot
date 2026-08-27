@@ -45,6 +45,24 @@ def test_payload_and_memo_roundtrip() -> None:
     assert parse_revote_memo("rv:") is None
 
 
+def test_parse_revote_memo_tolerates_wallet_noise() -> None:
+    """Кошелёк не всегда доносит мемо байт-в-байт: лишние пробелы, перевод
+    строки, подпись кошелька или мусор вокруг — токен rv:<цифры> всё равно
+    находится."""
+    assert parse_revote_memo("rv:17") == 17
+    assert parse_revote_memo("  rv:17  ") == 17
+    assert parse_revote_memo("RV:17") == 17
+    assert parse_revote_memo("rv : 17") == 17
+    assert parse_revote_memo("rv:17\nподпись кошелька") == 17
+    assert parse_revote_memo("Tonkeeper\nrv:17") == 17
+    assert parse_revote_memo("смена пути\nrv:17") == 17
+    assert parse_revote_memo("rv:\u00a017") == 17
+    assert parse_revote_memo("\u200brv\u200d:17") == 17
+    assert parse_revote_memo("без мемо") is None
+    assert parse_revote_memo("xxx rv 12 yyy") is None
+    assert parse_revote_memo("") is None
+
+
 async def test_change_vote_requires_grant(session) -> None:
     player = Player(id=41)
     session.add(player)

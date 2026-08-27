@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import re
+
 REVOTE_MEMO_PREFIX = "rv:"
+
+# Кошелёк не всегда доставляет комментарий байт-в-байт: вокруг фразы может
+# оказаться мусор (перевод строки, неразрывные/нулевые пробелы, подпись
+# кошелька, эмодзи). Ищем токен rv:<цифры> в любом месте нормализованного
+# текста, а не требуем, чтобы он был всей строкой от первой позиции.
+# \u200b/\u200c/\u200d — невидимые «нулевые» пробелы, которые кошельки иногда
+# подмешивают внутрь скопированной фразы.
+_ZERO_WIDTH = "\u200b\u200c\u200d"
+_REVOTE_PATTERN = re.compile(rf"rv[{_ZERO_WIDTH}\s]*:[{_ZERO_WIDTH}\s]*(\d+)", re.IGNORECASE)
 
 
 def revote_memo(round_id: int) -> str:
@@ -23,8 +34,17 @@ def parse_revote_payload(payload: str | None) -> int | None:
 
 
 def parse_revote_memo(memo: str | None) -> int | None:
-    text = (memo or "").strip().lower()
-    if not text.startswith(REVOTE_MEMO_PREFIX):
+    text = (memo or "").strip()
+    if not text:
         return None
-    raw = text[len(REVOTE_MEMO_PREFIX):].strip()
-    return int(raw) if raw.isdigit() else None
+    # Прямое соответствие как раньше — быстро и без сюрпризов.
+    lowered = text.lower()
+    if lowered.startswith(REVOTE_MEMO_PREFIX):
+        raw = text.lower()[len(REVOTE_MEMO_PREFIX):].strip()
+        if raw.isdigit():
+            return int(raw)
+    # Кошелёк мог добавить пробелы до/после или обернул фразу иначе.
+    match = _REVOTE_PATTERN.search(lowered)
+    if match is not None:
+        return int(match.group(1))
+    return None

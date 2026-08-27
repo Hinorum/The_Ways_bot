@@ -571,6 +571,66 @@ async def test_repeat_stake_and_closed_day_transfers_are_refunded(
             await db.commit()
 
 
+async def test_submin_already_staked_is_refunded_with_revote_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сумма ниже минимума ставки за уже поставившего = «недоехавший» revote.
+
+    Кошелёк не приложил rv:-мемо → перевод уходит в ветку ставки и упирается в
+    «уже есть». Сумма (0.1 = revote_ton) ниже минимума ставки (0.5), поэтому
+    игроку объясняют про смену пути, а не путанное «ставка уже есть»."""
+    import os
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.db import SessionLocal
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    pid = 820_000 + int.from_bytes(os.urandom(2), "big")
+    wallet = "0:" + os.urandom(32).hex()
+    tx_hash = "submin-" + os.urandom(8).hex()
+    bot = SimpleNamespace(send_message=AsyncMock())
+    async with SessionLocal() as db:
+        db.add(Player(id=pid, username=f"u{pid}", wallet_address=wallet))
+        round_row = _open_round(day_index=903_000)
+        db.add(round_row)
+        await db.flush()
+        db.add(
+            Stake(
+                round_id=round_row.id,
+                player_id=pid,
+                amount_nanotons=to_nano(1),
+                tx_hash=f"base-{pid}",
+                status="confirmed",
+            )
+        )
+        await db.commit()
+        try:
+            t = Transfer(
+                tx_hash,
+                wallet,
+                to_nano(0.1),
+                "",  # мемо не приложилось
+                int(datetime.now(timezone.utc).timestamp()),
+            )
+            assert await process_transfer(t, bot=bot) == "already_staked"
+            row = (
+                await db.execute(Payout.__table__.select().where(Payout.tx_hash == tx_hash))
+            ).first()._mapping
+            assert row["kind"] == "refund" and row["round_id"] == round_row.id
+            sent = bot.send_message.await_args.args[1]
+            assert "не распознал твой комментарий rv" in sent
+        finally:
+            await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
+            await db.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+            await db.delete(round_row)
+            player = await db.get(Player, pid)
+            if player is not None:
+                await db.delete(player)
+            await db.commit()
+
+
 async def test_failed_revote_payments_are_refunded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Оплата смены пути мала или день закрыт — деньги автоматически возвращаются."""
     import os

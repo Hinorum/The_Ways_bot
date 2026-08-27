@@ -16,6 +16,7 @@ from app import ton_pay
 from app.config import settings
 from app.db import SessionLocal
 from app.leaderboard import MARKER_KEY, previous_month_key, settle_month_if_due
+from app.payments import parse_revote_memo
 from app.models import (
     LeaderboardPot,
     Payout,
@@ -346,6 +347,22 @@ def test_jetton_transfer_is_not_a_stake_and_not_refunded() -> None:
     decoded = _tx_item(in_msg={"msg_data": {"decoded_op": "transfer_notification"}})
     assert ton_watch._is_jetton_notification(decoded["in_msg"])
     assert ton_watch._parse_tx_item(decoded, since_utime=1000) is None
+
+
+def test_decode_comment_strips_invisible_wallet_noise() -> None:
+    """Невидимые символы вокруг rv:-мемо (нулевые/неразрывные пробелы, BOM)
+    вычищаются при декодировании, чтобы мемо дошло до разбора целым."""
+    import base64 as _b64
+
+    from app import ton_watch
+
+    clean = ton_watch._decode_comment(
+        {"msg_data": {"decoded_comment": "\u200brv:\u200d17\u00a0"}}
+    )
+    assert parse_revote_memo(clean) == 17
+    # base64-поле «text» тоже чистится.
+    b64 = _b64.b64encode("\ufeffrv:17".encode()).decode()
+    assert parse_revote_memo(ton_watch._decode_comment({"msg_data": {"text": b64}})) == 17
 
     # Нативный TON с обычным опкодом джеттоном не считается.
     native = _tx_item(in_msg={**_tx_item()["in_msg"], "opcode": "0x00000000"})

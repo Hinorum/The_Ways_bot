@@ -1237,7 +1237,14 @@ async def cmd_change(message: Message) -> None:
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(status)
         if round_id is not None:
-            await message.answer("Выбери способ оплаты:", reply_markup=_revote_keyboard(round_id))
+            await message.answer(
+                "Выбери способ оплаты:\n\n"
+                "⭐ <b>Stars</b> — надёжно и мгновенно (кнопка оплаты в Telegram).\n"
+                "💎 <b>Gram</b> — перевод казначею с комментарием (memo) rv:… — кошелёк должен "
+                "приложить комментарий, иначе оплата не привяжется и вернётся.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_revote_keyboard(round_id),
+            )
         return
     # В группе деталей не даём: только приватная кнопка — как у /score и /wallet.
     await message.answer(
@@ -1411,9 +1418,12 @@ async def on_payton(callback: CallbackQuery) -> None:
     await callback.message.answer(
         f"{money_mark(raw)} Переведи {settings.revote_ton:g} Gram (или больше) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
-        f"Обязательно с комментарием (memo):\n<code>{revote_memo(int(raw))}</code>\n\n"
-        "Кошелёк должен быть привязан: /wallet. Грант придёт в течение минуты. "
-        "Неиспользованный до конца дня грант сгорает.",
+        f"Обязательно с комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
+        "В кошельке при переводе включи поле «Комментарий» и вставь его целиком — "
+        "без лишних пробелов. Если кошелёк не приложит mемо, оплата не привяжется и "
+        "вернётся. Грант придёт в течение минуты.\n\n"
+        "💡 Надёжнее и без кошелька — Stars: кнопка оплаты прямо в Telegram.\n"
+        "Кошелёк должен быть привязан: /wallet. Неиспользованный до конца дня грант сгорает.",
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
