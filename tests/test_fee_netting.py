@@ -52,7 +52,7 @@ def _ton_on(monkeypatch: pytest.MonkeyPatch):
 
 async def test_fee_is_deducted_proportionally(session: AsyncSession) -> None:
     """Два победителя с разными ставками: газ делится пропорционально, а не плоско."""
-    for pid in (1, 2):
+    for pid in (1, 2, 3):
         session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
     round_row = await make_closed_round(session, winner_card=0)
     session.add_all(
