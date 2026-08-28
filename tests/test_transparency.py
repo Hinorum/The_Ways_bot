@@ -56,7 +56,8 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     assert "не отвечают за утраченные средства" in text
     assert "сам решаешь" in text
 
-    # Без TON-экономики — ни фонда, ни /top, но дисклеймер остаётся.
+    # Без TON-экономики — ни фонда, ни /top, и дисклеймера про деньги нет:
+    # в бесплатной версии нечего терять, пугать игрока нечем.
     monkeypatch.setattr(settings, "ton_enabled", False)
     message2 = SimpleNamespace(
         chat=SimpleNamespace(type="private"),
@@ -67,7 +68,7 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     await h.cmd_start(message2)
     text2 = message2.answer.call_args_list[0].args[0]
     assert "/top" not in text2 and "96%" not in text2
-    assert "не отвечают за утраченные средства" in text2
+    assert "не отвечают за утраченные средства" not in text2
 
 
 def test_format_top_lists_leaders_and_pot() -> None:
@@ -91,6 +92,7 @@ async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> 
 
     from app.voting import upsert_player
 
+    monkeypatch.setattr(settings, "ton_enabled", True)
     async with session:
         player = await upsert_player(session, SimpleNamespace(id=555, username="w", first_name="W"))
         player.wallet_address = "0:abc"

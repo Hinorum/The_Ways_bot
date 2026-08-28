@@ -129,7 +129,8 @@ async def cmd_start(message: Message) -> None:
         "развилка приходят сами, сразу после него.",
     ]
     lines.extend(_commands_help())
-    lines.append(f"\n⚠️ {_DYOR_TEXT}")
+    if settings.ton_enabled:
+        lines.append(f"\n⚠️ {_DYOR_TEXT}")
     await message.answer(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
@@ -977,7 +978,8 @@ async def _wallet_view_text(user) -> str:
             )
         if stake_line:
             body += f"\n\n💸 {stake_line}"
-        return f"{body}{_economy_text()}\n\n{_DYOR_TEXT}"
+        tail = f"\n\n{_DYOR_TEXT}" if settings.ton_enabled else ""
+        return f"{body}{_economy_text()}{tail}"
 
 
 # Диалог «пришли адрес следующим сообщением» живёт в БД (wallet_dialogs):
@@ -1546,6 +1548,13 @@ async def _revote_status(user) -> tuple[str, int | None]:
 async def cmd_change(message: Message) -> None:
     if not settings.revote_enabled:
         await message.answer(f"{warn_mark('revote-off')} Смена выбора сейчас недоступна.")
+        return
+    # Бесплатная версия (TON выключен): смены пути нет — платить нечем и незачем.
+    if not settings.ton_enabled:
+        await message.answer(
+            f"{warn_mark('revote-off')} Смена выбора недоступна в бесплатной версии: "
+            "игра идёт без ставок и платных действий."
+        )
         return
     # Версия без ставок: смена выбора за валюту/звёзды выключена целиком.
     if await _active_round_money_mode() is False:
