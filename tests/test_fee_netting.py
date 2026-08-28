@@ -198,3 +198,27 @@ async def test_refunds_deduct_gas(session: AsyncSession) -> None:
     assert [row.amount_nanotons for row in refunds] == [
         to_nano(0.7) - to_nano(settings.payout_fee_gram)
     ]
+
+
+async def test_refunds_proportional_ratio(monkeypatch, session: AsyncSession) -> None:
+    """refund_fee_ratio: комиссия на возврат пропорциональна ставке, а не плоская."""
+    monkeypatch.setattr(settings, "refund_fee_ratio", 0.01)  # 1%
+    session.add(Player(id=41, wallet_address="wallet-41"))
+    round_row = await make_closed_round(session, winner_card=0, day_index=53)
+    session.add_all(
+        [
+            Vote(round_id=round_row.id, player_id=41, card_position=1),
+            Stake(round_id=round_row.id, player_id=41, amount_nanotons=to_nano(0.7), tx_hash="b", status="confirmed"),
+        ]
+    )
+    await session.commit()
+
+    await stakes_mod.finalize_day_payouts(session, round_row)
+    refunds = (
+        (await session.execute(select(Payout).where(Payout.kind == "refund")))
+        .scalars()
+        .all()
+    )
+    # Возврат = ставка × (1 − 1%) = пропорционально, без плоской потери.
+    assert refunds[0].amount_nanotons == int(to_nano(0.7) * 0.99)
+    monkeypatch.undo()
