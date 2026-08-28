@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, distinct, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1469,6 +1469,25 @@ async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[in
     counts = {0: 0, 1: 0, 2: 0}
     for position, total in result.all():
         counts[int(position)] = int(total)
+    bonus = getattr(settings, "stake_vote_bonus_weight", 0) or 0
+    if bonus > 0:
+        # «Кожа в игре»: путь, за который хотя бы один игрок держит
+        # подтверждённую ставку TON, получает плоский перевес. Ставка
+        # привязывается к пути через голос самого игрока (Stake не хранит
+        # позицию отдельно). Только confirmed — деньги реально заблокированы.
+        stake_rows = await session.execute(
+            select(Vote.card_position, func.count(distinct(Vote.player_id)))
+            .join(
+                Stake,
+                (Stake.round_id == Vote.round_id)
+                & (Stake.player_id == Vote.player_id),
+            )
+            .where(Vote.round_id == round_id, Stake.status == "confirmed")
+            .group_by(Vote.card_position)
+        )
+        for position, holders in stake_rows.all():
+            if holders > 0:
+                counts[int(position)] += bonus
     return counts
 
 

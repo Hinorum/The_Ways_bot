@@ -536,3 +536,70 @@ async def test_settle_week_refunded_stake_counts_rejected_does_not(
                     await session.delete(player)
             await session.commit()
 
+
+async def test_weekly_top_honors_correct_cap(monkeypatch) -> None:
+    """Анти-гринд: верные пути сверх потолка не надувают счёт недели."""
+    base = 970_200
+    pid_a, pid_b = base, base + 1
+    prev_start, _ = week_bounds(previous_week_key())
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_a, username="grinder"),
+                Player(id=pid_b, username="steady"),
+            ]
+        )
+        rounds: list[Round] = []
+        for offset in range(5):
+            round_row = await _seed_closed_round(
+                session, 846_000 + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            # grinder верно каждый день, steady — лишь дважды.
+            session.add(Vote(round_id=round_row.id, player_id=pid_a, card_position=0))
+            if offset < 2:
+                session.add(Vote(round_id=round_row.id, player_id=pid_b, card_position=0))
+        await session.commit()
+        try:
+            top = await weekly_top(session, prev_start, week_bounds(previous_week_key())[1], limit=10)
+            scored = {pid: correct for pid, correct, _days in top}
+            assert scored[pid_a] == 5  # без потолка — все пять верных
+            monkeypatch.setattr(settings, "leaderboard_correct_cap", 2)
+            try:
+                capped = await weekly_top(session, prev_start, week_bounds(previous_week_key())[1], limit=10)
+                assert {pid: c for pid, c, _d in capped}[pid_a] == 2  # срезано до потолка
+                # рамка: двое теперь вровень — решает ранг по player_id? Нет,
+                # порядок по верности потом по дням: grinder играл все дни.
+            finally:
+                monkeypatch.undo()
+        finally:
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_a, pid_b):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+def test_weighted_amounts_distributes_full_pot(monkeypatch) -> None:
+    """Сглаживание месячной копилки: веса нормируются по получателям."""
+    from app.leaderboard import _weighted_amounts
+
+    payable = [(1, 9, "w1"), (2, 7, "w2"), (3, 5, "w3")]
+    weights = [60, 30, 10]
+    amounts = _weighted_amounts(1000, payable, weights)
+    assert sum(amounts) == 1000
+    assert amounts == [600, 300, 100]
+
+    # Весов меньше, чем получателей — последний вес повторяется, горш делится.
+    amounts = _weighted_amounts(1000, payable[:2], [100])
+    assert sum(amounts) == 1000
+    assert amounts[0] == 500 and amounts[1] == 500
+
+    assert _weighted_amounts(0, payable, weights) == []
+    assert _weighted_amounts(1000, [], weights) == []
+
+

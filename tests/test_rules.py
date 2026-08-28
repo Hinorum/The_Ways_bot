@@ -103,6 +103,59 @@ async def test_finish_tally_records_tie_note(session) -> None:
     assert finished.winner_card == expected
 
 
+async def test_stake_vote_bonus_weighted_counts(session, monkeypatch) -> None:
+    """«Кожа в игре»: подтверждённая ставка добавляет вес к счёту пути (config)."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings
+    from app.models import Round, RoundStatus, Stake, Vote
+    from app.rounds import count_votes_for_tally
+    from app.ton_utils import to_nano
+    now = datetime.now(timezone.utc)
+    round_row = Round(
+        day_index=9620,
+        status=RoundStatus.TALLYING,
+        win_rule=WinRule.MINORITY,
+        rule_commitment="stakebonus",
+        chapter_title="t",
+        chapter_text="x",
+        lore_summary="l",
+        opens_at=now - timedelta(hours=25),
+        voting_ends_at=now - timedelta(hours=1),
+        tally_ends_at=now - timedelta(minutes=30),
+        vote_counts_json="{}",
+    )
+    session.add(round_row)
+    await session.commit()
+    # p1 на пути 0, p2 на пути 1; ставка-подтверждение только у p2 (путь 1).
+    session.add_all(
+        [
+            Vote(round_id=round_row.id, player_id=1, card_position=0),
+            Vote(round_id=round_row.id, player_id=2, card_position=1),
+            Stake(
+                round_id=round_row.id, player_id=2, amount_nanotons=to_nano(1),
+                tx_hash="tx_" + "ab" * 16, status="confirmed",
+            ),
+        ]
+    )
+    await session.commit()
+    try:
+        # По умолчанию бонус выключен — чистый счёт.
+        assert await count_votes_for_tally(session, round_row.id) == {0: 1, 1: 1, 2: 0}
+        monkeypatch.setattr(settings, "stake_vote_bonus_weight", 1)
+        try:
+            counts = await count_votes_for_tally(session, round_row.id)
+            # Путь 1 (с реальной ставкой) получает +1 — у него теперь перевес.
+            assert counts == {0: 1, 1: 2, 2: 0}
+        finally:
+            monkeypatch.undo()
+    finally:
+        await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+        await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+        await session.delete(round_row)
+        await session.commit()
+
+
 def test_story_references_previous_day() -> None:
     first = compose_chapter(1, [])
     assert len(first["cards"]) == 3

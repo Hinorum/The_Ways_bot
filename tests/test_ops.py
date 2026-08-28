@@ -537,6 +537,72 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
             await session.commit()
 
 
+async def test_monthly_pot_pays_top_k_by_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сглаживание дисперсии: топ-K месячной копилки делится по весам."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "monthly_prize_top_k", 2)
+    monkeypatch.setattr(settings, "monthly_prize_weights", "60,30,10")
+    pid_a = 960_000 + int.from_bytes(os.urandom(2), "big")
+    pid_b = pid_a + 1
+    wallet_a = "0:" + os.urandom(32).hex()
+    wallet_b = "0:" + os.urandom(32).hex()
+    async with SessionLocal() as session:
+        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        ra = _closed_round(760_001, prev_month - timedelta(days=9))
+        rb = _closed_round(760_002, prev_month - timedelta(days=8))
+        session.add_all(
+            [
+                Player(id=pid_a, username=f"a{pid_a}", wallet_address=wallet_a),
+                Player(id=pid_b, username=f"b{pid_b}", wallet_address=wallet_b),
+            ]
+        )
+        session.add_all([ra, rb])
+        await session.flush()
+        session.add_all(
+            [
+                Vote(round_id=ra.id, player_id=pid_a, card_position=1),
+                Vote(round_id=rb.id, player_id=pid_a, card_position=1),
+                Vote(round_id=rb.id, player_id=pid_b, card_position=1),
+                # Оба ставили в месяце (требование выплаты).
+                Stake(
+                    round_id=ra.id, player_id=pid_a, amount_nanotons=to_nano(1),
+                    tx_hash="tx_" + os.urandom(16).hex(), status="confirmed",
+                ),
+                Stake(
+                    round_id=rb.id, player_id=pid_b, amount_nanotons=to_nano(1),
+                    tx_hash="tx_" + os.urandom(16).hex(), status="confirmed",
+                ),
+            ]
+        )
+        pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=1000)
+        month_key = pot.month
+        session.add(pot)
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is True
+            rows = (
+                await session.execute(select(Payout).where(Payout.kind == "leaderboard"))
+            ).scalars().all()
+            amounts = {p.player_id: p.amount_nanotons for p in rows}
+            assert set(amounts) == {pid_a, pid_b}
+            # 60/30 из "60,30,10" нормируются по двум получателям: 60/90 и
+            # 30/90 от 1000 → 667 и 333 (пыль — первому месту).
+            assert amounts[pid_a] == 667 and amounts[pid_b] == 333
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
+            await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([pid_a, pid_b])))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id.in_([pid_a, pid_b])))
+            for round_row in (await session.execute(select(Round).where(Round.day_index.in_([760_001, 760_002])))).scalars().all():
+                await session.delete(round_row)
+            for pid in (pid_a, pid_b):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
 async def test_monthly_pot_carried_when_leader_has_no_wallet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

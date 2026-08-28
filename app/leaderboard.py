@@ -69,6 +69,13 @@ def _week_settle():
 _MEDALS = ("🥇", "🥈", "🥉")
 
 
+def _capped(expr, cap: int):
+    """Верное-количество, обрезанное потолком, портативно (SQLite/Postgres)."""
+    if not cap or cap <= 0:
+        return expr
+    return case((expr > cap, cap), else_=expr)
+
+
 def previous_month_key(now: datetime | None = None) -> str:
     """Ключ последнего ПОЛНОСТЬЮ прошедшего месяца («YYYY-MM»)."""
     now = now or datetime.now(timezone.utc)
@@ -82,8 +89,9 @@ async def _top_correct_voters(session, since: datetime, until: datetime) -> list
     Нижняя граница обязательна: без неё «чемпион всех времён» забирал бы
     копилку каждого следующего месяца, даже ничего не отгадав в нём.
     """
+    count_expr = _capped(func.count(), settings.leaderboard_correct_cap)
     result = await session.execute(
-        select(Vote.player_id, func.count())
+        select(Vote.player_id, count_expr)
         .join(Round, Round.id == Vote.round_id)
         .where(
             Vote.card_position == Round.winner_card,
@@ -92,13 +100,39 @@ async def _top_correct_voters(session, since: datetime, until: datetime) -> list
             Round.tally_ends_at < until,
         )
         .group_by(Vote.player_id)
-        .order_by(func.count().desc(), Vote.player_id.asc())
+        .order_by(count_expr.desc(), Vote.player_id.asc())
     )
-    rows = [(pid, count) for pid, count in result.all()]
+    rows = [(pid, int(count)) for pid, count in result.all()]
     if not rows:
         return []
     best = rows[0][1]
     return [row for row in rows if row[1] == best]
+
+
+async def _month_ranked(
+    session, since: datetime, until: datetime, limit: int = 50
+) -> list[tuple[int, int]]:
+    """Ранг месячного лидерборда окном [since, until) с учётом потолка.
+
+    Возвращает топ-`limit` игроков (player_id, верных путей) по убыванию
+    верности (ничья — по player_id). Используется режимом top-K месячной
+    копилки, где платят несколько мест, а не только максимум.
+    """
+    count_expr = _capped(func.count(), settings.leaderboard_correct_cap)
+    result = await session.execute(
+        select(Vote.player_id, count_expr)
+        .join(Round, Round.id == Vote.round_id)
+        .where(
+            Vote.card_position == Round.winner_card,
+            Round.status == RoundStatus.CLOSED,
+            Round.tally_ends_at >= since,
+            Round.tally_ends_at < until,
+        )
+        .group_by(Vote.player_id)
+        .order_by(count_expr.desc(), Vote.player_id.asc())
+        .limit(limit)
+    )
+    return [(pid, int(count)) for pid, count in result.all()]
 
 
 async def _players_with_stake(
@@ -167,42 +201,80 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         if pots:
             year, mon = map(int, pots[0].month.split("-"))
             period_start = datetime(year, mon, 1, tzinfo=timezone.utc)
-        winners = await _top_correct_voters(session, period_start, month_start)
-        staked = await _players_with_stake(session, period_start, month_start, by="tally_ends_at")
 
-        payable_ids: list[int] = []
-        wallets: dict[int, str] = {}
-        for player_id, _count in winners:
-            player = await session.get(Player, player_id)
-            if (
-                player is not None
-                and player.wallet_address
-                and player_id in staked
-            ):
-                wallets[player_id] = player.wallet_address
-                payable_ids.append(player_id)
-
-        skipped = len(winners) - len(payable_ids)
-        if not payable_ids:
-            # Платить некому: метку НЕ двигаем, копилка ждёт следующего цикла.
-            logger.warning(
-                "Копилка %d нанотонов ждёт: у лидеров (%s) нет привязанного кошелька "
-                "или ставки в этом месяце",
-                total,
-                [pid for pid, _ in winners] or "нет голосов",
+        top_k = max(1, settings.monthly_prize_top_k)
+        if top_k > 1:
+            # Сглаживание дисперсии: платим топ-K по верности с весами,
+            # а не «забрал всё сильнейший». Веса из месячного весового списка.
+            ranked = await _month_ranked(session, period_start, month_start, limit=top_k)
+            staked = await _players_with_stake(
+                session, period_start, month_start, by="tally_ends_at"
             )
-            return False
+            payable: list[tuple[int, int, str]] = []
+            skipped = 0
+            for player_id, _score in ranked:
+                player = await session.get(Player, player_id)
+                if (
+                    player is not None
+                    and player.wallet_address
+                    and player_id in staked
+                ):
+                    payable.append((player_id, _score, player.wallet_address))
+                else:
+                    skipped += 1
+            if not payable:
+                logger.warning(
+                    "Копилка %d нанотонов ждёт: у топ-%d лидеров нет кошелька/ставки",
+                    total, top_k,
+                )
+                return False
+            weights = parse_prize_pcts(settings.monthly_prize_weights)
+            payments: list[tuple[int, str, int]] = []
+            top_amount = _weighted_amounts(total, payable, weights)
+            for (player_id, _score, wallet), amount in zip(payable, top_amount):
+                payments.append((player_id, wallet, amount))
+        else:
+            # Прежнее поведение: победители, набравшие максимум, делят ровно.
+            winners = await _top_correct_voters(session, period_start, month_start)
+            staked = await _players_with_stake(
+                session, period_start, month_start, by="tally_ends_at"
+            )
+            payable_ids: list[int] = []
+            wallets: dict[int, str] = {}
+            for player_id, _count in winners:
+                player = await session.get(Player, player_id)
+                if (
+                    player is not None
+                    and player.wallet_address
+                    and player_id in staked
+                ):
+                    wallets[player_id] = player.wallet_address
+                    payable_ids.append(player_id)
+            skipped = len(winners) - len(payable_ids)
+            if not payable_ids:
+                # Платить некому: метку НЕ двигаем, копилка ждёт следующего цикла.
+                logger.warning(
+                    "Копилка %d нанотонов ждёт: у лидеров (%s) нет привязанного кошелька "
+                    "или ставки в этом месяце",
+                    total,
+                    [pid for pid, _ in winners] or "нет голосов",
+                )
+                return False
+            shares = split_equal(total, payable_ids)
+            payments = [
+                (player_id, wallets[player_id], amount)
+                for player_id, amount in shares.items()
+            ]
 
-        shares = split_equal(total, payable_ids)
         network = "testnet" if settings.is_testnet else "mainnet"
-        for player_id, amount in shares.items():
+        for player_id, wallet, amount in payments:
             session.add(
                 Payout(
                     round_id=None,
                     player_id=player_id,
                     kind="leaderboard",
                     amount_nanotons=amount,
-                    dest_address=wallets[player_id],
+                    dest_address=wallet,
                     network=network,
                 )
             )
@@ -219,13 +291,13 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         "Копилка месяцев ≤ %s выплачена: %s нанотонов между %s%s",
         prev_key,
         total,
-        shares,
+        payments,
         f" (без кошелька пропущены: {skipped})" if skipped else "",
     )
     if bot is not None and settings.admin_id_set:
         text = (
             f"🏆 Копилка лидерборда за {prev_key} отправлена: "
-            f"{total / 1e9:.4f} Gram между {len(shares)} лидером(ами)."
+            f"{total / 1e9:.4f} Gram между {len(payments)} лидером(ами)."
         )
         for admin_id in settings.admin_id_set:
             try:
@@ -249,10 +321,14 @@ async def weekly_top(
     верные пути ↓, дни участия ↓ (ничья в пользу более постоянного игрока),
     player_id ↑.
     """
+    correct_expr = _capped(
+        func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)),
+        settings.leaderboard_correct_cap,
+    )
     result = await session.execute(
         select(
             Vote.player_id,
-            func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)),
+            correct_expr,
             func.count(),
         )
         .join(Round, Round.id == Vote.round_id)
@@ -263,7 +339,7 @@ async def weekly_top(
         )
         .group_by(Vote.player_id)
         .order_by(
-            func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)).desc(),
+            correct_expr.desc(),
             func.count().desc(),
             Vote.player_id.asc(),
         )
@@ -287,6 +363,29 @@ def _week_prize_amounts(total_nanotons: int, places: int) -> tuple[list[int], in
         amounts[paid - 1] += dust
         dust = 0
     return amounts[:paid], sum(amounts[paid:]) + dust
+
+
+def _weighted_amounts(total_nanotons: int, payable: list, weights: list[int]) -> list[int]:
+    """Доли месячной копилки между top-K получателями по весам.
+
+    Веса нормируются по фактически оплачиваемым получателям: если весов
+    меньше, чем получателей, последний вес повторяется до покрытия всех —
+    так режим top-K не «теряет» места из-за короткого списка весов. Весь горш
+    распределяется (пыль — первым получателям), незанятых мест нет.
+    """
+    if not payable or total_nanotons <= 0:
+        return []
+    used = list(weights[: len(payable)])
+    if not used:
+        return []
+    if len(used) < len(payable):
+        used += [used[-1]] * (len(payable) - len(used))
+    total_w = sum(used)
+    amounts = [total_nanotons * w // total_w for w in used]
+    dust = total_nanotons - sum(amounts)
+    for i in range(dust):
+        amounts[i % len(amounts)] += 1
+    return amounts
 
 
 async def _memory_nomination(session, period_start: datetime, period_end: datetime) -> str | None:
