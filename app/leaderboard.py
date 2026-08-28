@@ -1,24 +1,25 @@
 """Автоматические выплаты копилок лидерборда: недели и месяца.
 
 **Неделя.** Каждый день 2% фонда капает в копилку недели (WeeklyPot). В
-понедельник приз уходит трём верхним СТУПЕНЯМ счёта прошедшей недели —
-уровням верных ответов (7-6-5; без шестёрок — 7-5-4 и т.п.). Долю ступени
-делят между собой все её члены поровну: ступень с тремя игроками платит
-каждому треть суммы. Ступени платят по WEEKLY_PRIZE_PCTS (по умолчанию
-20/30/50%): нижняя ступень пьедестала забирает половину копилки — так стая
-платит больше тем, кто держался сзади. Претендент обязан иметь привязанный
-кошелёк, минимум WEEKLY_MIN_DAYS дней голосования за неделю и хотя бы одну
-ставку в этой неделе — иначе фермы мультиаккаунтов собирают приз дешёвыми
-голосами. Ставка-требование считается заново каждую неделю: приз не уйдёт
-тому, кто в прошедшей неделе не поставил ни грамма. Пустая ступень (некому
-платить) не открывается, её доля переносится в копилку новой недели.
+понедельник приз уходит трём сильнейшим игрокам прошедшей недели — доли по
+WEEKLY_PRIZE_PCTS (по умолчанию 50/30/20%: первое место забирает половину).
+Претендент обязан иметь привязанный кошелёк, минимум WEEKLY_MIN_DAYS дней
+голосования за неделю и хотя бы одну ставку в этой неделе — иначе фермы
+мультиаккаунтов собирают приз дешёвыми голосами. Ставка-требование считается
+заново каждую неделю: приз не уйдёт тому, кто в прошедшей неделе не поставил
+ни грамма. Ничья по верным путям решается большим вкладом Gram за период,
+при равенстве ставок — кто раньше нажал Claim в /start, далее — меньший
+player_id. Месту, которому не нашлось достойного игрока, ждать нечего: его
+доля переносится в копилку новой недели.
 
 **Месяц.** 1-го числа сумма всех накопленных месяцев до текущего уходит
-игроку или игрокам с максимумом верных ответов за тот период (обязательна хотя
-бы одна ставка в этом месяце). Ничья — сумма делится поровну. Лидер без
-привязанного кошелька или без ставки в периоде не блокирует остальных: горш
-делится между оплачиваемыми, а месяц остаётся «незакрытым», пока хоть кому-то
-нельзя заплатить и никого оплатить нельзя вовсе.
+топ-K игрокам периода (обязательна хотя бы одна ставка в этом месяце) по
+весам MONTHLY_PRIZE_WEIGHTS (по умолчанию top-3, 50/30/20). Ничьи решаются
+в точности как в неделю: больший вклад Gram, затем первый Claim, затем
+меньший player_id. Лидер без привязанного кошелька или без ставки в периоде
+не блокирует остальных: горш делится между оплачиваемыми, а месяц остаётся
+«незакрытым», пока хоть кому-то нельзя заплатить и никого оплатить нельзя
+вовсе.
 
 Метки «выплачено до X» живут в watcher_state и переживают рестарт.
 """
@@ -34,7 +35,18 @@ from sqlalchemy import case, delete, func, or_, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote, WatcherState, WeeklyPot
+from app.models import (
+    LeaderboardClaim,
+    LeaderboardPot,
+    Payout,
+    Player,
+    Round,
+    RoundStatus,
+    Stake,
+    Vote,
+    WatcherState,
+    WeeklyPot,
+)
 from app.stakes import split_equal
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
@@ -83,6 +95,18 @@ def previous_month_key(now: datetime | None = None) -> str:
     return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
 
 
+def active_claim_period(kind: str, now: datetime | None = None) -> str:
+    """Период открытой претензии Claim: неделя «YYYY-Www» или месяц «YYYY-MM».
+
+    Кнопка в /start живёт в течение периода, в который игрок мог вложиться
+    ставкой; запись фиксирует момент претензии под settle того же периода.
+    """
+    now = now or datetime.now(timezone.utc)
+    if kind == "month":
+        return now.strftime("%Y-%m")
+    return iso_week_key(now)
+
+
 async def _top_correct_voters(session, since: datetime, until: datetime) -> list[tuple[int, int]]:
     """Игроки с максимумом верных ответов в окне [since, until).
 
@@ -109,30 +133,119 @@ async def _top_correct_voters(session, since: datetime, until: datetime) -> list
     return [row for row in rows if row[1] == best]
 
 
-async def _month_ranked(
-    session, since: datetime, until: datetime, limit: int = 50
-) -> list[tuple[int, int]]:
-    """Ранг месячного лидерборда окном [since, until) с учётом потолка.
+def _active_network() -> str:
+    """Контур казны: вклад Gram учитывается только в живом контуре."""
+    return "testnet" if settings.is_testnet else "mainnet"
 
-    Возвращает топ-`limit` игроков (player_id, верных путей) по убыванию
-    верности (ничья — по player_id). Используется режимом top-K месячной
-    копилки, где платят несколько мест, а не только максимум.
+
+async def _gram_contributions(
+    session,
+    period_start: datetime,
+    period_end: datetime,
+    by: str = "opens_at",
+) -> dict[int, int]:
+    """Проверенные суммы ставок игроков за период [period_start, period_end).
+
+    Тайбрейк при равенстве верных путей: выше тот, кто поставил больше (в
+    нанотонах). Считаем confirmed и refunded — как в _players_with_stake;
+    ставка другого контура (mainnet/testnet) не в зачёт.
     """
-    count_expr = _capped(func.count(), settings.leaderboard_correct_cap)
+    window = Round.opens_at if by == "opens_at" else Round.tally_ends_at
+    rows = await session.execute(
+        select(Stake.player_id, func.sum(Stake.amount_nanotons))
+        .join(Round, Round.id == Stake.round_id)
+        .where(
+            Stake.status.in_(["confirmed", "refunded"]),
+            Stake.network == _active_network(),
+            window >= period_start,
+            window < period_end,
+        )
+        .group_by(Stake.player_id)
+    )
+    return {int(pid): int(total) for pid, total in rows.all()}
+
+
+async def _rank_window(
+    session,
+    since: datetime,
+    until: datetime,
+    by: str = "opens_at",
+    limit: int = 50,
+) -> list[tuple[int, int, int, int]]:
+    """Ранг окна [since, until): (player_id, верных, дней, вклад Gram).
+
+    Порядок — ровно тот, что использует выплата: верные пути ↓, вклад Gram
+    ↓, player_id ↑ (претензия Claim докладывается уже после фильтра достойных
+    в _order_by_ties). Верные пути — с учётом потолка leaderboard_correct_cap.
+    """
+    correct_expr = _capped(
+        func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)),
+        settings.leaderboard_correct_cap,
+    )
+    window = Round.opens_at if by == "opens_at" else Round.tally_ends_at
     result = await session.execute(
-        select(Vote.player_id, count_expr)
+        select(
+            Vote.player_id,
+            correct_expr,
+            func.count(),
+        )
         .join(Round, Round.id == Vote.round_id)
         .where(
-            Vote.card_position == Round.winner_card,
             Round.status == RoundStatus.CLOSED,
-            Round.tally_ends_at >= since,
-            Round.tally_ends_at < until,
+            window >= since,
+            window < until,
         )
         .group_by(Vote.player_id)
-        .order_by(count_expr.desc(), Vote.player_id.asc())
+        .order_by(correct_expr.desc(), Vote.player_id.asc())
         .limit(limit)
     )
-    return [(pid, int(count)) for pid, count in result.all()]
+    rows = [(pid, int(correct or 0), int(days)) for pid, correct, days in result.all()]
+    if not rows:
+        return []
+    grams = await _gram_contributions(session, since, until, by=by)
+    rows.sort(key=lambda row: (-row[1], -grams.get(row[0], 0), row[0]))
+    return [(pid, correct, days, grams.get(pid, 0)) for pid, correct, days in rows]
+
+
+async def _claim_times(session, kind: str, periods: list[str]) -> dict[int, datetime]:
+    """Самая ранняя претензия игрока среди contexts периода (kind-окно).
+
+    Ничья по (верность, вклад Gram): выше тот, кто раньше нажал Claim в
+    течение периода; не заявлявшийся — позади любого заявившегося.
+    """
+    if not periods:
+        return {}
+    rows = await session.execute(
+        select(LeaderboardClaim.player_id, func.min(LeaderboardClaim.claimed_at))
+        .where(LeaderboardClaim.kind == kind, LeaderboardClaim.period.in_(periods))
+        .group_by(LeaderboardClaim.player_id)
+    )
+    claims: dict[int, datetime] = {}
+    for pid, claimed in rows.all():
+        moment = claimed if claimed.tzinfo else claimed.replace(tzinfo=timezone.utc)
+        claims[int(pid)] = min(claims.get(int(pid), moment), moment)
+    return claims
+
+
+_FAR_FUTURE = datetime(9999, 12, 31, tzinfo=timezone.utc)
+
+
+def _order_by_ties(
+    candidates: list[tuple[int, int, int, str]],
+    claims: dict[int, datetime],
+) -> list[tuple[int, int, int, str]]:
+    """Места по (верность ↓, вклад Gram ↓, Claim ↓, player_id ↑).
+
+    candidates — (player_id, верных, вклад Gram, кошелёк). Претензия решает
+    только ПОЛНУЮ ничью (равны и верность, и вклад); тот, кто не заявлялся,
+    уступает любому заявившемуся; дальше — меньший player_id.
+    """
+    def total_key(item: tuple[int, int, int, str]):
+        pid, correct, gram, _wallet = item
+        claimed = claims.get(pid)
+        return (-correct, -gram, claimed if claimed is not None else _FAR_FUTURE, pid)
+
+    return sorted(candidates, key=total_key)
 
 
 async def _players_with_stake(
@@ -158,6 +271,7 @@ async def _players_with_stake(
         .join(Round, Round.id == Stake.round_id)
         .where(
             Stake.status.in_(["confirmed", "refunded"]),
+            Stake.network == _active_network(),
             window >= period_start,
             window < period_end,
         )
@@ -205,33 +319,49 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         top_k = max(1, settings.monthly_prize_top_k)
         if top_k > 1:
             # Сглаживание дисперсии: платим топ-K по верности с весами,
-            # а не «забрал всё сильнейший». Веса из месячного весового списка.
-            ranked = await _month_ranked(session, period_start, month_start, limit=top_k)
+            # а не «забрал всё сильнейший». Веса из месячного весового списка;
+            # ничьи решаются вкладом Gram, затем Claim.
+            ranked = await _rank_window(
+                session, period_start, month_start, by="tally_ends_at", limit=top_k
+            )
             staked = await _players_with_stake(
                 session, period_start, month_start, by="tally_ends_at"
             )
-            payable: list[tuple[int, int, str]] = []
+            claim_months: list[str] = []
+            cursor = period_start
+            while cursor < month_start:
+                claim_months.append(cursor.strftime("%Y-%m"))
+                cursor = (cursor + timedelta(days=35)).replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
+            claims = (
+                await _claim_times(session, "month", claim_months)
+                if settings.leaderboard_claim_enabled
+                else {}
+            )
+            candidates: list[tuple[int, int, int, str]] = []
             skipped = 0
-            for player_id, _score in ranked:
-                player = await session.get(Player, player_id)
+            for pid, score, _days, gram in ranked:
+                player = await session.get(Player, pid)
                 if (
                     player is not None
                     and player.wallet_address
-                    and player_id in staked
+                    and pid in staked
                 ):
-                    payable.append((player_id, _score, player.wallet_address))
+                    candidates.append((pid, score, gram, player.wallet_address))
                 else:
                     skipped += 1
-            if not payable:
+            if not candidates:
                 logger.warning(
                     "Копилка %d нанотонов ждёт: у топ-%d лидеров нет кошелька/ставки",
                     total, top_k,
                 )
                 return False
+            placed = _order_by_ties(candidates, claims)
             weights = parse_prize_pcts(settings.monthly_prize_weights)
             payments: list[tuple[int, str, int]] = []
-            top_amount = _weighted_amounts(total, payable, weights)
-            for (player_id, _score, wallet), amount in zip(payable, top_amount):
+            top_amount = _weighted_amounts(total, placed, weights)
+            for (player_id, _score, _gram, wallet), amount in zip(placed, top_amount):
                 payments.append((player_id, wallet, amount))
         else:
             # Прежнее поведение: победители, набравшие максимум, делят ровно.
@@ -305,47 +435,6 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
             except Exception as exc:
                 logger.warning("Алерт админу %s не доставлен: %s", admin_id, exc)
     return True
-
-
-async def weekly_top(
-    session,
-    since: datetime,
-    until: datetime,
-    limit: int = 10,
-) -> list[tuple[int, int, int]]:
-    """Топ недели окном [since, until): (player_id, верных путей, дней голосования).
-
-    Неделя дня считается по моменту ОТКРЫТИЯ дня — так же, как копилка
-    недели в stakes.finalize_day_payouts, иначе последний день недели
-    платил бы в горш, но оставался бы вне зачёта. Порядок детерминированный:
-    верные пути ↓, дни участия ↓ (ничья в пользу более постоянного игрока),
-    player_id ↑.
-    """
-    correct_expr = _capped(
-        func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)),
-        settings.leaderboard_correct_cap,
-    )
-    result = await session.execute(
-        select(
-            Vote.player_id,
-            correct_expr,
-            func.count(),
-        )
-        .join(Round, Round.id == Vote.round_id)
-        .where(
-            Round.status == RoundStatus.CLOSED,
-            Round.opens_at >= since,
-            Round.opens_at < until,
-        )
-        .group_by(Vote.player_id)
-        .order_by(
-            correct_expr.desc(),
-            func.count().desc(),
-            Vote.player_id.asc(),
-        )
-        .limit(limit)
-    )
-    return [(pid, int(correct or 0), int(days)) for pid, correct, days in result.all()]
 
 
 def _week_prize_amounts(total_nanotons: int, places: int) -> tuple[list[int], int]:
@@ -505,28 +594,26 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
             logger.warning("Не удалось проверить короткую стартовую неделю", exc_info=True)
 
         min_days = 0 if relaxed else max(1, settings.weekly_min_days)
-        rows = await weekly_top(session, period_start, period_end, limit=50)
+        rows = await _rank_window(session, period_start, period_end, by="opens_at", limit=50)
         staked = await _players_with_stake(session, period_start, period_end, by="opens_at")
-        # Места недели — три верхних УРОВНЯ верных ответов, а не три игрока:
-        # ступень 7-6-5 может сжаться до 7-5-3, если шестёрок и четвёрок нет.
-        # Внутри ступени приз делится между всеми её членами поровну.
-        candidates: list[tuple[int, int, str]] = []
-        for pid, correct, days in rows:
+        # Места недели — три сильнейших ИГРОКА по (верные пути, вклад Gram,
+        # Claim, player_id), а не ступени счёта: внутри места приз не делится.
+        claims = (
+            await _claim_times(session, "week", [prev_key])
+            if settings.leaderboard_claim_enabled
+            else {}
+        )
+        candidates: list[tuple[int, int, int, str]] = []
+        for pid, correct, days, gram in rows:
             if correct <= 0 or days < min_days or pid not in staked:
                 continue
             player = await session.get(Player, pid)
             if player is None or not player.wallet_address:
                 continue
-            candidates.append((pid, correct, player.wallet_address))
-        tiers: list[tuple[int, list[tuple[int, str]]]] = []
-        for pid, correct, wallet in candidates:
-            if len(tiers) >= 3 and correct != tiers[-1][0]:
-                break
-            if not tiers or correct != tiers[-1][0]:
-                tiers.append((correct, []))
-            tiers[-1][1].append((pid, wallet))
+            candidates.append((pid, correct, gram, player.wallet_address))
+        places = _order_by_ties(candidates, claims)[:3]
 
-        if not tiers:
+        if not places:
             # Достойных нет: метку НЕ двигаем, копилка ждёт следующей недели.
             logger.warning(
                 "Копилка недели %d нанотонов ждёт: нет игроков с кошельком, %s+ днями голосования "
@@ -537,33 +624,27 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
             )
             return False
 
-        amounts, rolled = _week_prize_amounts(total, len(tiers))
-        network = "testnet" if settings.is_testnet else "mainnet"
+        amounts, rolled = _week_prize_amounts(total, len(places))
+        network = _active_network()
         paid: list[tuple[str, str, int]] = []
-        for place, ((correct, members), amount) in enumerate(zip(tiers, amounts), 1):
-            # Долю ступени делим между всеми её членами; нанотонная пыль —
-            # первым членам ступени, чтобы сумма сходилась до нанотона.
-            share = amount // len(members)
-            remainder = amount - share * len(members)
-            names: list[str] = []
-            for index, (pid, wallet) in enumerate(members):
-                session.add(
-                    Payout(
-                        round_id=None,
-                        player_id=pid,
-                        kind="weekly",
-                        amount_nanotons=share + (1 if index < remainder else 0),
-                        dest_address=wallet,
-                        network=network,
-                    )
+        for place, ((pid, correct, _gram, wallet), amount) in enumerate(zip(places, amounts), 1):
+            session.add(
+                Payout(
+                    round_id=None,
+                    player_id=pid,
+                    kind="weekly",
+                    amount_nanotons=amount,
+                    dest_address=wallet,
+                    network=network,
                 )
-                name_row = await session.get(Player, pid)
-                names.append(
-                    (name_row.username if name_row and name_row.username else None)
-                    or (name_row.first_name if name_row else None)
-                    or f"игрок {pid}"
-                )
-            paid.append((_MEDALS[place - 1], ", ".join(names) + f" — {correct} верн.", amount))
+            )
+            name_row = await session.get(Player, pid)
+            name = (
+                (name_row.username if name_row and name_row.username else None)
+                or (name_row.first_name if name_row else None)
+                or f"игрок {pid}"
+            )
+            paid.append((_MEDALS[place - 1], f"{name} — {correct} верн.", amount))
 
         # Места без достойного игрока переносятся в копилку новой недели.
         if rolled > 0:
@@ -592,7 +673,10 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
     lines = ["🏆 Итоги недели Стаи:"]
     for medal, name, amount in paid:
         lines.append(f"{medal} {name} — {amount / 1e9:.4f} Gram")
-    lines.append("Стая платит больше тем, кто держался сзади: чем ниже ступень — тем больше её доля.")
+    lines.append(
+        "При равенстве верных путей Стая смотрит на вклад Gram, а затем — "
+        "кто раньше заявил о месте кнопкой Claim."
+    )
     try:
         nomination = await _memory_nomination(session, period_start, period_end)
     except Exception:

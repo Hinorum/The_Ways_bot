@@ -470,7 +470,12 @@ async def test_monthly_pot_paid_to_leader(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ничья: горш делится поровну между лидерами с кошельками, пыль — меньшему id."""
+    """Ничья по верным путям и вкладу Gram: места по меньшему player_id, 50/30.
+
+    Месяц по умолчанию — топ-3 с весами 50/30/20: двое равных (верность и
+    Gram совпали, никто не жал Claim) занимают первое и второе места, веса
+    нормируются на двоих получателей (50/80 и 30/80 от горшка).
+    """
     monkeypatch.setattr(settings, "ton_enabled", True)
     pid_a = 930_000 + int.from_bytes(os.urandom(2), "big")
     pid_b = pid_a + 1
@@ -521,8 +526,9 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
                 (pid_b, wallet_b),
             ]
             assert sum(p.amount_nanotons for p in rows) == to_nano(1)
-            # Пыль от нечётного дележа — меньшему player_id.
-            assert rows[0].amount_nanotons - rows[1].amount_nanotons <= 1
+            # Взвешенный дележ 50/30 (нормализованы на двоих из топ-3).
+            assert rows[0].amount_nanotons == 625_000_000
+            assert rows[1].amount_nanotons == 375_000_000
         finally:
             await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
             await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))

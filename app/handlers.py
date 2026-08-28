@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -36,6 +36,7 @@ from app.db import SessionLocal
 from app.models import (
     Chat,
     Income,
+    LeaderboardClaim,
     LeaderboardPot,
     Payout,
     Player,
@@ -112,7 +113,7 @@ async def cmd_help(message: Message) -> None:
 async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
         player = await upsert_player(session, message.from_user)
-    subscribed = bool(getattr(player, "dm_subscribed", True))
+        keyboard = await _start_keyboard(session, player)
     uid = str(message.from_user.id) if message.from_user else "0"
     lines = [
         f"{day_mark(uid)} <b>{settings.world_name}</b>",
@@ -135,7 +136,7 @@ async def cmd_start(message: Message) -> None:
     await message.answer(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
-        reply_markup=_dm_toggle_keyboard(subscribed),
+        reply_markup=keyboard,
     )
     # Стартовый кадр мира (генерируется один раз на забег): знакомит
     # новичка глазами, а не только словами. Пропал/не сгенерился — молчим.
@@ -150,20 +151,46 @@ async def cmd_start(message: Message) -> None:
     await cmd_today(message)
 
 
-def _dm_toggle_keyboard(subscribed: bool) -> InlineKeyboardMarkup:
-    """Кнопка подписки на личные дубликаты рассылок (итоги, новый день, вечер).
+async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
+    """Личное меню /start: кнопка подписки на личку + претензии на места.
 
-    Живёт в /start: пришёл в личку — сразу видно, что и сюда будут приходить
-    анонсы, и одним тапом можно отключить (или вернуть).
+    Кнопки Claim видны только тем, кто может на них претендовать: кошелёк
+    привязан и в текущем периоде (неделя/месяц) есть хотя бы одна ставка.
+    Претензия решает только ничьи — кто раньше нажал, тот выше.
     """
+    subscribed = bool(getattr(player, "dm_subscribed", True))
     label = (
         "🔔 Итоги и анонсы в личку: ВКЛ"
         if subscribed
         else "🔕 Итоги и анонсы в личку: ВЫКЛ"
     )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="dm:toggle")]]
-    )
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=label, callback_data="dm:toggle")]
+    ]
+    if settings.leaderboard_claim_enabled and player.wallet_address:
+        from app.leaderboard import _players_with_stake
+        from app.weeks import iso_week_key, week_bounds
+
+        now = datetime.now(timezone.utc)
+        week_start, week_end = week_bounds(iso_week_key(now))
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_month = (month_start + timedelta(days=35)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        week_staked = await _players_with_stake(session, week_start, week_end, by="opens_at")
+        month_staked = await _players_with_stake(session, month_start, next_month, by="tally_ends_at")
+        buttons: list[InlineKeyboardButton] = []
+        if player.id in week_staked:
+            buttons.append(
+                InlineKeyboardButton(text="🗓 Заявить приз недели", callback_data="claim:week")
+            )
+        if player.id in month_staked:
+            buttons.append(
+                InlineKeyboardButton(text="🗓 Заявить приз месяца", callback_data="claim:month")
+            )
+        if buttons:
+            rows.append(buttons)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data == "dm:toggle")
@@ -177,9 +204,10 @@ async def on_dm_toggle(callback: CallbackQuery) -> None:
         subscribed = not bool(getattr(player, "dm_subscribed", True))
         player.dm_subscribed = subscribed
         await session.commit()
+        keyboard = await _start_keyboard(session, player)
     if callback.message is not None:
         try:
-            await callback.message.edit_reply_markup(reply_markup=_dm_toggle_keyboard(subscribed))
+            await callback.message.edit_reply_markup(reply_markup=keyboard)
         except TelegramBadRequest:
             pass
     await callback.answer(
@@ -187,6 +215,75 @@ async def on_dm_toggle(callback: CallbackQuery) -> None:
         else "Личные рассылки отключены — играем только в группе.",
         show_alert=True,
     )
+
+
+@router.callback_query(F.data == "claim:week")
+async def on_claim_week(callback: CallbackQuery) -> None:
+    await _on_claim(callback, "week")
+
+
+@router.callback_query(F.data == "claim:month")
+async def on_claim_month(callback: CallbackQuery) -> None:
+    await _on_claim(callback, "month")
+
+
+async def _on_claim(callback: CallbackQuery, kind: str) -> None:
+    """Претензия на место лидерборда: решает ничьи по времени Claim.
+
+    Кошелёк обязателен, иначе приз физически некуда отправить. Идемпотентно:
+    unique(player_id, kind, period) — повторный тап не заводит вторую запись.
+    """
+    if callback.from_user is None:
+        await callback.answer()
+        return
+    from app.leaderboard import active_claim_period
+
+    period = active_claim_period(kind)
+    confirm = (
+        f"Заявка на копилку недели {period} принята: при равенстве верных путей "
+        "и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
+        if kind == "week"
+        else f"Заявка на копилку месяца {period} принята: при равенстве верных "
+        "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
+    )
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        if not player.wallet_address:
+            await callback.answer(
+                "Сначала привяжи кошелёк — без него приз не уйдёт.", show_alert=True
+            )
+            return
+        existing = await session.scalar(
+            select(LeaderboardClaim.id).where(
+                LeaderboardClaim.player_id == player.id,
+                LeaderboardClaim.kind == kind,
+                LeaderboardClaim.period == period,
+            )
+        )
+        if existing is not None:
+            await callback.answer(
+                "Место уже заявлено: твоя претензия учтена (раньше — выше).",
+                show_alert=True,
+            )
+            return
+        session.add(
+            LeaderboardClaim(
+                player_id=player.id,
+                kind=kind,
+                period=period,
+                claimed_at=datetime.now(timezone.utc),
+            )
+        )
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            await callback.answer(
+                "Место уже заявлено: твоя претензия учтена (раньше — выше).",
+                show_alert=True,
+            )
+            return
+    await callback.answer(confirm, show_alert=True)
 
 
 async def _remember_flag(day_index: int) -> bool:
@@ -709,6 +806,9 @@ async def on_vote(callback: CallbackQuery) -> None:
 def _economy_text() -> str:
     """Распределение фонда дня — по живым настройкам, без дублей."""
     pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
+    m_pcts = "/".join(
+        part.strip() for part in settings.monthly_prize_weights.split(",") if part.strip()
+    )
     pool_pct = int(
         100
         - settings.owner_rake_pct
@@ -730,9 +830,11 @@ def _economy_text() -> str:
         f"• {pool_pct}% — поставившим на верный путь, пропорционально ставкам "
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
         f"• {pct(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
-        f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник её делят три призовых места "
-        f"({pcts}%); нужен кошелёк, {settings.weekly_min_days}+ дней голосования и хотя бы одна ставка за неделю\n"
-        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: её забирают лидеры /top (нужна хотя бы одна ставка в месяце)\n"
+        f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник топ-3 по верным путям "
+        f"делит её ({pcts}%: сильнейший — больше); нужны кошелёк, {settings.weekly_min_days}+ дней "
+        f"голосования и ставка за неделю; ничья — больший вклад Gram, затем первый Claim\n"
+        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: топ-3 лидеров /top делят её "
+        f"({m_pcts}%), нужна ставка в месяце; ничья — вклад Gram, затем первый Claim\n"
         f"• {pct(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
         "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
     )
@@ -1217,6 +1319,9 @@ def _format_top(
     from app.style import money_mark
 
     pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
+    m_pcts = "/".join(
+        part.strip() for part in settings.monthly_prize_weights.split(",") if part.strip()
+    )
     lines = [f"{money_mark('week')} Копилка недели: {week_pot_nanotons:g} Gram · места: {pcts}%"]
     if not week_rows:
         lines.append("Верных путей на этой неделе ещё нет — всё впереди.")
@@ -1228,10 +1333,11 @@ def _format_top(
             lines.append(f"{medal} {ticket} {name} — {count}")
     lines.append(
         f"🎟 призовое место · 🔒 нужен кошелёк, {max(1, settings.weekly_min_days)} дней "
-        "голосования и хотя бы одна ставка за неделю · выплата в понедельник"
+        "голосования и ставка за неделю · топ-3 делят копилку (ничья — больший вклад "
+        "Gram, затем первый Claim) · выплата в понедельник"
     )
     lines.append("")
-    lines.append(f"{money_mark('top')} Копилка месяца: {month_pot_nanotons:g} Gram")
+    lines.append(f"{money_mark('top')} Копилка месяца: {month_pot_nanotons:g} Gram · места: {m_pcts}%")
     if not month_rows:
         lines.append("Верных путей в этом месяце ещё нет.")
     else:
@@ -1239,7 +1345,10 @@ def _format_top(
         for place, (name, count, eligible) in enumerate(month_rows, 1):
             ticket = "🎟" if eligible else "🔒"
             lines.append(f"{place}. {ticket} {name} — {count}")
-    lines.append("🎟 призовое место · 🔒 нужна хотя бы одна ставка в этом месяце и кошелёк · выплата 1-го")
+    lines.append(
+        "🎟 призовое место · 🔒 нужны кошелёк и ставка в этом месяце · топ-3 делят "
+        "копилку (ничья — вклад Gram, затем первый Claim) · выплата 1-го"
+    )
     return "\n".join(lines)
 
 
@@ -1284,7 +1393,7 @@ async def cmd_fund(message: Message) -> None:
 
 @router.message(Command("top"))
 async def cmd_top(message: Message) -> None:
-    from app.leaderboard import _players_with_stake, weekly_top
+    from app.leaderboard import _players_with_stake, _rank_window
     from app.models import WeeklyPot
     from app.weeks import iso_week_key, week_bounds
     from datetime import timedelta
@@ -1306,14 +1415,14 @@ async def cmd_top(message: Message) -> None:
                 }
             return names
 
-        week_raw = await weekly_top(session, week_start, week_end)
+        week_raw = await _rank_window(session, week_start, week_end, by="opens_at", limit=10)
         week_names = await named(week_raw)
         wallets: set[int] = set()
         if week_raw:
             wallet_rows = (
                 await session.execute(
                     select(Player.id).where(
-                        Player.id.in_([pid for pid, _c, _d in week_raw]),
+                        Player.id.in_([pid for pid, _c, _d, _g in week_raw]),
                         Player.wallet_address.is_not(None),
                     )
                 )
@@ -1328,24 +1437,17 @@ async def cmd_top(message: Message) -> None:
                 and pid in week_staked
                 and days >= max(1, settings.weekly_min_days),
             )
-            for pid, correct, days in week_raw
+            for pid, correct, days, _gram in week_raw
         ]
 
-        result = await session.execute(
-            select(Vote.player_id, func.count())
-            .join(Round, Round.id == Vote.round_id)
-            .where(
-                Vote.card_position == Round.winner_card,
-                Round.status == RoundStatus.CLOSED,
-                Round.tally_ends_at >= month_start,
-            )
-            .group_by(Vote.player_id)
-            .order_by(func.count().desc(), Vote.player_id.asc())
-            .limit(10)
+        next_month = (month_start + timedelta(days=35)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
         )
-        month_raw = [(pid, count) for pid, count in result.all()]
+        month_raw = await _rank_window(
+            session, month_start, next_month, by="tally_ends_at", limit=10
+        )
         month_names = await named(month_raw)
-        month_pids = [pid for pid, _count in month_raw]
+        month_pids = [pid for pid, _c, _d, _g in month_raw]
         month_wallets: set[int] = set()
         if month_pids:
             month_wallet_rows = (
@@ -1357,9 +1459,6 @@ async def cmd_top(message: Message) -> None:
                 )
             ).scalars().all()
             month_wallets = set(month_wallet_rows)
-        next_month = (month_start + timedelta(days=35)).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
         month_staked = await _players_with_stake(
             session, month_start, next_month, by="tally_ends_at"
         )
@@ -1369,7 +1468,7 @@ async def cmd_top(message: Message) -> None:
                 count,
                 pid in month_wallets and pid in month_staked,
             )
-            for pid, count in month_raw
+            for pid, count, _days, _gram in month_raw
         ]
 
         month = now.strftime("%Y-%m")

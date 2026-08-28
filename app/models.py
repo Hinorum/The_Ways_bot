@@ -302,9 +302,9 @@ class WeeklyPot(Base):
     """Копилка недели: 2% фонда каждого дня капает сюда.
 
     В понедельник сумма уходит топ-3 недели по числу верных ответов
-    (места делят приз по WEEKLY_PRIZE_PCTS, по умолчанию 20/30/50%);
-    неделя — ISO-ключ «YYYY-Www» по UTC-времени открытия дня.
-    Доле места без подходящего игрока (нет кошелька, мало дней
+    (места делят приз по WEEKLY_PRIZE_PCTS, по умолчанию 50/30/20%:
+    сильнейший забирает больше); неделя — ISO-ключ «YYYY-Www» по UTC-времени
+    открытия дня. Доле места без подходящего игрока (нет кошелька, мало дней
     голосования или нет ставки за неделю) ждать нечего — она переносится
     в копилку новой недели.
     """
@@ -315,6 +315,27 @@ class WeeklyPot(Base):
     week: Mapped[str] = mapped_column(String(16), unique=True)
     nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LeaderboardClaim(Base):
+    """Претензия на место лидерборда: решает ничьи по кнопке Claim в /start.
+
+    Ничья в периоде решается по верности путей, затем по сумме ставок Gram,
+    затем — кто раньше нажал Claim (кнопка видна в течение периода игрокам
+    с кошельком и ставкой). Запись фиксирует момент претензии; unique-тройка
+    (player_id, kind, period) делает Claim идемпотентным.
+    """
+
+    __tablename__ = "leaderboard_claims"
+    __table_args__ = (
+        UniqueConstraint("player_id", "kind", "period", name="uq_leaderboard_claims_player_kind_period"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)  # "week" | "month"
+    period: Mapped[str] = mapped_column(String(16), nullable=False)  # "YYYY-Www" | "YYYY-MM"
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class PackFund(Base):

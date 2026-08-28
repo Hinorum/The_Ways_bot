@@ -1,4 +1,9 @@
-"""Тесты недельного лидерборда: ISO-недели, доли мест, выплата топ-3."""
+"""Тесты недельного лидерборда: ISO-недели, доли мест, выплата топ-3 игроков.
+
+Ничья по верным путям решается большим вкладом Gram в неделю, затем — кто
+раньше нажал Claim в /start; только потом меньшим player_id. Места — топ-3
+ИГРОКА (не ступеней счёта) с долями 50/30/20.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +18,22 @@ from app.config import settings
 from app.db import SessionLocal
 from app.leaderboard import (
     WEEKLY_MARKER_KEY,
+    _rank_window,
     _week_prize_amounts,
     settle_week_if_due,
-    weekly_top,
 )
-from app.models import Payout, Player, Round, RoundStatus, Stake, Vote, WatcherState, WeeklyPot, WinRule
+from app.models import (
+    LeaderboardClaim,
+    Payout,
+    Player,
+    Round,
+    RoundStatus,
+    Stake,
+    Vote,
+    WatcherState,
+    WeeklyPot,
+    WinRule,
+)
 from app.ton_utils import to_nano
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
@@ -46,14 +62,14 @@ def test_parse_prize_pcts_filters_garbage_and_caps_at_three() -> None:
 def test_week_prize_amounts_dust_and_rollover() -> None:
     amounts, rolled = _week_prize_amounts(to_nano(10), 3)
     assert amounts == [
-        to_nano(10) * 20 // 100,
-        to_nano(10) * 30 // 100,
         to_nano(10) * 50 // 100,
+        to_nano(10) * 30 // 100,
+        to_nano(10) * 20 // 100,
     ]
     assert rolled == 0
     # Достойных только двое: их места платим, незаполненное третье — в перенос.
     amounts, rolled = _week_prize_amounts(to_nano(10), 2)
-    assert amounts[:1] == [to_nano(10) * 20 // 100]
+    assert amounts == [to_nano(10) * 50 // 100, to_nano(10) * 30 // 100]
     assert sum(amounts) + rolled == to_nano(10)
     # Пыль не теряется и не уезжает в перенос.
     amounts, rolled = _week_prize_amounts(999, 3)
@@ -94,10 +110,9 @@ def _set_stake(session: AsyncSession, round_row: Round, pid: int, status: str = 
 
 
 async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ступени счёта получают 20%/30%/50%; без кошелька или дней — мимо, доля переносится."""
+    """Сильнейшие игроки получают 50%/30%; без кошелька или дней — мимо, доля переносится."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "weekly_min_days", 4)
-    monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
     base = 850_000
     pid_best, pid_second, pid_nowallet, pid_lazy = (base + i for i in range(4))
     wallets = {
@@ -147,17 +162,17 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
                 .scalars()
                 .all()
             )
-            # Места только у достойных: best (место 1, 20%) и second (место 2, 30%).
+            # Места только у достойных: best (место 1, 50%) и second (место 2, 30%).
             assert [(p.player_id, p.amount_nanotons) for p in rows] == [
-                (pid_best, pot_total * 20 // 100),
+                (pid_best, pot_total * 50 // 100),
                 (pid_second, pot_total * 30 // 100),
             ]
             assert all(p.dest_address == wallets[p.player_id] for p in rows)
-            # Незаполненное третье место (50%) переносится в копилку текущей недели.
+            # Незаполненное третье место (20%) переносится в копилку текущей недели.
             current_pot = (
                 await session.execute(select(WeeklyPot).where(WeeklyPot.week != week_key))
             ).scalar_one()
-            assert current_pot.nanotons == pot_total - pot_total * 20 // 100 - pot_total * 30 // 100
+            assert current_pot.nanotons == pot_total - pot_total * 50 // 100 - pot_total * 30 // 100
             # Выплаченная неделя закрыта, метка переведена.
             assert (await session.scalar(select(WeeklyPot.nanotons).where(WeeklyPot.week == week_key))) is None
             marker = await session.get(WatcherState, WEEKLY_MARKER_KEY)
@@ -179,16 +194,16 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
             await session.commit()
 
 
-async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Места — три верхние ступени счёта, а не три игрока: 7-5-3 без шестёрок.
+async def test_settle_week_pays_top_three_individuals_not_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Места — топ-3 ИГРОКА по верным путям, а не ступени счёта: 7-7-5 платятся целиком.
 
-    Двое с семью верными делят долю первой ступени поровну (пыль — первому),
-    одиночки со счётом 5 и 3 забирают вторую и третью ступени. Игрок с
-    шестью верными, но без кошелька, ступень 6 не открывает.
+    Двое с 7 верными и одинаковым вкладом Gram не делят ступень: меньший
+    player_id забирает первое место (50%), второй — второе (30%), третьим идёт
+    одиночка со счётом 5 (20%). Игрок со счётом 6, но без кошелька, не виден;
+    счёт 3 — четвёртый, призов не имеет.
     """
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "weekly_min_days", 4)
-    monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
     base = 940_000
     pid_a7, pid_b7, pid_c5, pid_d3, pid_e6_lazy = (base + i for i in range(5))
     wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_a7, pid_b7, pid_c5, pid_d3)}
@@ -201,7 +216,6 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
                 Player(id=pid_b7, username="beta", wallet_address=wallets[pid_b7]),
                 Player(id=pid_c5, username="gamma", wallet_address=wallets[pid_c5]),
                 Player(id=pid_d3, username="delta", wallet_address=wallets[pid_d3]),
-                # Шесть верных есть только у ленивого: меньше 4 дней — ступень 6 не открывается.
                 Player(id=pid_e6_lazy, username="lazy"),
             ]
         )
@@ -219,7 +233,7 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
             # delta: 4 дня участия при трёх верных — четвёртый день промахом.
             if offset == 3:
                 session.add(Vote(round_id=round_row.id, player_id=pid_d3, card_position=1))
-            # Ставили в течение недели обладатели ступеней (все, кроме lazy без кошелька).
+            # Ставили в течение недели все с кошельком (кроме lazy).
             if offset == 0:
                 for pid in (pid_a7, pid_b7, pid_c5, pid_d3):
                     _set_stake(session, round_row, pid)
@@ -238,19 +252,19 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
                 .scalars()
                 .all()
             )
-            first = pot_total * 20 // 100
+            first = pot_total * 50 // 100
             second = pot_total * 30 // 100
-            third = pot_total * 50 // 100
+            third = pot_total * 20 // 100
             amounts = {(p.player_id): p.amount_nanotons for p in rows}
-            # Ступень 7: двое делят 20% пополам.
-            assert amounts[pid_a7] == first // 2 + first % 2
-            assert amounts[pid_b7] == first // 2
-            # Ступени 5 и 3 — целиком своим одиночкам: 30% и 50%.
-            assert amounts[pid_c5] == second
-            assert amounts[pid_d3] == third
-            assert len(rows) == 4
+            # Места — игроки: a7 и b7 равны (верность и Gram) — меньший id первым.
+            assert amounts[pid_a7] == first
+            assert amounts[pid_b7] == second
+            assert amounts[pid_c5] == third
+            assert pid_d3 not in amounts  # четвёртый по верным путям — без приза
+            assert pid_e6_lazy not in amounts  # без кошелька и стажа — вне радара
+            assert len(rows) == 3
             assert all(p.dest_address == wallets[p.player_id] for p in rows)
-            # Копилка недели выплачена до нанотона: пыль дележа осела в ступени 7.
+            # Копилка недели выплачена до нанотона.
             assert sum(amounts.values()) == pot_total
         finally:
             await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
@@ -267,11 +281,10 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
             await session.commit()
 
 
-async def test_settle_week_single_tier_rolls_rest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Одна ступень на всю неделю: её доля платится, остальное — в перенос."""
+async def test_settle_week_two_tied_roll_third_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Двое абсолютно равных (верность и Gram): первое и второе места, третье — в перенос."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "weekly_min_days", 4)
-    monkeypatch.setattr(settings, "weekly_prize_pcts", "20,30,50")
     base = 950_000
     pids = [base, base + 1]
     wallets = {pid: "0:" + os.urandom(32).hex() for pid in pids}
@@ -307,13 +320,15 @@ async def test_settle_week_single_tier_rolls_rest(monkeypatch: pytest.MonkeyPatc
                 .scalars()
                 .all()
             )
-            first = pot_total * 20 // 100
-            amounts = sorted(p.amount_nanotons for p in rows)
-            assert amounts == [first // 2, first - first // 2]
+            first = pot_total * 50 // 100
+            second = pot_total * 30 // 100
+            by_pid = {p.player_id: p.amount_nanotons for p in rows}
+            assert by_pid[pids[0]] == first  # ничья по Gram — меньший player_id выше
+            assert by_pid[pids[1]] == second
             current_pot = (
                 await session.execute(select(WeeklyPot).where(WeeklyPot.week != week_key))
             ).scalar_one()
-            assert current_pot.nanotons == pot_total - first
+            assert current_pot.nanotons == pot_total - first - second  # 20% — в перенос
         finally:
             await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY))
@@ -401,13 +416,16 @@ async def test_settle_week_postponed_until_last_day_finalized(monkeypatch: pytes
             await session.commit()
 
 
-async def test_weekly_top_orders_by_correct_then_days(session: AsyncSession) -> None:
-    """Ничья по верным путям решается в пользу более постоянного игрока."""
+async def test_rank_window_orders_ties_by_gram_then_id(session: AsyncSession) -> None:
+    """Равные по верным путям: больший вклад Gram выше; при равном Gram — меньший id.
+
+    Дни участия больше не влияют на порядок — они лишь порог для стажа.
+    """
     now = datetime.now(timezone.utc)
     steady, lucky = 900_001, 900_002
     session.add_all([Player(id=steady, username="steady"), Player(id=lucky, username="lucky")])
     # steady: 3 дня участия, из них 2 верных (в последний день промахнулся);
-    # lucky: ровно те же 2 верных, но всего за 2 дня.
+    # lucky: ровно те же 2 верных, но всего за 2 дня. Ставок нет — вклад Gram 0.
     rounds = []
     for offset in range(3):
         round_row = await _seed_closed_round(session, 830_000 + offset, now - timedelta(days=offset + 1))
@@ -417,13 +435,34 @@ async def test_weekly_top_orders_by_correct_then_days(session: AsyncSession) -> 
             session.add(Vote(round_id=round_row.id, player_id=lucky, card_position=0))
     await session.commit()
 
-    rows = await weekly_top(session, now - timedelta(days=10), now + timedelta(minutes=1))
-    assert rows[0] == (steady, 2, 3)
-    assert rows[1] == (lucky, 2, 2)
+    rows = await _rank_window(session, now - timedelta(days=10), now + timedelta(minutes=1), by="opens_at")
+    assert rows[0] == (steady, 2, 3, 0)
+    assert rows[1] == (lucky, 2, 2, 0)
 
     await session.execute(Vote.__table__.delete())
     for round_row in rounds:
         await session.delete(round_row)
+
+
+async def test_rank_window_gram_breaks_tie(session: AsyncSession) -> None:
+    """Тот же счёт верных: игрок с бОльшим вкладом Gram в неделе стоит выше."""
+    now = datetime.now(timezone.utc)
+    light, heavy = 900_101, 900_102  # heavy выше по id, но побеждать должен по Gram
+    session.add_all([Player(id=light, username="light"), Player(id=heavy, username="heavy")])
+    round_row = await _seed_closed_round(session, 830_500, now - timedelta(hours=5))
+    session.add(Vote(round_id=round_row.id, player_id=light, card_position=0))
+    session.add(Vote(round_id=round_row.id, player_id=heavy, card_position=0))
+    session.add(Stake(round_id=round_row.id, player_id=light, amount_nanotons=to_nano(1), tx_hash="tx_light", status="confirmed"))
+    session.add(Stake(round_id=round_row.id, player_id=heavy, amount_nanotons=to_nano(3), tx_hash="tx_heavy", status="confirmed"))
+    await session.commit()
+
+    rows = await _rank_window(session, now - timedelta(days=1), now + timedelta(minutes=1), by="opens_at")
+    assert rows[0] == (heavy, 1, 1, to_nano(3))
+    assert rows[1] == (light, 1, 1, to_nano(1))
+
+    await session.execute(Vote.__table__.delete())
+    await session.execute(Stake.__table__.delete())
+    await session.delete(round_row)
 
 
 async def test_settle_week_excludes_player_without_stake(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -537,7 +576,7 @@ async def test_settle_week_refunded_stake_counts_rejected_does_not(
             await session.commit()
 
 
-async def test_weekly_top_honors_correct_cap(monkeypatch) -> None:
+async def test_rank_window_honors_correct_cap(monkeypatch) -> None:
     """Анти-гринд: верные пути сверх потолка не надувают счёт недели."""
     base = 970_200
     pid_a, pid_b = base, base + 1
@@ -562,15 +601,13 @@ async def test_weekly_top_honors_correct_cap(monkeypatch) -> None:
                 session.add(Vote(round_id=round_row.id, player_id=pid_b, card_position=0))
         await session.commit()
         try:
-            top = await weekly_top(session, prev_start, week_bounds(previous_week_key())[1], limit=10)
-            scored = {pid: correct for pid, correct, _days in top}
+            top = await _rank_window(session, prev_start, week_bounds(previous_week_key())[1], by="opens_at", limit=10)
+            scored = {pid: correct for pid, correct, _days, _gram in top}
             assert scored[pid_a] == 5  # без потолка — все пять верных
             monkeypatch.setattr(settings, "leaderboard_correct_cap", 2)
             try:
-                capped = await weekly_top(session, prev_start, week_bounds(previous_week_key())[1], limit=10)
-                assert {pid: c for pid, c, _d in capped}[pid_a] == 2  # срезано до потолка
-                # рамка: двое теперь вровень — решает ранг по player_id? Нет,
-                # порядок по верности потом по дням: grinder играл все дни.
+                capped = await _rank_window(session, prev_start, week_bounds(previous_week_key())[1], by="opens_at", limit=10)
+                assert {pid: c for pid, c, _d, _g in capped}[pid_a] == 2  # срезано до потолка
             finally:
                 monkeypatch.undo()
         finally:
@@ -578,6 +615,143 @@ async def test_weekly_top_honors_correct_cap(monkeypatch) -> None:
                 await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in (pid_a, pid_b):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_claim_breaks_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Равные по верным путям и вкладу Gram: кто раньше нажал Claim — выше."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    base = 980_000
+    pid_early, pid_late = base, base + 1
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_early, pid_late)}
+    prev_start, _ = week_bounds(previous_week_key())
+    week_key = previous_week_key()
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_early, username="early", wallet_address=wallets[pid_early]),
+                Player(id=pid_late, username="late", wallet_address=wallets[pid_late]),
+            ]
+        )
+        rounds: list[Round] = []
+        day = 847_000
+        for offset in range(3):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid in (pid_early, pid_late):
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            if offset == 0:
+                for pid in (pid_early, pid_late):
+                    _set_stake(session, round_row, pid)
+        session.add(
+            LeaderboardClaim(
+                player_id=pid_early, kind="week", period=week_key,
+                claimed_at=prev_start + timedelta(days=1, hours=1),
+            )
+        )
+        session.add(
+            LeaderboardClaim(
+                player_id=pid_late, kind="week", period=week_key,
+                claimed_at=prev_start + timedelta(days=5, hours=1),
+            )
+        )
+        session.add(WeeklyPot(week=week_key, nanotons=to_nano(10)))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            by_pid = {
+                p.player_id: p.amount_nanotons
+                for p in (await session.execute(select(Payout).where(Payout.kind == "weekly"))).scalars()
+            }
+            # Ранний Claim перевешивает даже равенство по id-порядку не нарушая 50/30.
+            assert by_pid == {
+                pid_early: to_nano(10) * 50 // 100,
+                pid_late: to_nano(10) * 30 // 100,
+            }
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(LeaderboardClaim.__table__.delete())
+            await session.execute(
+                WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY)
+            )
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_early, pid_late):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_claimer_beats_silent_rival(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Заявивший Claim опережает равного, который кнопку не жал, даже при бОльшем id."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    base = 981_000
+    pid_quiet, pid_claimer = base, base + 1  # claimer выше по id
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_quiet, pid_claimer)}
+    prev_start, _ = week_bounds(previous_week_key())
+    week_key = previous_week_key()
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_quiet, username="quiet", wallet_address=wallets[pid_quiet]),
+                Player(id=pid_claimer, username="claimer", wallet_address=wallets[pid_claimer]),
+            ]
+        )
+        rounds: list[Round] = []
+        day = 848_000
+        for offset in range(2):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid in (pid_quiet, pid_claimer):
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            if offset == 0:
+                for pid in (pid_quiet, pid_claimer):
+                    _set_stake(session, round_row, pid)
+        session.add(
+            LeaderboardClaim(
+                player_id=pid_claimer, kind="week", period=week_key,
+                claimed_at=prev_start + timedelta(days=1, hours=1),
+            )
+        )
+        session.add(WeeklyPot(week=week_key, nanotons=to_nano(10)))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            by_pid = {
+                p.player_id: p.amount_nanotons
+                for p in (await session.execute(select(Payout).where(Payout.kind == "weekly"))).scalars()
+            }
+            assert by_pid == {
+                pid_claimer: to_nano(10) * 50 // 100,
+                pid_quiet: to_nano(10) * 30 // 100,
+            }
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(LeaderboardClaim.__table__.delete())
+            await session.execute(
+                WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY)
+            )
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_quiet, pid_claimer):
                 player = await session.get(Player, pid)
                 if player is not None:
                     await session.delete(player)
