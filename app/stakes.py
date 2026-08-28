@@ -121,6 +121,11 @@ async def register_stake(
         return "disabled"
     if round_row.status != RoundStatus.OPEN:
         return "closed"
+    # Серверный гейт «бесплатного дня». UI-гейты закрывают кнопки, но и прямой
+    # вход денежного контура (наблюдатель блокчейна, revote, авто-грант по
+    # сумме) не должен принимать деньги за день, который живёт без ставок.
+    if not round_row.money_mode:
+        return "money_off"
     # Стоп-кран игры: ставка не создаётся, даже если сюда пришли напрямую,
     # минуя watcher (который при паузе и так возвращает переводы).
     from app.ops import is_game_paused

@@ -820,7 +820,7 @@ async def test_failed_revote_payments_are_refunded(monkeypatch: pytest.MonkeyPat
         await db.flush()
         await db.commit()
         try:
-            small = Transfer(hash_small, wallet, to_nano(0.01), f"rv:{open_round.id}", int(datetime.now(timezone.utc).timestamp()))
+            small = Transfer(hash_small, wallet, to_nano(0.2), f"rv:{open_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(small) == "revote_too_small"
             late = Transfer(hash_late, wallet, to_nano(2), f"rv:{closed_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(late) == "revote_closed"

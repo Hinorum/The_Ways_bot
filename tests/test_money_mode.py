@@ -3,12 +3,23 @@
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
+
 from app import ops, rounds
 from app.broadcast import status_text
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import _active_round_money_mode
-from app.models import Card, Round, RoundStatus, WinRule
+from app.models import (
+    Card,
+    Income,
+    Payout,
+    Player,
+    Round,
+    RoundStatus,
+    Stake,
+    WinRule,
+)
 
 
 def _round_row(money_mode: bool, day_index: int, _id: int, with_cards: bool = False) -> Round:
@@ -121,3 +132,118 @@ async def test_active_day_uses_its_snapshot() -> None:
     finally:
         await _delete_round(money_day.id)
         await _delete_round(free_day.id)
+
+
+async def test_register_stake_blocked_on_free_day(monkeypatch) -> None:
+    """Серверный гейт денежного контура: ставка не принимается на свободном
+    дне, даже если вызов пришёл мимо UI (наблюдатель, прямой ретрай)."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    from app.stakes import register_stake
+
+    free_day = _round_row(money_mode=False, day_index=11, _id=87_920)
+    try:
+        async with SessionLocal() as session:
+            session.add(free_day)
+            await session.commit()
+            raw = "0:" + "dd" * 32
+            player = Player()
+            player.id = 920_111
+            player.username = "free"
+            player.wallet_address = raw
+            session.add(player)
+            await session.commit()
+        from app.ton_utils import to_nano
+
+        async with SessionLocal() as session:
+            round_row = await session.get(Round, free_day.id)
+            player = await session.get(Player, 920_111)
+            assert await register_stake(
+                session, round_row, player, to_nano(1), "tx-free-1"
+            ) == "money_off"
+            stakes = (
+                await session.execute(
+                    select(Stake).where(Stake.tx_hash == "tx-free-1")
+                )
+            ).scalars().all()
+            assert stakes == []
+    finally:
+        await _delete_round(free_day.id)
+        async with SessionLocal() as session:
+            await session.execute(Stake.__table__.delete().where(Stake.player_id == 920_111))
+            await session.execute(Player.__table__.delete().where(Player.id == 920_111))
+            await session.commit()
+
+
+async def test_process_transfer_refunds_on_free_day(monkeypatch) -> None:
+    """Перевод в бесплатный день возвращается с объяснением, а не засчитывается
+    как ставка: возврат виден в ledger как stake:money_off."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "stake_confirm_seconds", 10_000)
+    from app.ton_utils import to_nano
+    from app.ton_watch import Transfer, process_transfer
+
+    free_day = _round_row(money_mode=False, day_index=12, _id=87_921)
+    raw = "0:" + "ee" * 32
+    txs = ["tx-free-stake-1", "tx-free-revote-1", "tx-free-auto-1"]
+    try:
+        async with SessionLocal() as session:
+            session.add(free_day)
+            await session.commit()
+            player = Player()
+            player.id = 920_222
+            player.username = "free2"
+            player.wallet_address = raw
+            session.add(player)
+            await session.commit()
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        status = await process_transfer(
+            Transfer(
+                tx_hash=txs[0], source=raw, value_nanotons=to_nano(1),
+                comment="", utime=now,
+            )
+        )
+        assert status == "money_off"
+        # Явный rv:-мемо тоже не проходит в бесплатный день.
+        status = await process_transfer(
+            Transfer(
+                tx_hash=txs[1], source=raw, value_nanotons=to_nano(0.1),
+                comment=f"rv:{free_day.id}", utime=now,
+            )
+        )
+        assert status == "revote_money_off"
+        # Авто-грант по сумме ([revote_ton, stake_min_ton)) — тоже возврат.
+        status = await process_transfer(
+            Transfer(
+                tx_hash=txs[2], source=raw, value_nanotons=to_nano(0.2),
+                comment="", utime=now,
+            )
+        )
+        assert status == "revote_auto_money_off"
+
+        async with SessionLocal() as session:
+            payouts = (
+                await session.execute(
+                    select(Payout).where(Payout.kind == "refund", Payout.tx_hash.in_(txs))
+                )
+            ).scalars().all()
+            assert len(payouts) == 3
+            notes = {
+                (await session.scalar(select(Income.note).where(Income.unit_ref == p.tx_hash))) or ""
+                for p in payouts
+            }
+            assert any("stake:money_off" in n for n in notes)
+            assert any("revote:revote_money_off" in n for n in notes)
+            assert any("revote_auto:money_off" in n for n in notes)
+            stakes = (
+                await session.execute(select(Stake).where(Stake.player_id == 920_222))
+            ).scalars().all()
+            assert stakes == []
+    finally:
+        await _delete_round(free_day.id)
+        async with SessionLocal() as session:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "refund", Payout.tx_hash.in_(txs)))
+            await session.execute(Income.__table__.delete().where(Income.unit_ref.in_(txs)))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id == 920_222))
+            await session.execute(Player.__table__.delete().where(Player.id == 920_222))
+            await session.commit()
