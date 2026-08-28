@@ -417,7 +417,7 @@ def compose_chapter(
             "Первый Лай ближе",
         ]
         title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
-        cards = _cards(rng, day_index)
+        cards = _cards(rng, day_index, history_tags=history_tags, salt=salt)
         active_echoes = list(echoes or [])
         # Пролог «Приход» (день 1): правил мира ещё нет и Первый Лай звучит
         # только на шестой день знакомства — офлайн-сборка обязана это знать.
@@ -457,6 +457,11 @@ def compose_chapter(
             )
             if crisis_scene not in text:
                 text += f" {crisis_scene}"
+        # Серединный твист дня: редкий, детерминированный сдвиг, чтобы выбор
+        # не читался предсказуемой формулой даже по уже знакомым картам.
+        twist = _day_twist(day_index, history_tags, salt)
+        if twist and twist not in text:
+            text += f" {twist}"
         if active_echoes:
             touches = (
                 "На обочине примостилось «{name}».",
@@ -864,11 +869,93 @@ def _chapter_text(
     )
 
 
-def _cards(rng: random.Random, day_index: int) -> list[CardDraft]:
+# Пул «серединных твистов» дня. Редкий, детерминированный сдвиг: текст главы
+# получает одну строку-развилку внутри самого события, а не только в картах.
+_MIDTWIST_POOL = (
+    "Посреди пути стая наткнулась на развилку, которой не было ни на одной "
+    "карте, — бледную, едва провеженную, будто мир добавил её по ошибке.",
+    "Шерсть на загривке поднялась сама собой: кто-то окликнул их по именам, "
+    "которых в этом мире назвать некому.",
+    "Портал перед ними зевнул и показал другой день: тот, что стая ещё не "
+    "прожила, — и оттуда на них кто-то посмотрел.",
+    "Миски у тропы были полные и стояли ровным кругом. Ни одной лапы вокруг "
+    "— и всё же канон уже пересчитал стаю заново.",
+    "Узкий свет впереди гас и загорался в такт чьему-то дыханию. Стая поняла: "
+    "это не портал — это дверь, за которой её ждут.",
+)
+# Пул «ловушек Хозяина Ошибки» для остывшего архетипа: выбор, в который
+# кто-то уже подмешал чужой след. Это часть механики сужения арены эха.
+_TRAP_TAILS = (
+    " Но на самом дне описания блеснула чужая подпись — ровная, без ошибок, "
+    "и оттого не своя.",
+    " Только в самом конце замечаешь метку, которой вчера не было: маленькую, "
+    "аккуратную, явно чужую.",
+    " Пауза затягивается, и у карты слышится едва уловимый счёт — кто-то "
+    "пересчитывает стаю, пока она решает.",
+)
+
+
+def _day_twist(day_index: int, history_tags: list[str], salt: str) -> str:
+    """Редкий детерминированный твист (~1 из 5 дней) — возвращает строку либо
+    пустую. Сид отдельный от карт, чтобы твист не был синхронизирован с ними."""
+    rng = _rng(day_index, f"midturn:{salt}")
+    if rng.random() >= 0.2:
+        return ""
+    idx = rng.randrange(len(_MIDTWIST_POOL))
+    return _MIDTWIST_POOL[idx]
+
+
+def _narrowed_card(
+    card: CardDraft,
+    tag: str,
+    history_tags: list[str],
+    day_index: int,
+    salt: str,
+) -> CardDraft:
+    """Эхо-сужение арены: выбор стаи «прорастает», а не генерируется в вакууме.
+
+    Окно 7 дней. Если архетип «горячий» (встречался >=3 раз) — карта получает
+    заряженное эхо-окончание, подтянутое под уже выбранную тропу. Если архетип
+    «мёрзлый» (0 появлений) и стая при этом принимала решения (история не
+    пуста) — в карту Хозяин Ошибки подмешивает чужую подпись-ловушку, и выбор
+    оборачивается негативным эхом. Детерминировано по (день, соль, тэг, след).
+    """
+    window = [t for t in history_tags if t][-7:]
+    if not window:
+        return card
+    count = window.count(tag)
+    hot = count >= 3
+    frozen = count == 0
+    if not hot and not frozen:
+        return card
+    rng = _rng(day_index, f"echo:{tag}:{'|'.join(window)}:{salt}")
+    if hot:
+        warm = (
+            f" Стая уже знает эту тропу: её нос помнит, как пахнет подобный выбор.",
+            f" След знаком — стая делала это недавно и знает цену заранее.",
+        )
+        return replace(
+            card,
+            description=card.description + warm[rng.randrange(len(warm))],
+        )
+    tail = _TRAP_TAILS[rng.randrange(len(_TRAP_TAILS))]
+    return replace(card, consequence=card.consequence + tail)
+
+
+def _cards(
+    rng: random.Random,
+    day_index: int,
+    history_tags: list[str] | None = None,
+    salt: str = "",
+) -> list[CardDraft]:
     """Карты дня: тройка «заголовок—описание—последствие» выбирается целиком
     по соли запуска — перезапуски дают разные наборы вместо вечного цикла
     «день N = одни и те же карты». Пул на тег один, последствие всегда
     вытекает из своего действия; rng раскладывает только порядок карт.
+
+    history_tags/salt задействуются механикой «эхо-сужения» (_narrowed_card):
+    недавние выборы стаи подкрашивают описания горячих архетипов и
+    подмешивают ловушки на остывших.
     """
 
     def pick(paths: list[tuple[str, str, str]]) -> CardDraft:
@@ -901,6 +988,11 @@ def _cards(rng: random.Random, day_index: int) -> list[CardDraft]:
             image_prompt=_IMAGE_PROMPTS["cunning"],
         ),
     ]
+    if history_tags:
+        cards = [
+            _narrowed_card(card, card.tag, history_tags, day_index, salt)
+            for card in cards
+        ]
     rng.shuffle(cards)
     return cards
 
