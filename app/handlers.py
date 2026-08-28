@@ -2681,7 +2681,7 @@ def build_dispatcher() -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
 
-    @router.outer_middleware()
+    @router.message.outer_middleware()
     async def _close_wallet_dialog_on_command(handler, event: Message, data: dict) -> None:
         """Любая команда, кроме /wallet, закрывает открытый диалог привязки.
 
