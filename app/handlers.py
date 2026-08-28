@@ -1991,6 +1991,120 @@ async def cmd_fundout(message: Message) -> None:
     await message.answer(f"✅ {result}. Реальный перевод — с казначея.")
 
 
+# ---------- Каркас разрешения споров (/dispute, /disputes) ----------
+
+
+async def _resolve_player_arg(session, raw: str) -> int | None:
+    """Игровой id или @ник → player_id (None, если не нашли)."""
+    raw = raw.strip().lstrip("@")
+    from app.models import Player as _Player
+
+    if raw.isdigit():
+        return int(raw)
+    row = (
+        await session.execute(select(_Player).where(_Player.username == raw).limit(1))
+    ).scalar_one_or_none()
+    return row.id if row is not None else None
+
+
+@router.message(Command("dispute"))
+async def cmd_dispute(message: Message) -> None:
+    """Жалоба на итог дня. Хранителю доступны open/resolve/reject/compensate."""
+    from app import disputes as dispute_mod
+
+    parts = message.text.split()
+    verb = parts[1].lower() if len(parts) > 1 else ""
+    if verb in ("resolve", "reject", "compensate", "open"):
+        if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+            await message.answer("Разрешение и компенсация споров — только для хранителя.")
+            return
+        async with SessionLocal() as session:
+            if verb == "open":
+                if len(parts) < 4:
+                    await message.answer("Формат: /dispute open <день> <id или @ник> <причина>")
+                    return
+                try:
+                    round_id = int(parts[2])
+                except ValueError:
+                    await message.answer("Номер дня должен быть целым числом.")
+                    return
+                pid = await _resolve_player_arg(session, parts[3])
+                if pid is None:
+                    await message.answer("Игрок не найден (id или @ник).")
+                    return
+                reason = " ".join(parts[4:]) if len(parts) > 4 else ""
+                reply = await dispute_mod.open_dispute(session, round_id, pid, reason)
+            elif verb == "resolve" or verb == "reject":
+                if len(parts) < 2:
+                    await message.answer("Формат: /dispute resolve <id> [примечание]")
+                    return
+                try:
+                    did = int(parts[2])
+                except ValueError:
+                    await message.answer("Номер спора должен быть целым числом.")
+                    return
+                note = " ".join(parts[3:]) if len(parts) > 3 else ""
+                fn = dispute_mod.resolve_dispute if verb == "resolve" else dispute_mod.reject_dispute
+                reply = await fn(session, did, note)
+            else:  # compensate
+                if len(parts) < 4:
+                    await message.answer("Формат: /dispute compensate <id> <Gram> [примечание]")
+                    return
+                try:
+                    did = int(parts[2])
+                except ValueError:
+                    await message.answer("Номер спора должен быть целым числом.")
+                    return
+                note = " ".join(parts[4:]) if len(parts) > 4 else ""
+                reply = await dispute_mod.compensate_dispute(session, did, parts[3], note)
+        await message.answer(reply)
+        return
+    # Публичная само-подача: жалоба игрока на его последний сыгранный день.
+    if message.from_user is None:
+        return
+    from app.models import Vote as _Vote
+    from app.models import Round as _Round
+
+    reason = message.text.split(maxsplit=1)[1] if " " in message.text else ""
+    async with SessionLocal() as session:
+        player = await upsert_player(session, message.from_user)
+        latest = (
+            await session.execute(
+                select(_Round.id)
+                .join(_Vote, _Vote.round_id == _Round.id)
+                .where(_Vote.player_id == player.id)
+                .order_by(_Round.day_index.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        reply = await dispute_mod.open_dispute(session, latest, player.id, reason)
+    await message.answer(reply)
+
+
+@router.message(Command("disputes"))
+async def cmd_disputes(message: Message) -> None:
+    """Список открытых споров. Только для хранителя."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Только для хранителя игры.")
+        return
+    from app import disputes as dispute_mod
+
+    async with SessionLocal() as session:
+        rows = await dispute_mod.open_disputes(session)
+    if not rows:
+        await message.answer("Открытых споров нет.")
+        return
+    lines = ["⚖ Споры в рассмотрении:"]
+    for d in rows:
+        lines.append(
+            f"  #{d.id} · день {d.round_id if d.round_id is not None else '—'} · "
+            f"игрок {d.player_id} · {d.reason[:90]}"
+        )
+    lines.append("")
+    lines.append("Разбор: /dispute resolve <id> [заметка] · отказ: /dispute reject <id> · компенсация: /dispute compensate <id> <Gram>")
+    await message.answer("\n".join(lines))
+
+
 # ---------- Сверка казны (/adjust) и стоп-кран игры (/pause, /resume) ----------
 
 async def _game_paused_now() -> bool:
