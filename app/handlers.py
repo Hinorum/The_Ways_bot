@@ -1188,6 +1188,45 @@ def _format_top(
     return "\n".join(lines)
 
 
+@router.message(Command("fund"))
+async def cmd_fund(message: Message) -> None:
+    """Прозрачность Фонда Стаи: баланс и последние движения журнала."""
+    from app.models import PackFund as _Fund
+    from app.models import PackFundLedger as _Ledger
+
+    async with SessionLocal() as session:
+        fund_nano = (
+            await session.execute(select(func.coalesce(func.sum(_Fund.nanotons), 0)))
+        ).scalar_one()
+        rows = (
+            (
+                await session.execute(
+                    select(_Ledger).order_by(_Ledger.id.desc()).limit(12)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    lines = [f"🐾 Фонд Стаи: <b>{fund_nano / 1e9:.2f} Gram</b>", ""]
+    lines.append("Прозрачный журнал (последние движения):")
+    if not rows:
+        lines.append("  — пока пусто —")
+    for row in reversed(rows):
+        sign = "+" if row.entry_type == "in" else "−"
+        day = row.round_id if row.round_id is not None else "—"
+        when = (
+            row.created_at.strftime("%d.%m")
+            if row.created_at.tzinfo
+            else row.created_at.replace(tzinfo=timezone.utc).strftime("%d.%m")
+        )
+        lines.append(
+            f"  {when} {sign}{row.amount_nanotons / 1e9:.4g} Gram · день {day} · {row.note}"
+        )
+    lines.append("")
+    lines.append("1% банка дня копится сюда и не раздаётся сам. Хранитель распоряжается вручную — каждая раздача видна в этом журнале.")
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 @router.message(Command("top"))
 async def cmd_top(message: Message) -> None:
     from app.leaderboard import _players_with_stake, weekly_top
@@ -1916,8 +1955,43 @@ async def cmd_treasury(message: Message) -> None:
         await message.answer(f"Отчёт не собрался: {exc}")
 
 
-# ---------- Сверка казны (/adjust) и стоп-кран игры (/pause, /resume) ----------
+@router.message(Command("fundout"))
+async def cmd_fundout(message: Message) -> None:
+    """Записать ручную раздачу Фонда Стаи в журнал (аудит, не двигает деньги).
 
+    Реальный перевод делает обычная очередь выплат/ручной вывод с казначея;
+    здесь фиксируется <сумма> и <зачем>, а баланс фонда уменьшается, чтобы
+    прозрачный журнал и цифра фонда оставались честными. Только для хранителя.
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Формат: /fundout <Gram> <причина. Что купили/разыграли>")
+        return
+    try:
+        amount_gram = float(args[1].replace(",", "."))
+    except ValueError:
+        await message.answer("Сумма должна быть числом в Gram.")
+        return
+    if amount_gram <= 0:
+        await message.answer("Сумма должна быть положительной.")
+        return
+    note = " ".join(args[2:])[:180]
+
+    from app.stakes import record_fund_dispense
+    from app.ton_utils import to_nano
+
+    async with SessionLocal() as session:
+        result = await record_fund_dispense(session, to_nano(amount_gram), note)
+    if result.startswith("сумма") or result.startswith("в фонде"):
+        await message.answer(result)
+        return
+    await message.answer(f"✅ {result}. Реальный перевод — с казначея.")
+
+
+# ---------- Сверка казны (/adjust) и стоп-кран игры (/pause, /resume) ----------
 
 async def _game_paused_now() -> bool:
     """Быстрая проверка стоп-крана без привязки к чужой сессии."""

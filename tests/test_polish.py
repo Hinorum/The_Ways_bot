@@ -13,7 +13,7 @@ from app.broadcast import status_text
 from app.config import settings
 from app.handlers import _canon_text
 from app.lore import compose_chapter
-from app.models import RULE_PHRASES, Card, Player, Round, RoundStatus, Stake, StoryBeat, Vote, WinRule
+from app.models import RULE_PHRASES, Card, PackFund, PackFundLedger, Player, Round, RoundStatus, Stake, StoryBeat, Vote, WinRule
 
 
 def _beat(day: int, text_len: int = 200) -> SimpleNamespace:
@@ -448,6 +448,8 @@ async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch)
             StoryBeat(day_index=5, winning_title="t", winning_text="x",
                       win_rule="majority", vote_counts="{}"),
             LeaderboardPot(month="2030-01", nanotons=7_700_000_000),
+            PackFund(nanotons=1_000_000_000),
+            PackFundLedger(entry_type="in", amount_nanotons=1_000_000_000, round_id=5),
         ]
     )
     await session.commit()
@@ -473,6 +475,11 @@ async def test_reset_game_wipes_history_and_starts_day_one(session, monkeypatch)
         # Деньги казны не тронуты.
         pot = (await session.execute(select(LeaderboardPot))).scalar_one()
         assert pot.nanotons == 7_700_000_000
+        # Фонд Стаи и его аудит-журнал — неубывающее обязательство, переживают сброс.
+        fund = (await session.execute(select(PackFund))).scalar_one()
+        assert fund.nanotons == 1_000_000_000
+        ledger = list((await session.execute(select(PackFundLedger))).scalars().all())
+        assert len(ledger) == 1 and ledger[0].entry_type == "in" and ledger[0].amount_nanotons == 1_000_000_000
     finally:
         for card in list(fresh.cards):
             await session.delete(card)

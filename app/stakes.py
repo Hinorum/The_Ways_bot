@@ -40,6 +40,7 @@ from app.config import settings
 from app.models import (
     LeaderboardPot,
     PackFund,
+    PackFundLedger,
     Payout,
     Player,
     Round,
@@ -331,6 +332,15 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                     session.add(PackFund(nanotons=fund_cut))
                 else:
                     fund_row.nanotons += fund_cut
+                # Аудит: каждое начисление пишется в прозрачный журнал фонда.
+                session.add(
+                    PackFundLedger(
+                        entry_type="in",
+                        amount_nanotons=fund_cut,
+                        round_id=round_row.id,
+                        note=f"1% банка дня {round_row.day_index}",
+                    )
+                )
             round_row.pot_nanotons = pot
             round_row.rake_nanotons = house_cut + board_cut
 
@@ -429,3 +439,38 @@ async def create_manual_refund(session, stake_id: int) -> str:
     stake.status = "refunded"
     await session.commit()
     return f"возврат {from_nano(refund):.4g} Gram поставлен в очередь (выплата создана)"
+
+
+async def record_fund_dispense(
+    session: AsyncSession, amount_nanotons: int, note: str = ""
+) -> str:
+    """Прозрачная ручная раздача Фонда Стаи: списывает баланс и пишет «out» в журнал.
+
+    Сам физический перевод делает обычная очередь выплат с казначея; здесь —
+    аудит-след, чтобы баланс фонда и его журнал оставались честными (сумма
+    поступлений минус документированные раздачи). Возвращает сообщение для
+    хранителя или строку-ошибку без изменения данных.
+    """
+    fund_row = (
+        await session.execute(select(PackFund).order_by(PackFund.id).limit(1))
+    ).scalar_one_or_none()
+    balance = fund_row.nanotons if fund_row is not None else 0
+    if amount_nanotons <= 0:
+        return "сумма должна быть положительной"
+    if amount_nanotons > balance:
+        return (
+            f"в фонде меньше ({from_nano(balance):.4g} Gram), чем списывается "
+            f"({from_nano(amount_nanotons):.4g} Gram) — запись отменена"
+        )
+    if fund_row is not None:
+        fund_row.nanotons = balance - amount_nanotons
+    session.add(
+        PackFundLedger(
+            entry_type="out",
+            amount_nanotons=amount_nanotons,
+            round_id=None,
+            note=note[:180],
+        )
+    )
+    await session.commit()
+    return f"раздача {from_nano(amount_nanotons):.4g} Gram записана во {note or 'Фонд Стаи'}"

@@ -64,6 +64,7 @@ def _build_commands() -> tuple[list[BotCommand], list[BotCommand]]:
             BotCommand(command="stake", description="Как поставить Gram на путь"),
             BotCommand(command="wallet", description="Привязать кошелёк Gram"),
             BotCommand(command="top", description="Копилки и лидеры"),
+            BotCommand(command="fund", description="Фонд Стаи: баланс и журнал"),
         ]
     group = [
         BotCommand(command="today", description="Карты дня"),

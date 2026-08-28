@@ -241,8 +241,46 @@ async def test_finalize_payouts_proportional_and_rake(
     # Фонд Стаи накопил свой процент отдельной строкой.
     funds = list((await session.execute(stakes_mod.PackFund.__table__.select())).mappings())
     assert len(funds) == 1 and funds[0]["nanotons"] == fund_cut
+    # Прозрачный журнал фонда зафиксировал поступление этого дня.
+    ledger = list((await session.execute(stakes_mod.PackFundLedger.__table__.select())).mappings())
+    assert len(ledger) == 1
+    assert ledger[0]["entry_type"] == "in"
+    assert ledger[0]["amount_nanotons"] == fund_cut
+    assert ledger[0]["round_id"] == round_row.id
     # Повторный вызов ничего не меняет.
     assert await stakes_mod.finalize_day_payouts(session, round_row) == 0
+
+
+async def test_record_fund_dispense_logs_out_and_decrements(session: AsyncSession) -> None:
+    """Прозрачная раздача фонда: списывает баланс и пишет «out»-строку в журнал."""
+    from sqlalchemy import func, select
+
+    session.add(stakes_mod.PackFund(nanotons=to_nano(3)))
+    await session.commit()
+
+    res = await stakes_mod.record_fund_dispense(session, to_nano(1), "приз забега")
+    assert "раздача" in res
+    fund = (await session.execute(select(stakes_mod.PackFund))).scalars().one()
+    assert fund.nanotons == to_nano(2)
+    ledger = (await session.execute(select(stakes_mod.PackFundLedger))).scalars().all()
+    assert len(ledger) == 1
+    assert ledger[0].entry_type == "out"
+    assert ledger[0].amount_nanotons == to_nano(1)
+    assert ledger[0].note == "приз забега"
+
+    # Запись сверх баланса отменяется без изменений.
+    res = await stakes_mod.record_fund_dispense(session, to_nano(99))
+    assert "в фонде меньше" in res
+    fund = (await session.execute(select(stakes_mod.PackFund))).scalars().one()
+    assert fund.nanotons == to_nano(2)
+    assert (
+        await session.scalar(
+            select(func.count()).select_from(stakes_mod.PackFundLedger)
+        )
+    ) == 1
+
+    # Неположительная сумма отклоняется.
+    assert "положительн" in await stakes_mod.record_fund_dispense(session, 0)
 
 
 async def test_finalize_routes_free_pool_without_recipients(

@@ -324,6 +324,30 @@ class PackFund(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PackFundLedger(Base):
+    """Прозрачный журнал Фонда Стаи: каждое поступление и ручная раздача.
+
+    PackFund — это накопление-обязательство без периода авто-розыгрыша: 1% банка
+    дня капает сюда, а Хранитель распоряжается деньгами вручную с казначейского
+    кошелька. Сами физические переводы делает обычная очередь выплат, поэтому
+    журнал здесь — аудит-след: «in» пишется при каждом начислении дня, «out» —
+    ручной операцией хранителя (см. /fundout), чтобы стая видела, куда уходят
+    накопленные граммы, а не одна непрозрачная цифра баланса.
+    """
+
+    __tablename__ = "pack_fund_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_type: Mapped[str] = mapped_column(String(8), default="in")  # in | out
+    amount_nanotons: Mapped[int] = mapped_column(BigInteger)
+    # Намеренно БЕЗ ForeignKey на rounds: журнал — append-only аудит, который
+    # живёт дольше истории дней и не должен подпадать под сброс reset_game.
+    # round_id — просто номер дня-источника (вместе с note хранит и день).
+    round_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RevoteGrant(Base):
     """Оплаченное право изменить свой выбор в дне (Stars или TON).
 
