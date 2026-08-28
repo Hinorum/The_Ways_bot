@@ -1196,6 +1196,19 @@ def _flatten_first_branch(payload: dict) -> None:
     payload.pop("branches", None)
 
 
+async def _stamp_day_money_mode(session: AsyncSession, round_row: Round) -> None:
+    """Снимает режим «версии игры» на открытие дня.
+
+    Хранитель может переключить рубильник посреди текущего дня (из /panel);
+    чтобы ставки/смена не «прыгали» на лету, решение фиксируется в момент
+    материализации дня: новый день берёт актуальный режим, а уже открытый —
+    живёт по своему снимку (см. Round.money_mode).
+    """
+    from app.ops import money_mode_enabled
+
+    round_row.money_mode = bool(await money_mode_enabled(session))
+
+
 async def create_next_round_detailed(
     session: AsyncSession, base_day_index: int | None = None
 ) -> tuple[Round, bool]:
@@ -1234,6 +1247,7 @@ async def create_next_round_detailed(
                 _flatten_first_branch(payload)
                 await _ensure_art_files(session, payload)
                 materialized = await _materialize_round(session, payload, latest)
+                await _stamp_day_money_mode(session, materialized)
             except (ValueError, KeyError, TypeError):
                 # Битая заготовка — выбрасываем и идём обычным путём.
                 # Rollback протухает объекты: day_index держим в переменной,
@@ -1265,6 +1279,7 @@ async def create_next_round_detailed(
     payload = await _plan_and_render(session, day_index, opens_hint=opens_hint)
     try:
         round_row = await _materialize_round(session, payload, latest)
+        await _stamp_day_money_mode(session, round_row)
     except IntegrityError:
         await session.rollback()
         existing = await get_latest_round(session)

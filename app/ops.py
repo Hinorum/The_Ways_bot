@@ -53,6 +53,10 @@ _BALANCE_TOLERANCE_NANO = 50_000_000  # 0.05 Gram
 # watcher_state — переживают рестарт, видны всем процессам и джобам.
 PAUSE_KEY = "game_paused_iso"
 PAUSE_REASON_KEY = "game_paused_reason"
+# Версия игры: «со ставками» (1/отсутствует) или «без ставок» (0). Это рубильник
+# Хранителя из /panel; реальные дни снимают режим в Round.money_mode на своё
+# открытие, поэтому переключение вступает в силу со СЛЕДУЮЩЕГО дня.
+MONEY_MODE_KEY = "money_mode_on"
 # Виды корректировок казны: ручной вывод хранителя / ручное пополнение.
 # Пишутся в Income (unit_ref «manual:<uuid>»), попадают в формулу сверки.
 MANUAL_OUT_KIND = "manual_out"
@@ -570,4 +574,30 @@ async def set_game_paused(session, paused: bool, reason: str = "") -> bool:
         await _set_state(session, PAUSE_KEY, "")
         await _set_state(session, PAUSE_REASON_KEY, "")
     logger.info("Пауза игры: %s (%s)", "включена" if paused else "снята", reason or "—")
+    return True
+
+
+# ---------- Версия игры: со ставками / без ставок (рубильник хранителя) ----------
+
+
+async def money_mode_enabled(session) -> bool:
+    """True = денежная версия (ставки TON, платная смена выбора).
+
+    Рубильник из /panel живёт в watcher_state; отсутствие ключа = включено.
+    Реальные дни снимают РЕЖИМ в Round.money_mode на своё открытие, поэтому
+    переключение вступает в силу со следующего дня, а не посреди текущего.
+    """
+    return await _get_state(session, MONEY_MODE_KEY) != "0"
+
+
+async def set_money_mode(session, enabled: bool) -> bool:
+    """Переключает версию игры. True, если состояние реально изменилось —
+    повторный тап той же кнопки не рассылает лишних подтверждений."""
+    if enabled == await money_mode_enabled(session):
+        return False
+    await _set_state(session, MONEY_MODE_KEY, "1" if enabled else "0")
+    logger.info(
+        "Версия игры: %s",
+        "денежная (ставки + смена выбора за плату)" if enabled else "без ставок",
+    )
     return True

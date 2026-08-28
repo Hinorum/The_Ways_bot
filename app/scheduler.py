@@ -503,7 +503,7 @@ async def tick(bot: Bot | None = None) -> None:
             await get_run_anchor(session)
         except Exception:
             logger.exception("Якорь забега не прочитан (кэш останется прежним)")
-        if current.status == RoundStatus.OPEN and settings.ton_enabled:
+        if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
             try:
                 await refresh_round_pot_cache(session, current)
             except Exception:

@@ -93,7 +93,7 @@ def status_text(
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     bank_line = ""
-    if settings.ton_enabled:
+    if settings.ton_enabled and getattr(round_row, "money_mode", True) is not False:
         from app.rounds import get_cached_pot
 
         nano, _bets = get_cached_pot(round_row.id)
@@ -282,6 +282,52 @@ async def deactivate_chat(chat_id: int) -> None:
             logger.info("Чат %s помечен неактивным", chat_id)
 
 
+async def active_player_ids() -> list[int]:
+    """Игроки, подписанные на личные дубликаты рассылок (/start → dm_subscribed)."""
+    from app.models import Player
+
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(Player.id).where(Player.dm_subscribed.is_(True))
+        )
+        return [row[0] for row in rows.all()]
+
+
+async def _dm_send_all(bot: Bot, deliver, label: str) -> int:
+    """Рассылка одного сообщения всем подписанным игрокам в личку.
+
+    Промахи не критичны: бот не имеет права писать тем, кто его не начинал
+    (forbidden) — их молча пропускаем, как в личном эхе. Возвращает число
+    доставленных сообщений.
+    """
+    if bot is None or not settings.player_dm:
+        return 0
+    player_ids = await active_player_ids()
+    if not player_ids:
+        return 0
+    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+
+    async def worker(player_id: int) -> bool:
+        async with semaphore:
+            try:
+                await deliver(player_id)
+                return True
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after + 1)
+                try:
+                    await deliver(player_id)
+                    return True
+                except Exception:
+                    return False
+            except Exception:
+                return False
+
+    outcomes = await asyncio.gather(*(worker(pid) for pid in player_ids))
+    delivered = sum(1 for ok in outcomes if ok)
+    logger.info("%s: доставлено %d из %d игроков", label, delivered, len(player_ids))
+    return delivered
+
+
 async def results_body(finished: Round, session=None) -> str:
     """Сухие итоги + экономика дня (БЕЗ нейро-эпилога).
 
@@ -439,45 +485,69 @@ async def announce_new_day(
         len(delivered),
         len(chat_ids),
     )
+    # Личные дубликаты подписчикам: тот же пакет дня (итоги, обложка, кнопки
+    # выбора) в личку. Без /start у игрока бот писать не может — такие молча
+    # пропускаются; кнопки голосования работают из лички, как и из группы.
+    if settings.player_dm:
+        delivered_dm = await _dm_send_all(
+            bot,
+            lambda pid: _deliver_day(
+                bot, pid, round_row, finished, results_text, remember=remember
+            ),
+            f"Личный пакет дня {round_row.day_index}",
+        )
+        if delivered_dm:
+            logger.info(
+                "Личный пакет дня %s доставлен %d игроку(ам)",
+                round_row.day_index,
+                delivered_dm,
+            )
     return delivered
 
 
 async def _broadcast_text(bot: Bot, text: str) -> int:
     """Одно текстовое сообщение во все живые чаты с одним ретраем и флуд-контролем.
 
+    Плюс — личные дубликаты подписчикам (итоги, эпилог, анонсы пауз/церемоний).
     Возвращает число доставленных чатов; провалы не критичны.
     """
     if not text.strip():
         return 0
     chat_ids = await active_chat_ids()
-    if not chat_ids:
-        return 0
-    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
+    if chat_ids:
+        semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 
-    async def worker(chat_id: int) -> int | None:
-        async with semaphore:
-            try:
-                await bot.send_message(chat_id, text)
-                return chat_id
-            except TelegramRetryAfter as exc:
-                logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
-                await asyncio.sleep(exc.retry_after + 1)
+        async def worker(chat_id: int) -> int | None:
+            async with semaphore:
                 try:
                     await bot.send_message(chat_id, text)
                     return chat_id
-                except Exception:
-                    return None
-            except TelegramForbiddenError:
-                await deactivate_chat(chat_id)
-                return None
-            except Exception as exc:
-                logger.warning("Текст не доставлен в чат %s: %s", chat_id, exc)
-                if any(mark in str(exc).lower() for mark in _FORGET_MARKS):
+                except TelegramRetryAfter as exc:
+                    logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
+                    await asyncio.sleep(exc.retry_after + 1)
+                    try:
+                        await bot.send_message(chat_id, text)
+                        return chat_id
+                    except Exception:
+                        return None
+                except TelegramForbiddenError:
                     await deactivate_chat(chat_id)
-                return None
+                    return None
+                except Exception as exc:
+                    logger.warning("Текст не доставлен в чат %s: %s", chat_id, exc)
+                    if any(mark in str(exc).lower() for mark in _FORGET_MARKS):
+                        await deactivate_chat(chat_id)
+                    return None
 
-    outcomes = await asyncio.gather(*(worker(chat_id) for chat_id in chat_ids))
-    return len([c for c in outcomes if c is not None])
+        outcomes = await asyncio.gather(*(worker(chat_id) for chat_id in chat_ids))
+        delivered = len([c for c in outcomes if c is not None])
+    else:
+        delivered = 0
+    # Личные дубликаты подписчикам — даже если живых чатов нет.
+    delivered_dm = await _dm_send_all(
+        bot, lambda pid: bot.send_message(pid, text), "Личный текст"
+    )
+    return delivered + delivered_dm
 
 
 async def announce_results(bot: Bot | None, finished: Round) -> int:
@@ -551,7 +621,11 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
     outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
     delivered = sum(1 for ok in outcomes if ok)
     logger.info("Шёпот дня разослан в %d из %d чатов", delivered, len(chat_ids))
-    return delivered
+    # Вечерний привал — и в личку подписчикам (личный дубликат вечернего поста).
+    delivered_dm = await _dm_send_all(
+        bot, lambda pid: bot.send_message(pid, text), "Личный шёпот (текст)"
+    )
+    return delivered + delivered_dm
 
 
 async def whisper_photo_to_chats(bot: Bot | None, photo, caption: str) -> int:
@@ -592,7 +666,13 @@ async def whisper_photo_to_chats(bot: Bot | None, photo, caption: str) -> int:
     outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
     delivered = sum(1 for ok in outcomes if ok)
     logger.info("Вечерний кадр доставлен в %d из %d чатов", delivered, len(chat_ids))
-    return delivered
+    # Вечерний кадр костра — и в личку подписчикам (самим фото с подписью).
+    delivered_dm = await _dm_send_all(
+        bot,
+        lambda pid: bot.send_photo(pid, photo=photo, caption=caption),
+        "Личный вечерний кадр",
+    )
+    return delivered + delivered_dm
 
 
 # Личное эхо проигравшим: у каждого голосовавшего «не туда» остаётся личная

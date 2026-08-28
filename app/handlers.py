@@ -111,7 +111,8 @@ async def cmd_help(message: Message) -> None:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
-        await upsert_player(session, message.from_user)
+        player = await upsert_player(session, message.from_user)
+    subscribed = bool(getattr(player, "dm_subscribed", True))
     uid = str(message.from_user.id) if message.from_user else "0"
     lines = [
         f"{day_mark(uid)} <b>{settings.world_name}</b>",
@@ -131,7 +132,11 @@ async def cmd_start(message: Message) -> None:
         "\n⚠️ Игра, а не вклад: бот и хранитель не отвечают за утраченные "
         "средства. Ты сам решаешь, на что ставишь."
     )
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+    await message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_dm_toggle_keyboard(subscribed),
+    )
     # Стартовый кадр мира (генерируется один раз на забег): знакомит
     # новичка глазами, а не только словами. Пропал/не сгенерился — молчим.
     from pathlib import Path as _Path
@@ -143,6 +148,45 @@ async def cmd_start(message: Message) -> None:
         except Exception:
             logger.info("Стартовый кадр мира не доставлен новичку", exc_info=True)
     await cmd_today(message)
+
+
+def _dm_toggle_keyboard(subscribed: bool) -> InlineKeyboardMarkup:
+    """Кнопка подписки на личные дубликаты рассылок (итоги, новый день, вечер).
+
+    Живёт в /start: пришёл в личку — сразу видно, что и сюда будут приходить
+    анонсы, и одним тапом можно отключить (или вернуть).
+    """
+    label = (
+        "🔔 Итоги и анонсы в личку: ВКЛ"
+        if subscribed
+        else "🔕 Итоги и анонсы в личку: ВЫКЛ"
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="dm:toggle")]]
+    )
+
+
+@router.callback_query(F.data == "dm:toggle")
+async def on_dm_toggle(callback: CallbackQuery) -> None:
+    """Тумблер личной рассылки: единственный параметр — флаг dm_subscribed."""
+    if callback.from_user is None:
+        await callback.answer()
+        return
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        subscribed = not bool(getattr(player, "dm_subscribed", True))
+        player.dm_subscribed = subscribed
+        await session.commit()
+    if callback.message is not None:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=_dm_toggle_keyboard(subscribed))
+        except TelegramBadRequest:
+            pass
+    await callback.answer(
+        "Итоги и анонсы снова приходят в личку." if subscribed
+        else "Личные рассылки отключены — играем только в группе.",
+        show_alert=True,
+    )
 
 
 async def _remember_flag(day_index: int) -> bool:
@@ -1022,6 +1066,15 @@ _STAKE_HOWTO = (
 async def _stake_view_text(user) -> str:
     if not settings.ton_enabled:
         return "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+    # Версия без ставок (день в снимке режима): приём ставок закрыт для игроков.
+    if await _active_round_money_mode() is False:
+        return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
+    if await _active_round_money_mode() is None:
+        from app.ops import money_mode_enabled as _pending_mode
+
+        async with SessionLocal() as session:
+            if not await _pending_mode(session):
+                return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
     head = _STAKE_HOWTO.format(
         mark=money_mark(str(user.id)),
         min=settings.stake_min_ton,
@@ -1132,6 +1185,8 @@ async def on_stake_view(callback: CallbackQuery) -> None:
             player = await upsert_player(session, callback.from_user)
             if not settings.ton_enabled:
                 hint = "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+            elif await _active_round_money_mode() is False:
+                hint = "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
             elif not player.wallet_address:
                 hint = (
                     f"Кошелёк не привязан: /wallet в личке. Потом переведи от "
@@ -1372,6 +1427,13 @@ async def cmd_change(message: Message) -> None:
     if not settings.revote_enabled:
         await message.answer(f"{warn_mark('revote-off')} Смена выбора сейчас недоступна.")
         return
+    # Версия без ставок: смена выбора за валюту/звёзды выключена целиком.
+    if await _active_round_money_mode() is False:
+        await message.answer(
+            f"{warn_mark('revote-off')} Игра идёт в версии без ставок: "
+            "смена выбора недоступна — первый выбор и есть твой выбор."
+        )
+        return
     status, round_id = await _revote_status(message.from_user)
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(status)
@@ -1415,6 +1477,13 @@ async def on_paystars(callback: CallbackQuery) -> None:
             show_alert=True,
         )
         return
+    # Версия без ставок: платная смена выбора не продаётся вовсе.
+    if await _active_round_money_mode() is False:
+        await callback.answer(
+            "Игра идёт в версии без ставок: смена выбора недоступна.",
+            show_alert=True,
+        )
+        return
     status, active_id = await _revote_status(callback.from_user)
     round_id = int(raw)
     if active_id != round_id:
@@ -1442,6 +1511,13 @@ async def on_pre_checkout(query: PreCheckoutQuery) -> None:
         await query.answer(
             ok=False,
             error_message="⏸ Идут технические работы — оплата приостановлена. Попробуй позже.",
+        )
+        return
+    # Версия без ставок: даже выставленный до переключения счёт не списываем.
+    if await _active_round_money_mode() is False:
+        await query.answer(
+            ok=False,
+            error_message="Игра перешла в версию без ставок — смена выбора отключена.",
         )
         return
     await query.answer(ok=True)
@@ -2115,6 +2191,20 @@ async def _game_paused_now() -> bool:
         return await is_game_paused(session)
 
 
+async def _active_round_money_mode() -> bool | None:
+    """Режим открытого дня: True = со ставками/платной сменой, None = дня нет.
+
+    День снимает режим на своё открытие (Round.money_mode), поэтому даже если
+    хранитель переключил рубильник посреди дня — текущий день живёт по своему
+    снимку (новый режим вступает со следующего дня).
+    """
+    async with SessionLocal() as session:
+        round_row = await get_active_round(session)
+        if round_row is None or round_row.status != RoundStatus.OPEN:
+            return None
+        return getattr(round_row, "money_mode", True) is not False
+
+
 async def _set_paused_and_broadcast(bot, paused: bool, reason: str = "") -> tuple[bool, int]:
     """Стоп-кран игры + объявление в чатах. Возвращает (изменилось, чатов)."""
     from app.ops import set_game_paused
@@ -2404,6 +2494,18 @@ async def _admin_panel_text(session=None) -> str:
                 )
     except Exception:
         pass
+    try:
+        from app.ops import money_mode_enabled
+
+        async with SessionLocal() as _mm_session:
+            money_on = await money_mode_enabled(_mm_session)
+        lines.append(
+            "💰 Версия: <b>со ставками</b> и платной сменой выбора."
+            if money_on
+            else "🔰 Версия: <b>без ставок</b> (игра бесплатна, смена выбора закрыта)."
+        )
+    except Exception:
+        pass
     rnd = snap.get("round") or {}
     closing = str(rnd.get("voting_ends_at", ""))[11:16]
     lines.append(
@@ -2555,6 +2657,14 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
         if paused
         else InlineKeyboardButton(text="⏸ Пауза игры", callback_data="panel:pause")
     )
+    from app.ops import money_mode_enabled
+
+    async with SessionLocal() as session:
+        money_on = await money_mode_enabled(session)
+    version_button = InlineKeyboardButton(
+        text="🔰 Версия без ставок" if money_on else "💰 Версия со ставками",
+        callback_data="panel:now" if money_on else "panel:money",
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -2571,7 +2681,10 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⚖️ Сверка казны", callback_data="panel:adjust"),
                 pause_button,
             ],
-            [InlineKeyboardButton(text="⏩ Завершить день", callback_data="panel:advance")],
+            [
+                version_button,
+                InlineKeyboardButton(text="⏩ Завершить день", callback_data="panel:advance"),
+            ],
         ]
     )
 
@@ -2628,6 +2741,51 @@ async def on_panel_action(callback: CallbackQuery) -> None:
                 await _adjust_menu_text(),
                 parse_mode=ParseMode.HTML,
                 reply_markup=_adjust_keyboard(),
+            )
+            await callback.answer()
+            return
+        if action in {"money", "now"}:
+            # Версия игры: со ставками / без. Вступает со СЛЕДУЮЩЕГО дня —
+            # текущий день живёт по своему снимку Round.money_mode.
+            from app.ops import set_money_mode
+
+            want_money = action == "money"
+            confirm_key = ("money", callback.from_user.id)
+            now = time.monotonic()
+            pending_at = _ADJ_PENDING.get(confirm_key)
+            if pending_at is None or now - pending_at > _ADJ_CONFIRM_WINDOW:
+                _ADJ_PENDING[confirm_key] = now
+                confirm = (
+                    (
+                        "Переключить в версию БЕЗ ставок?\n"
+                        "— приём ставок и платная смена выбора закрываются;\n"
+                        "— вступит в силу со следующего дня (текущий живёт как есть);\n"
+                        "— проголосовать кнопкой смогут все, входящие переводы пойдут обратно.\n\n"
+                        "Нажми кнопку ещё раз для подтверждения."
+                    )
+                    if not want_money
+                    else (
+                        "Вернуть версию СО СТАВКАМИ?\n"
+                        "— ставки и платная смена выбора снова доступны со следующего дня."
+                        "\n\nНажми кнопку ещё раз для подтверждения."
+                    )
+                )
+                await callback.answer(confirm, show_alert=True)
+                return
+            _ADJ_PENDING.pop(confirm_key, None)
+            async with SessionLocal() as session:
+                changed = await set_money_mode(session, want_money)
+            if not changed:
+                await callback.answer(
+                    "Версия уже установлена." if not want_money else "Версия уже активна.",
+                    show_alert=True,
+                )
+                return
+            state_name = "со ставками и платной сменой выбора" if want_money else "без ставок"
+            await callback.message.answer(
+                f"💰 Версия «{state_name}» включена со СЛЕДУЮЩЕГО дня.\n"
+                "Текущий день живёт по своему режиму.",
+                reply_markup=await _panel_keyboard(),
             )
             await callback.answer()
             return

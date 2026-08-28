@@ -66,6 +66,10 @@ class Player(Base):
     # Жетоны «Второго нюха»: за находки памяти и верные серии. Тратятся на
     # личную микросцену дня; информации о законе не дают.
     inspiration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Подписка на личные дубликаты рассылок (итоги дня, новый день с обложкой,
+    # вечерний пост и прочие анонсы) в личку бота. По умолчанию — да; игрок
+    # может снять или вернуть её кнопкой в /start.
+    dm_subscribed: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -127,6 +131,11 @@ class Round(Base):
     # Доля дня, ушедшая в копилку недели (2% фонда) — для поста итогов.
     weekly_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Денежная версия дня (ставки TON + платная смена выбора): снимок режима
+    # на момент открытия дня. Хранитель переключает «версию со ставками/без»
+    # из /panel — новая версия вступает со СЛЕДУЮЩЕГО дня, а этот флаг
+    # замораживает решение текущего дня (банк, /stake, /change).
+    money_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     # Эпилог дня от нейросети: чем отозвался победивший путь (пусто — не написан).
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
