@@ -970,62 +970,6 @@ _TEASER_FALLBACKS = (
 )
 
 
-async def generate_opening_echo(
-    day_index: int,
-    beat_title: str,
-    beat_text: str,
-    chapter_excerpt: str,
-    epilogue_hook: str = "",
-) -> str:
-    """Открывающий абзац завтрашней главы: отголосок только что свершившегося выбора.
-
-    Фаза 2 прегенерации: заготовка дня собрана в час подсчёта, до вскрытия
-    итогов, поэтому первый абзац дописывается отдельно и ставится перед
-    готовой сценой. "" — если сеть молчит (тогда вызывающий код возьмёт
-    детерминированную офлайн-строку из лора).
-    """
-    prompt = (
-        f"Вчера (день {day_index}) стая выбрала путь «{beat_title}», и мир "
-        f"перестроился под итог: {beat_text} "
-        + (f"К ночи это отозвалось так: {epilogue_hook} " if epilogue_hook else "")
-        + "Сегодняшняя глава уже написана и начинается так:\n"
-        f"«{chapter_excerpt}»\n"
-        "Напиши ОТКРЫВАЮЩИЙ абзац этой главы на 250-450 знаков: одно-три "
-        "предложения от второго лица в настоящем времени о том, чем утро "
-        "отозвало вчерашний выбор. Одна конкретная примета мира или стаи, без "
-        "пересказа события и без слов «вчера», «выбор», «итог». Абзац должен "
-        "естественно подводить к приведённой сцене, не повторяя её слов и "
-        "названий мест. Без заголовков, без JSON, чистый художественный текст."
-    )
-    result = await _chat_completion(
-        [
-            {"role": "system", "content": DM_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        timeout=55,
-    )
-    if result is None:
-        return ""
-    payload, used_model = result
-    try:
-        text = str(payload["choices"][0]["message"]["content"]).strip()
-    except Exception as exc:
-        logger.warning("Открывающее эхо от %s не разобрано: %s", used_model, exc)
-        return ""
-    if not text or not text_is_clean(text):
-        logger.warning("Открывающее эхо отброшено (пустое или нечистое)")
-        return ""
-    text = text.strip('"«»')
-    text = _clamp_sentence(text, 520)
-    # Нижний порог: открывающий абзац просят 250-450 знаков — короче 120 это
-    # бессвязный огрызок; пусть возьмётся детерминированная офлайн-строка.
-    if len(text) < 120:
-        logger.warning("Открывающее эхо %d знаков (<120) отброшено", len(text))
-        return ""
-    logger.info("Открывающее эхо дня %d написано моделью %s", day_index + 1, used_model)
-    return polish_typography(text)
-
-
 async def generate_teaser(day_index: int, rule_phrase: str) -> str:
     """Тизер в час подсчёта: выбор сделан, итог не называется.
 

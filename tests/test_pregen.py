@@ -155,15 +155,9 @@ async def test_patch_applies_outcome_and_survives_materialization(session, monke
 
 async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None:
     """Патч до записи StoryBeat ничего не делает и не генерирует зря."""
-    from app import rounds as rounds_mod
-
     round_row = await _seed_tallying_day(session)
     assert await prepare_next_day(session, round_row.day_index) is True
 
-    async def explode(**kwargs):
-        raise AssertionError("без итога дня генерация эха не запускается")
-
-    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
     assert await patch_prepared_day(session, round_row) is False
 
 
@@ -193,8 +187,6 @@ async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> N
 
 async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:
     """Заготовки нет (сеть упала в фазе 1) — день честно соберётся синхронно."""
-    from app import rounds as rounds_mod
-
     round_row = await _seed_tallying_day(session)
     session.add(
         StoryBeat(
@@ -210,7 +202,6 @@ async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:
     async def explode(**kwargs):
         raise AssertionError("без заготовки патчить нечего")
 
-    monkeypatch.setattr(rounds_mod, "generate_opening_echo", explode)
     assert await patch_prepared_day(session, round_row) is False
 
 

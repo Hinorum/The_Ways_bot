@@ -11,6 +11,8 @@ import hashlib
 import random
 from dataclasses import dataclass, replace
 
+from app.story_arc import arc_card_titles, arc_details_from_block, mission_scene
+
 
 WORLD_BIBLE = (
     "Мир называется Эхо Стаи — своя версия Пути, которую пёс-Еретик построил для "
@@ -388,9 +390,16 @@ def compose_chapter(
     place = _PLACES[place_idx]
     place_name = _PLACE_NAMES[place_idx]
     is_finale = bool(season_block and "ДЕНЬ ПЕРВОГО ЛАЯ" in season_block)
-    cover_prompt = (
-        "wide cinematic establishing shot, " + place["scene"]
-        + ", flat 2D vector cartoon, cozy-dystopia, bold clean outlines, muted matte colors, "
+    cover_prompt = "wide cinematic establishing shot, " + place["scene"]
+    if not is_finale and season_block:
+        # Мини-связка арта с аркой: перевод сцены миссии дня добавляется в
+        # кадр офлайн-обложки, поэтому даже офлайн-день рисуется как момент
+        # текущего этапа месяца (финал не трогаем — у него свой кадр).
+        arc_scene = mission_scene(arc_details_from_block(season_block).get("mission"))
+        if arc_scene:
+            cover_prompt += ", " + arc_scene
+    cover_prompt += (
+        ", flat 2D vector cartoon, cozy-dystopia, bold clean outlines, muted matte colors, "
         "glow of an open portal, no text, no letters"
     )
     if is_finale:
@@ -417,7 +426,16 @@ def compose_chapter(
             "Первый Лай ближе",
         ]
         title = f"День {day_index}. {title_bits[(day_index - 1) % len(title_bits)]}"
-        cards = _cards(rng, day_index, history_tags=history_tags, salt=salt)
+        # Названия недавно выбранных путей: тройка дня не повторяет уже
+        # звучавшие карты недели — у дня появляется своё лицо, а не
+        # бесконечный перетасованный пул общих тем.
+        recent_titles = {_title_key(b.split(":", 1)[0]) for b in previous_beats}
+        arc_stage_idx = (arc_details_from_block(season_block) or {}).get("stage")
+        cards = _cards(
+            rng, day_index,
+            history_tags=history_tags, salt=salt, recent_titles=recent_titles,
+            stage=arc_stage_idx,
+        )
         active_echoes = list(echoes or [])
         # Пролог «Приход» (день 1): правил мира ещё нет и Первый Лай звучит
         # только на шестой день знакомства — офлайн-сборка обязана это знать.
@@ -462,6 +480,14 @@ def compose_chapter(
         twist = _day_twist(day_index, history_tags, salt)
         if twist and twist not in text:
             text += f" {twist}"
+        # Миссия дня из арки месяца: связная зацепка даже в чисто офлайн-главе
+        # (тот же текст, что получает Ведущий из блока арки в сезонной рамке).
+        arc = arc_details_from_block(season_block)
+        mission = (arc.get("mission") or "").strip()
+        if mission and mission not in text:
+            if mission[-1] not in ".!?…":
+                mission += "."
+            text += f" {mission}"
         if active_echoes:
             touches = (
                 "На обочине примостилось «{name}».",
@@ -942,11 +968,18 @@ def _narrowed_card(
     return replace(card, consequence=card.consequence + tail)
 
 
+def _title_key(title: str) -> str:
+    """Нормализованный ключ названия карты для сверки на повторы."""
+    return title.strip().strip("«»\"'„“”`").lower()
+
+
 def _cards(
     rng: random.Random,
     day_index: int,
     history_tags: list[str] | None = None,
     salt: str = "",
+    recent_titles: set[str] | None = None,
+    stage: int | None = None,
 ) -> list[CardDraft]:
     """Карты дня: тройка «заголовок—описание—последствие» выбирается целиком
     по соли запуска — перезапуски дают разные наборы вместо вечного цикла
@@ -956,15 +989,37 @@ def _cards(
     history_tags/salt задействуются механикой «эхо-сужения» (_narrowed_card):
     недавние выборы стаи подкрашивают описания горячих архетипов и
     подмешивают ловушки на остывших.
+
+    recent_titles — нормализованные названия недавних дней: pick перевыбирает
+    путь, пока тот не разошёлся с уже звучавшими, чтобы офлайн-день не
+    предлагал карту, которую стая уже выбирала на прошлой неделе.
+
+    stage — индекс этапа арки месяца: названия карт берутся из пула этапа
+    (см. story_arc), поэтому даже офлайн-день читается как часть месяца,
+    а не как случайная колода. Описания и последствия остаются архетипными.
     """
 
-    def pick(paths: list[tuple[str, str, str]]) -> CardDraft:
+    def pick(paths: list[tuple[str, str, str]], tag: str) -> CardDraft:
         title, description, consequence = paths[rng.randrange(len(paths))]
+        if recent_titles:
+            for _ in range(len(paths) - 1):
+                if _title_key(title) not in recent_titles:
+                    break
+                title, description, consequence = paths[rng.randrange(len(paths))]
+        # Лицо этапа арки: имя дня из пула этапа вместо общеколодного.
+        if stage is not None:
+            arc_titles = arc_card_titles(stage, tag)
+            if arc_titles:
+                for _ in range(len(arc_titles)):
+                    candidate = arc_titles[rng.randrange(len(arc_titles))]
+                    if not recent_titles or _title_key(candidate) not in recent_titles:
+                        title = candidate
+                        break
         return (title, description, consequence)
 
-    risk_title, risk_desc, risk_conseq = pick(_RISK_PATHS)
-    care_title, care_desc, care_conseq = pick(_CARE_PATHS)
-    cunning_title, cunning_desc, cunning_conseq = pick(_CUNNING_PATHS)
+    risk_title, risk_desc, risk_conseq = pick(_RISK_PATHS, "risk")
+    care_title, care_desc, care_conseq = pick(_CARE_PATHS, "care")
+    cunning_title, cunning_desc, cunning_conseq = pick(_CUNNING_PATHS, "cunning")
     cards = [
         CardDraft(
             title=risk_title,
@@ -995,26 +1050,3 @@ def _cards(
         ]
     rng.shuffle(cards)
     return cards
-
-
-_OFFLINE_ECHO_OPENINGS = (
-    "Утро несёт след вчерашней тропы: «{title}» уже впечатан в мир, и первая "
-    "примета этого ждёт стаю прямо у развилки.",
-    "Мир за ночь подтянулся под «{title}»: воздух чуть другой, тени ведут себя "
-    "примеренно, а у карт лежит свежий отпечаток чужой лапы.",
-    "«{title}» — так стая решила вчера, и утро начинается с подтверждения: "
-    "дорога, которой ещё утром не было, уже протоптана.",
-    "Рассвет проверил вчерашний выбор на прочность: «{title}» держит, и мир "
-    "осторожно перестраивается вокруг этого решения.",
-)
-
-
-def offline_opening_echo(beat_title: str) -> str:
-    """Детерминированная офлайн-строка открывающего эха (сеть молчит).
-
-    Ставится перед готовой сценой заготовки тем же патчем, что и нейротекст.
-    """
-    rng = _rng(0, f"echo:{beat_title}")
-    template = _OFFLINE_ECHO_OPENINGS[rng.randrange(len(_OFFLINE_ECHO_OPENINGS))]
-    title = beat_title.strip() or "вчерашний путь"
-    return template.format(title=title[:100])

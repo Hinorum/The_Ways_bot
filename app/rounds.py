@@ -38,7 +38,7 @@ from app.models import (
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
 from app.memory import recall_beats
 from app.season import season_key
-from app.story import fetch_day_image, generate_chapter, generate_epilogue, generate_opening_echo, render_card, render_cover
+from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_card, render_cover
 from app.ton_pay import pending_payout_count
 
 
@@ -123,6 +123,7 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
             is_run_finale,
             run_position,
         )
+        from app.story_arc import arc_stage
 
         anchor = await get_run_anchor(session)
         run_day, total = run_position(anchor, utc_aware(round_row.voting_ends_at))
@@ -132,6 +133,15 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
                 "Этот день закрыл сезон: эпилог должен прозвучать финальным "
                 "аккордом месяца — мир после Первого Лая уже другой. "
                 + alignment_finale_line(order, moral)
+            )
+        else:
+            # Обычный день месяца: крючок эпилога продолжает текущий этап арки,
+            # чтобы вечер не выпадал из сквозной линии (эпилог — часть цепочки).
+            stage = arc_stage(run_day, total)
+            season_note = (
+                f"Арка месяца, этап «{stage['name']}» (день {run_day} из {total}): "
+                f"крючок эпилога должен вести внутрь этого этапа, а не в никуда. "
+                f"Тон этапа: {stage['tone']}."
             )
     except Exception:
         season_note = None
@@ -574,6 +584,15 @@ async def _plan_and_render(
     from app.season import villain_stage as season_villain_stage
 
     run_day_now, total_now = season_run_position(anchor, open_moment)
+    # Сквозная арка месяца: этапы, миссия дня, приметы Лая и лица арки.
+    # Вплетается в season_block — видна и нейро-главе, и офлайн-сборке.
+    # (Токен ЭТАП=N стабилен и разбирается составом лора.)
+    from app.story_arc import arc_block as arc_block_builder
+
+    try:
+        sblock = f"{sblock}\n{arc_block_builder(run_day_now, total_now, key, prev_summary)}"
+    except Exception:
+        logger.warning("Блок арки месяца не собран (день продолжится без него)", exc_info=True)
     # Правила Еретика: вторая сюжетная линия, зеркало плана Хозяина Ошибки.
     # Идёт в season_block одним блоком (как призвания/отношения) — сигнатура
     # генератора главы не раздувается.
@@ -754,27 +773,6 @@ async def _plan_and_render(
                 "image_path": "",
             }
         )
-    # Три исхода заранее: по варианту открывающего эха на каждый из
-    # возможных победивших путей. На закрытии голосования выбор мгновенный
-    # (без сетевого вызова) — переход дня бесшовный.
-    echo_variants: dict[str, str] = {}
-    for card in sorted(chapter.get('cards') or [], key=lambda c: c.get('position', 0)):
-        pos = int(card.get('position', 0))
-        try:
-            variant = await generate_opening_echo(
-                day_index=day_index - 1,
-                beat_title=str(card.get('title', '')),
-                beat_text=str(card.get('consequence', ''))[:300],
-                chapter_excerpt=str(chapter.get('text', ''))[:500],
-            )
-        except Exception:
-            variant = ""
-        if not variant:
-            from app.lore import offline_opening_echo
-
-            variant = offline_opening_echo(str(card.get('title', '')))
-        echo_variants[str(pos)] = variant
-
     return {
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,
@@ -788,7 +786,6 @@ async def _plan_and_render(
         "season": key,
         "cover_path": str(cover_path),
         "cards": cards_payload,
-        "echo_variants": echo_variants,
     }
 
 
