@@ -465,7 +465,7 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
     if bot is not None and settings.admin_id_set:
         text = (
             f"🏆 Копилка лидерборда за {prev_key} отправлена: "
-            f"{total / 1e9:.4f} Gram между {len(payments)} лидером(ами)."
+            f"{total / 1e9:.2f} Gram между {len(payments)} лидером(ами)."
         )
         for admin_id in settings.admin_id_set:
             try:
@@ -682,7 +682,7 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
                 or (name_row.first_name if name_row else None)
                 or f"игрок {pid}"
             )
-            paid.append((_MEDALS[place - 1], f"{name} — {correct} верн.", amount))
+            paid.append((_MEDALS[place - 1], f"{name} — {correct} верных путей", amount))
 
         # Места без достойного игрока переносятся в копилку новой недели.
         if rolled > 0:
@@ -710,10 +710,10 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
     )
     lines = ["🏆 Итоги недели Стаи:"]
     for medal, name, amount in paid:
-        lines.append(f"{medal} {name} — {amount / 1e9:.4f} Gram")
+        lines.append(f"{medal} {name} — {amount / 1e9:.2f} Gram")
     lines.append(
         "При равенстве верных путей Стая смотрит на вклад Gram, а затем — "
-        "кто раньше заявил о месте кнопкой Claim."
+        "кто раньше всех заявил о месте."
     )
     try:
         nomination = await _memory_nomination(session, period_start, period_end)

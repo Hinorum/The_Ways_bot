@@ -129,10 +129,7 @@ async def cmd_start(message: Message) -> None:
         "развилка приходят сами, сразу после него.",
     ]
     lines.extend(_commands_help())
-    lines.append(
-        "\n⚠️ Игра, а не вклад: бот и хранитель не отвечают за утраченные "
-        "средства. Ты сам решаешь, на что ставишь."
-    )
+    lines.append(f"\n⚠️ {_DYOR_TEXT}")
     await message.answer(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
@@ -227,6 +224,23 @@ async def on_claim_month(callback: CallbackQuery) -> None:
     await _on_claim(callback, "month")
 
 
+_MONTH_NAMES_RU = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _human_claim_period(kind: str, period: str) -> str:
+    """Человекочитаемый период заявки вместо служебного «2026-W35» / «2026-08»."""
+    if kind == "week":
+        from app.weeks import week_bounds
+
+        start, end = week_bounds(period)
+        return f"с {start:%d.%m} по {(end - timedelta(days=1)):%d.%m}"
+    year, month = map(int, period.split("-"))
+    return f"{_MONTH_NAMES_RU[month - 1]} {year}"
+
+
 async def _on_claim(callback: CallbackQuery, kind: str) -> None:
     """Претензия на место лидерборда: решает ничьи по времени Claim.
 
@@ -239,11 +253,12 @@ async def _on_claim(callback: CallbackQuery, kind: str) -> None:
     from app.leaderboard import active_claim_period
 
     period = active_claim_period(kind)
+    human = _human_claim_period(kind, period)
     confirm = (
-        f"Заявка на копилку недели {period} принята: при равенстве верных путей "
-        "и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
+        f"Заявка на копилку недели ({human}) принята: при равенстве верных "
+        "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
         if kind == "week"
-        else f"Заявка на копилку месяца {period} принята: при равенстве верных "
+        else f"Заявка на копилку месяца ({human}) принята: при равенстве верных "
         "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
     )
     async with SessionLocal() as session:
@@ -803,6 +818,14 @@ async def on_vote(callback: CallbackQuery) -> None:
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)
 
 
+def _pct_text(value: float) -> str:
+    """Русская типографика процента: «0,5%» (дробь через запятую), «1%» (без ,0)."""
+    text = str(value)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text.replace(".", ",")
+
+
 def _economy_text() -> str:
     """Распределение фонда дня — по живым настройкам, без дублей."""
     pcts = "/".join(part.strip() for part in settings.weekly_prize_pcts.split(",") if part.strip())
@@ -817,25 +840,18 @@ def _economy_text() -> str:
         - settings.pack_fund_pct
     )
 
-    def pct(value: float) -> str:
-        # Русская типографика: дробный процент через запятую (0,5%),
-        # целый (1.0 → «1») без хвоста «,0».
-        text = str(value)
-        if text.endswith(".0"):
-            text = text[:-2]
-        return text.replace(".", ",")
-
     return (
         "\n\nРаспределение фонда дня:\n"
         f"• {pool_pct}% — поставившим на верный путь, пропорционально ставкам "
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
-        f"• {pct(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
-        f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник топ-3 по верным путям "
+        f"• {_pct_text(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
+        f"• {_pct_text(settings.weekly_pot_pct)}% — копилка недели: в понедельник топ-3 по верным путям "
         f"делит её ({pcts}%: сильнейший — больше); нужны кошелёк, {settings.weekly_min_days}+ дней "
-        f"голосования и ставка за неделю; ничья — больший вклад Gram, затем первый Claim\n"
-        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: топ-3 лидеров /top делят её "
-        f"({m_pcts}%), нужна ставка в месяце; ничья — вклад Gram, затем первый Claim\n"
-        f"• {pct(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
+        f"голосования и ставка за неделю; ничья — больший вклад Gram, затем кто раньше заявил о месте\n"
+        f"• {_pct_text(settings.leaderboard_rake_pct)}% — копилка месяца: топ-3 лидеров /top делят её "
+        f"({m_pcts}%), нужны кошелёк и ставка в месяце; ничья — вклад Gram, затем кто "
+        f"раньше заявил о месте\n"
+        f"• {_pct_text(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
         "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
     )
 
@@ -1330,11 +1346,12 @@ def _format_top(
         for place, (name, count, eligible) in enumerate(week_rows, 1):
             medal = ("🥇", "🥈", "🥉")[place - 1] if place <= 3 else f"{place}."
             ticket = "🎟" if eligible else "🔒"
-            lines.append(f"{medal} {ticket} {name} — {count}")
+            lines.append(f"{medal} {ticket} {name} — {count} верн.")
     lines.append(
-        f"🎟 призовое место · 🔒 нужен кошелёк, {max(1, settings.weekly_min_days)} дней "
-        "голосования и ставка за неделю · топ-3 делят копилку (ничья — больший вклад "
-        "Gram, затем первый Claim) · выплата в понедельник"
+        f"🎟 прошёл отбор · 🔒 не хватает требований (кошелёк, "
+        f"{max(1, settings.weekly_min_days)} дней голосования и ставка за неделю) · "
+        "топ-3 делят копилку (ничья — больший вклад Gram, затем кто первый заявит о месте) · "
+        "выплата в понедельник"
     )
     lines.append("")
     lines.append(f"{money_mark('top')} Копилка месяца: {month_pot_nanotons:g} Gram · места: {m_pcts}%")
@@ -1344,10 +1361,11 @@ def _format_top(
         lines.append("Лидеры месяца по верным путям:")
         for place, (name, count, eligible) in enumerate(month_rows, 1):
             ticket = "🎟" if eligible else "🔒"
-            lines.append(f"{place}. {ticket} {name} — {count}")
+            lines.append(f"{place}. {ticket} {name} — {count} верн.")
     lines.append(
-        "🎟 призовое место · 🔒 нужны кошелёк и ставка в этом месяце · топ-3 делят "
-        "копилку (ничья — вклад Gram, затем первый Claim) · выплата 1-го"
+        "🎟 прошёл отбор · 🔒 не хватает требований (кошелёк и ставка в месяце) · "
+        "топ-3 делят копилку (ничья — вклад Gram, затем кто первый заявит о месте) · "
+        "выплата 1-го"
     )
     return "\n".join(lines)
 
@@ -1387,7 +1405,10 @@ async def cmd_fund(message: Message) -> None:
             f"  {when} {sign}{row.amount_nanotons / 1e9:.4g} Gram · день {day} · {row.note}"
         )
     lines.append("")
-    lines.append("1% банка дня копится сюда и не раздаётся сам. Хранитель распоряжается вручную — каждая раздача видна в этом журнале.")
+    lines.append(
+        f"{_pct_text(settings.pack_fund_pct)}% банка дня копится сюда и не раздаётся сам. "
+        "Хранитель распоряжается вручную — каждая раздача видна в этом журнале."
+    )
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
