@@ -144,3 +144,16 @@ def build_memory_quiz(
     ]
     return {"options": options, "correct": set(correct_indices), "true_title": truths[0]}
 
+
+def correct_memory_choice(quiz: dict, index: int) -> bool:
+    """Верен ли ответ на квиз памяти по индексу варианта.
+
+    Расклад хранит правильные позиции, а не текст: сверяем индекс, иначе
+    сравнение строки варианта с множеством индексов всегда ложно.
+    """
+    return (
+        quiz is not None
+        and 0 <= index < len(quiz["options"])
+        and index in quiz["correct"]
+    )
+

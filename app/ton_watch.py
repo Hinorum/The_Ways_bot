@@ -494,7 +494,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)
-            if status in ("revote_closed", "revote_too_small", "revote_no_vote"):
+            if status in ("revote_closed", "revote_too_small", "revote_too_large", "revote_no_vote"):
                 await _stash_refund(
                     session,
                     transfer,
@@ -509,6 +509,14 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                         f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
                         "за смену пути платить нечего — ты ещё не выбрал путь в этот день. "
                         "Первый выбор бесплатный: жми карту дня, без оплаты.",
+                    )
+                elif status == "revote_too_large":
+                    await _dm_stake(
+                        bot,
+                        player.id,
+                        f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                        "сумма с rv:-мемо превышает минимум ставки — это ставка, а не смена пути. "
+                        "Отправь без rv:-мемо, чтобы поставить.",
                     )
                 else:
                     await _dm_stake(
@@ -708,6 +716,13 @@ async def _process_revote(session, transfer: Transfer, player: Player, round_id:
         return "revote_closed"
     if transfer.value_nanotons < to_nano(settings.revote_ton):
         return "revote_too_small"
+    # Симметрично автогранту по сумме ([revote_ton, stake_min_ton)): даже с
+    # rv:-мемо «ставкоподобный» перевод (>= минимума ставки) не должен тихо
+    # списываться как дешёвая смена пути, а фиксироваться как полноценная
+    # ставка всего баланса. Иначе большой перевод с rv:-мемо превращался бы
+    # в грант без соответствующей записи ставки.
+    if transfer.value_nanotons >= to_nano(settings.stake_min_ton):
+        return "revote_too_large"
     # Как и в автогранте без мемо: если пути ещё нет, менять нечего — грант
     # не выдаём, иначе игрок платил бы за бесполезный жетон.
     from app.voting import get_vote
@@ -903,17 +918,48 @@ async def _migrate_wallet_formats(session) -> None:
     row = await session.get(WatcherState, WALLET_NORM_KEY)
     if row is not None:
         return
-    result = await session.execute(select(Player).where(Player.wallet_address.is_not(None)))
-    changed = 0
-    for player in result.scalars():
+    players = (
+        await session.execute(select(Player).where(Player.wallet_address.is_not(None)))
+    ).scalars().all()
+    # Легаси-дубли UQ/EQ… одного кошелька нормализуются в один raw и нарушили бы
+    # unique=wallet_address. Разбираем детерминированно: already — кто уже держит
+    # канонический raw (таким не изменяем), pending — кандидаты на нормализацию;
+    # один raw достаётся одному (каноническому держателю, либо меньшему id).
+    already: dict[str, int] = {}
+    pending: dict[str, list] = {}
+    for player in players:
         normalized = normalize_address(player.wallet_address)
-        if normalized != player.wallet_address:
+        if normalized == player.wallet_address:
+            already[normalized] = player.id
+        else:
+            pending.setdefault(normalized, []).append((player, normalized))
+    changed = 0
+    skipped = 0
+    for raw, candidates in pending.items():
+        if raw in already:
+            # Канонический raw уже занят другим игроком — всех кандидатов пропускаем.
+            for player, _norm in candidates:
+                skipped += 1
+                logger.warning(
+                    "Кошелёк %s игрока %s дублирует raw игрока %s — не нормализую",
+                    player.wallet_address, player.id, already[raw],
+                )
+            continue
+        owner = min(candidates, key=lambda c: c[0].id)
+        for player, normalized in candidates:
+            if player is not owner[0]:
+                skipped += 1
+                logger.warning(
+                    "Кошелёк %s игрока %s дублирует raw игрока %s — не нормализую",
+                    player.wallet_address, player.id, owner[0].id,
+                )
+                continue
             player.wallet_address = normalized
             changed += 1
     session.add(WatcherState(key=WALLET_NORM_KEY, value="1"))
     await session.commit()
-    if changed:
-        logger.info("Нормализовано адресов кошельков: %d", changed)
+    if changed or skipped:
+        logger.info("Нормализовано адресов кошельков: %d, пропущено дублей: %d", changed, skipped)
 
 
 async def watch_once(bot: Bot | None = None) -> None:

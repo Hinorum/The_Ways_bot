@@ -66,10 +66,16 @@ def test_keyboard_remember_is_conditional() -> None:
     assert any("помню" in label.lower() for label in marked_labels)
 
 
-def test_shuffle_uses_stable_random() -> None:
-    # Гарантия: расклад не зависит от глобального random-состояния.
-    random.seed(12345)
-    a = build_memory_quiz(9, 9, ["T"], ["D1", "D2"])
-    random.seed(999)
-    b = build_memory_quiz(9, 9, ["T"], ["D1", "D2"])
-    assert a == b
+def test_correct_memory_choice_uses_index_not_text() -> None:
+    # Регресс-ловушка: handler раньше сверял текст варианта с множеством
+    # индексов (всегда False) — верный ответ никогда не засчитывался,
+    # из-за чего призвание «Архивариус» и «+1 нюх» были недостижимы.
+    from app.echoes import correct_memory_choice
+
+    quiz = build_memory_quiz(501, 33, ["Тёплые миски"], ["Старый приют", "Гулкий мост"])
+    for index in quiz["correct"]:
+        assert correct_memory_choice(quiz, index) is True
+    wrong = [i for i in range(len(quiz["options"])) if i not in quiz["correct"]]
+    for index in wrong:
+        assert correct_memory_choice(quiz, index) is False
+

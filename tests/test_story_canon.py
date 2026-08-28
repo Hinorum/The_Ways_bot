@@ -108,13 +108,29 @@ def test_council_pages_cadence_and_rotation() -> None:
 
     assert page_for_run_day(0) is None
     assert page_for_run_day(3) is None  # обычный привал
-    first = page_for_run_day(7)
-    second = page_for_run_day(14)
-    third = page_for_run_day(21)
+    first = page_for_run_day(4)
+    second = page_for_run_day(8)
+    third = page_for_run_day(12)
     assert first and "НАЙДЕНА СТРАНИЦА" in first
     assert first != second != third  # страницы не повторяются подряд
     total_pages = len(council._COUNCIL_PAGES)
-    assert page_for_run_day(7 * (total_pages + 1)) == first  # цикл замкнулся
+    assert page_for_run_day(council.COUNCIL_DAY_MODULO * (total_pages + 1)) == first  # цикл замкнулся
+
+
+def test_council_all_pages_reachable_in_short_run() -> None:
+    """Регресс-ловушка: раньше страницы №5 и №6 (манифест Еретика) не
+    успевали попасться в месячном забеге (29 дней при 7-дневном шаге).
+    Теперь каждая из 6 страниц встретится уже к 24-му дню забега."""
+    from app import council
+
+    total_pages = len(council._COUNCIL_PAGES)
+    seen = set()
+    for day in range(1, 25):
+        page = page_for_run_day(day)
+        if page is not None:
+            seen.add(page)
+    # Все страницы, включая манифест №6, доступны до финала короткого сезона.
+    assert len(seen) == total_pages
 
 
 def test_council_manifesto_is_page_six() -> None:

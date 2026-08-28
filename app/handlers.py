@@ -21,6 +21,7 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.broadcast import (
     POSITIONS,
@@ -563,7 +564,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
         return
     from app.models import WatcherState
     from app.tally import register_memory_hit
-    from app.echoes import build_memory_quiz, surfaced_echoes_for_round
+    from app.echoes import build_memory_quiz, correct_memory_choice, surfaced_echoes_for_round
 
     async with SessionLocal() as session:
         player = await upsert_player(session, callback.from_user)
@@ -587,11 +588,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
             title for title, day in beats if day not in source_days and (day < min(source_days) - 1 or day > max(source_days) + 1)
         ]
         quiz = build_memory_quiz(player.id, round_id, true_titles, decoys)
-        correct = (
-            quiz is not None
-            and 0 <= index < len(quiz["options"])
-            and quiz["options"][index] in quiz["correct"]
-        )
+        correct = correct_memory_choice(quiz, index)
         session.add(WatcherState(key=marker, value="1"))
         if correct:
             await register_memory_hit(session, player.id, round_id)
@@ -885,9 +882,37 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             return True
         # Храним канонический raw-hex: watcher сопоставляет отправителя
         # транзакции именно с ним, а UQ/EQ-формы разных кошельков дают один raw.
+        # Сначала проверяем, не привязан ли адрес к другому игроку — уникальность
+        # в БД, но необработанный IntegrityError превращался бы в «краш» хендлера.
+        already = (
+            await session.execute(
+                select(Player.id).where(
+                    Player.wallet_address == normalize_address(address),
+                    Player.id != player.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if already is not None:
+            await session.rollback()
+            await _dialog_close(uid)
+            await message.answer(
+                f"{warn_mark('dupwallet')} Этот кошелёк уже привязан к другому игроку. "
+                "С одного адреса ставки считает только один участник."
+            )
+            return True
         player.wallet_address = normalize_address(address)
         player.wallet_linked_at = datetime.now(timezone.utc)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Гонка с другой привязкой того же адреса: перехватываем барьер
+            # уникальности и даём вежливо-определённый ответ вместо падения.
+            await session.rollback()
+            await _dialog_close(uid)
+            await message.answer(
+                f"{warn_mark('dupwallet')} Этот кошелёк уже привязан к другому игроку."
+            )
+            return True
     await _dialog_close(uid)
     confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
     if message.chat.type == ChatType.PRIVATE:

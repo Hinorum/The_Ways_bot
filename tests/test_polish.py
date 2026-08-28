@@ -303,6 +303,59 @@ async def test_create_next_round_dedupes_on_race(session, monkeypatch) -> None:
     assert loser.day_index == ghost_day
 
 
+async def test_create_next_round_base_day_index_does_not_escalate(session, monkeypatch) -> None:
+    """Регресс-ловушка: финализация дня N обязана открыть именно N+1, а не
+    latest+1. Раньше, если тик уже создал N+1, финализация считала latest=N+1
+    и открывала N+2 (двойной день). С base_day_index=N создаём/отдаём N+1."""
+    from app import rounds as rounds_mod
+
+    async def instant_chapter(*args, **kwargs):
+        return compose_chapter(*args, **kwargs)
+
+    monkeypatch.setattr(rounds_mod, "generate_chapter", instant_chapter)
+
+    now = datetime.now(timezone.utc)
+    # День 1 — уже закрыт (финализация N).
+    session.add(
+        Round(
+            day_index=1,
+            status=RoundStatus.CLOSED,
+            win_rule=WinRule.MAJORITY,
+            rule_commitment="c",
+            chapter_title="t",
+            chapter_text="text",
+            lore_summary="lore",
+            opens_at=now,
+            voting_ends_at=now,
+            tally_ends_at=now - timedelta(hours=1),
+            winner_card=0,
+            vote_counts_json="{}",
+        )
+    )
+    # День 2 уже открыт конкурентом (тик успел раньше финализации).
+    ghost_round = Round(
+        day_index=2,
+        status=RoundStatus.OPEN,
+        win_rule=WinRule.MAJORITY,
+        rule_commitment="c",
+        chapter_title="ghost",
+        chapter_text="text",
+        lore_summary="lore",
+        opens_at=now,
+        voting_ends_at=now + timedelta(hours=23),
+        tally_ends_at=now + timedelta(hours=24),
+    )
+    session.add(ghost_round)
+    await session.commit()
+
+    nxt, created = await rounds_mod.create_next_round_detailed(session, base_day_index=1)
+    # Не создал день 3 и не эскалировал: отдал уже существующий день 2.
+    assert created is False
+    assert nxt.day_index == 2
+    day_indices = (await session.execute(select(Round.day_index))).scalars().all()
+    assert day_indices == [1, 2]  # нового (третьего) дня нет
+
+
 async def test_results_message_appends_epilogue() -> None:
     from app.broadcast import results_message
 

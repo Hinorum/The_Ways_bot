@@ -53,6 +53,43 @@ def test_nano_conversion_roundtrip() -> None:
     assert to_nano(0.1) == 100_000_000
 
 
+async def test_wallet_migration_survives_duplicate_raw(session) -> None:
+    """Регресс-ловушка: миграция легаси-привязок одного кошелька (дружественная
+    форма у одного, raw — у другого) раньше падала на unique=wallet_address при
+    commit и канселила каждый раунд watcher'а. Теперь дубль решается без падения."""
+    from sqlalchemy import select as sa_select
+
+    from app.models import WatcherState
+    from app.ton_watch import WALLET_NORM_KEY, _migrate_wallet_formats
+
+    # Два игрока держат один кошелёк в разных формах, обе -> 0:83df...
+    session.add_all(
+        [
+            Player(id=900_001, username="friendly", wallet_address=USER_FRIENDLY),
+            Player(id=900_000, username="raw", wallet_address=RAW),
+        ]
+    )
+    await session.commit()
+
+    await _migrate_wallet_formats(session)  # не должно бросить IntegrityError
+
+    rows = (
+        (await session.execute(sa_select(Player.id, Player.wallet_address))).all()
+    )
+    holders = {pid: addr for pid, addr in rows if addr}
+    assert len(holders) == 2
+    # Уникальность = барьер unique=wallet_address не нарушен: у всех хранящиеся
+    # строки попарно различны (иначе commit бы бросил и тест упал выше).
+    literals = list(holders.values())
+    assert len(literals) == len(set(literals))
+    # Пострадавший от дубля не «сломал» миграцию: канонический raw закреплён
+    # за своим законным держателем (raw-форма уже канонична и не тронута).
+    assert holders[900_000] == RAW
+    # Флаг проставлен — миграция идемпотентна, повтор не нужен.
+    assert await session.get(WatcherState, WALLET_NORM_KEY) is not None
+
+
+
 def test_split_pot_proportional_with_dust_to_largest() -> None:
     # 10 TON на троих с долями 5/3/2 → 5.0/3.0/2.0 ровно.
     shares = dict(stakes_mod.split_pot(to_nano(10), [(1, to_nano(5)), (2, to_nano(3)), (3, to_nano(2))]))

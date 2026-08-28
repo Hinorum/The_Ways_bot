@@ -549,6 +549,9 @@ async def _finalize_new_day_job(finished_id: int) -> None:
             if finished is None:
                 logger.warning("Доработка дня %s: раунд не найден", finished_id)
                 return
+            # Индекс дня берём из живой сессии: ниже finished расцепляется —
+            # читать его day_index из отвязанного объекта было бы ошибкой.
+            finished_day_index = finished.day_index
             await write_epilogue(session, finished)
             # Фаза 2 прегенерации: заготовка завтра собрана до вскрытия
             # итогов — теперь итог дня известен и вплетается в её начало.
@@ -562,8 +565,13 @@ async def _finalize_new_day_job(finished_id: int) -> None:
             if finished is not None:
                 await announce_epilogue(_bot, finished)
         # 3. Материализуем и открываем новый день (по готовой заготовке).
+        # Финализация открывает ровно день после закрытого (N+1), а не
+        # latest+1: так тик, уже создавший N+1, не провоцирует эскалацию в N+2
+        # (двойной день, потерянные итоги N+1).
         async with SessionLocal() as session:
-            nxt, created = await create_next_round_detailed(session)
+            nxt, created = await create_next_round_detailed(
+                session, base_day_index=finished_day_index
+            )
         if created:
             # finished не передаём: итоги уже разосланы отдельным постом.
             await announce_new_day(_bot, nxt)

@@ -20,6 +20,7 @@ from app.handlers import (
     on_private_fallback,
     on_stake_view,
 )
+from app.ton_utils import normalize_address
 from app.models import Player, Round, RoundStatus, Stake, WalletDialog, WinRule
 
 
@@ -28,6 +29,8 @@ from app.models import Player, Round, RoundStatus, Stake, WalletDialog, WinRule
 DIALOG_ADDRESS = "UQDD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnX"
 LOCKED_ADDRESS = "UQED39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnE"
 RESTART_ADDRESS = "UQFD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnF"
+
+DUP_ADDRESS = "UQXD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnX"
 
 _uid = 800_000
 
@@ -494,3 +497,33 @@ async def test_wallet_throttle_expires_with_time(monkeypatch) -> None:
     third = make_message("private", uid, "/wallet")
     await cmd_wallet(third)
     assert "Не так часто" not in third.answer.call_args.args[0]
+
+
+async def test_duplicate_wallet_bind_is_rejected_not_crash() -> None:
+    """Регресс-ловушка: привязка адреса, уже закреплённого за другим игроком,
+    раньше падала на необработанном IntegrityError (unique=wallet_address)."""
+    owner_uid = next_uid()
+    thief_uid = next_uid()
+    async with SessionLocal() as session:
+        # Владелец уже завязал адрес на себя (в той же канонической raw-форме,
+        # что хранит _bind_wallet через normalize_address).
+        session.add(
+            Player(
+                id=owner_uid,
+                username=f"owner{owner_uid}",
+                wallet_address=normalize_address(DUP_ADDRESS),
+            )
+        )
+        await session.commit()
+
+    msg = make_message("private", thief_uid, f"/wallet {DUP_ADDRESS}")
+    await cmd_wallet(msg)
+    text = msg.answer.call_args.args[0]
+    assert "уже привязан" in text
+    assert "другому игроку" in text
+    # У второго игрока адрес так и не записан, у владельца цел.
+    async with SessionLocal() as session:
+        owner = await session.get(Player, owner_uid)
+        thief = await session.get(Player, thief_uid)
+        assert owner is not None and owner.wallet_address == normalize_address(DUP_ADDRESS)
+        assert thief is not None and thief.wallet_address is None

@@ -1199,15 +1199,33 @@ def _flatten_first_branch(payload: dict) -> None:
     payload.pop("branches", None)
 
 
-async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool]:
+async def create_next_round_detailed(
+    session: AsyncSession, base_day_index: int | None = None
+) -> tuple[Round, bool]:
     """Создаёт следующий день. Второе значение — был ли день создан сейчас.
 
     Сначала пробует готовую заготовку из часа подсчёта (мгновенно), иначе
     делает полный цикл «план → рендер → материализация» на месте.
+
+    base_day_index — если задан, открывается именно день base_day_index + 1
+    (а не latest.day_index + 1). Так финализация закрытого дня N открывает N+1
+    детерминированно: если тик уже создал N+1, возвращаем его, а не эскалируем
+    в N+2 (иначе «двойной день» — прыжок вперёд и потерянные итоги N+1).
     """
     latest = await get_latest_round(session)
+    target_day = (
+        base_day_index + 1
+        if base_day_index is not None
+        else (1 if latest is None else latest.day_index + 1)
+    )
+    # Ранний выход из гонки: нужный день уже открыт — отдаём его без рендера.
+    already = (
+        await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
+    ).scalar_one_or_none()
+    if already is not None:
+        return already, False
+    next_day = target_day
     if latest is not None:
-        next_day = latest.day_index + 1
         prepared = await session.get(PreparedDay, next_day)
         if prepared is not None and prepared.payload:
             try:
@@ -1241,7 +1259,7 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
                     return existing, False
                 return materialized, True
 
-    day_index = 1 if latest is None else latest.day_index + 1
+    day_index = target_day
     opens_hint = (
         max(_now(), utc_aware(latest.tally_ends_at))
         if latest is not None and latest.tally_ends_at is not None
@@ -1267,8 +1285,8 @@ async def create_next_round_detailed(session: AsyncSession) -> tuple[Round, bool
     return round_row, True
 
 
-async def create_next_round(session: AsyncSession) -> Round:
-    row, _created = await create_next_round_detailed(session)
+async def create_next_round(session: AsyncSession, base_day_index: int | None = None) -> Round:
+    row, _created = await create_next_round_detailed(session, base_day_index=base_day_index)
     return row
 
 
