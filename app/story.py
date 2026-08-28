@@ -589,7 +589,14 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
     providers: list[tuple[str, str, list[str]]] = []
     if settings.llm_api_key:
         providers.append((settings.llm_base_url, settings.llm_api_key, settings.llm_model_chain))
-    providers.append(("https://text.pollinations.ai/openai", "", settings.story_model_chain))
+    pollinations_url = "https://text.pollinations.ai/openai"
+    pollinations_key = ""
+    if settings.pollinations_token:
+        # Токен — и в query (?token=), и как Bearer: разные версии эндпоинта
+        # читают из разных мест; анонимный общий IP Render ловит 402.
+        pollinations_url += "?token=" + quote(settings.pollinations_token)
+        pollinations_key = settings.pollinations_token
+    providers.append((pollinations_url, pollinations_key, settings.story_model_chain))
     for overall_attempt in range(1, 3):
         for base_url, key, models in providers:
             for model in models:
