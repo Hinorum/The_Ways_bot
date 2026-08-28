@@ -407,6 +407,14 @@ async def _seed_leaderboard_month(session: AsyncSession) -> tuple[int, dict]:
             Vote(round_id=round_a.id, player_id=pid1, card_position=1),
             Vote(round_id=round_b.id, player_id=pid1, card_position=1),
             Vote(round_id=round_b.id, player_id=pid2, card_position=2),
+            # Лидер ставил в месяце (требование выплаты) — confirmed-ставка.
+            Stake(
+                round_id=round_b.id,
+                player_id=pid1,
+                amount_nanotons=to_nano(1),
+                tx_hash="tx_" + os.urandom(16).hex(),
+                status="confirmed",
+            ),
         ]
     )
     pot_old = LeaderboardPot(month=(prev_month - timedelta(days=40)).strftime("%Y-%m"), nanotons=300)
@@ -448,6 +456,7 @@ async def test_monthly_pot_paid_to_leader(monkeypatch: pytest.MonkeyPatch) -> No
             await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month.in_(months)))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
             await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([ids["p1"], ids["p2"]])))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id.in_([ids["p1"], ids["p2"]])))
             rounds = (
                 (await session.execute(select(Round).where(Round.day_index.in_([700_001, 700_002])))).scalars().all()
             )
@@ -482,6 +491,14 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
             [
                 Vote(round_id=round_row.id, player_id=pid_a, card_position=1),
                 Vote(round_id=round_row.id, player_id=pid_b, card_position=1),
+                Stake(
+                    round_id=round_row.id, player_id=pid_a,
+                    amount_nanotons=to_nano(1), tx_hash=f"tx_{pid_a}", status="confirmed",
+                ),
+                Stake(
+                    round_id=round_row.id, player_id=pid_b,
+                    amount_nanotons=to_nano(1), tx_hash=f"tx_{pid_b}", status="confirmed",
+                ),
             ]
         )
         pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(1))
@@ -511,6 +528,7 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
             await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
             await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([pid_a, pid_b])))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id.in_([pid_a, pid_b])))
             await session.delete(round_row)
             for pid in (pid_a, pid_b):
                 player = await session.get(Player, pid)
@@ -539,6 +557,40 @@ async def test_monthly_pot_carried_when_leader_has_no_wallet(
         try:
             assert await settle_month_if_due(bot=None) is False
             assert (await session.scalar(select(LeaderboardPot.nanotons).where(LeaderboardPot.month == month_key))) == to_nano(2)
+            assert await session.get(WatcherState, MARKER_KEY) is None
+        finally:
+            await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.delete(round_row)
+            await session.execute(Vote.__table__.delete().where(Vote.player_id == pid))
+            player = await session.get(Player, pid)
+            if player is not None:
+                await session.delete(player)
+            await session.commit()
+
+
+async def test_monthly_pot_waits_when_leader_has_no_stake(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Лидер с кошельком и голосами, но без ставки в месяце — приз ждёт."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    async with SessionLocal() as session:
+        pid = 950_000 + int.from_bytes(os.urandom(2), "big")
+        session.add(
+            Player(id=pid, username=f"u{pid}", wallet_address="0:" + os.urandom(32).hex())
+        )
+        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        round_row = _closed_round(706_001, prev_month - timedelta(days=3))
+        session.add(round_row)
+        await session.flush()
+        session.add(Vote(round_id=round_row.id, player_id=pid, card_position=1))
+        pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(2))
+        session.add(pot)
+        month_key = pot.month
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is False
+            assert (
+                await session.scalar(select(LeaderboardPot.nanotons).where(LeaderboardPot.month == month_key))
+            ) == to_nano(2)
             assert await session.get(WatcherState, MARKER_KEY) is None
         finally:
             await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
@@ -587,6 +639,11 @@ async def test_monthly_pot_ignores_already_settled_months(
                 Vote(round_id=champ_round_a.id, player_id=pid_champ, card_position=1),
                 Vote(round_id=champ_round_b.id, player_id=pid_champ, card_position=1),
                 Vote(round_id=new_round.id, player_id=pid_new, card_position=1),
+                # Победитель ставил в окне — ставка confirmed.
+                Stake(
+                    round_id=new_round.id, player_id=pid_new,
+                    amount_nanotons=to_nano(1), tx_hash=f"tx_{pid_new}", status="confirmed",
+                ),
             ]
         )
         pot = LeaderboardPot(month=prev_first.strftime("%Y-%m"), nanotons=to_nano(1))
@@ -614,6 +671,7 @@ async def test_monthly_pot_ignores_already_settled_months(
             )
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
             await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([pid_champ, pid_new])))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id.in_([pid_champ, pid_new])))
             for round_row in (champ_round_a, champ_round_b, new_round):
                 await session.delete(round_row)
             for pid in (pid_champ, pid_new):

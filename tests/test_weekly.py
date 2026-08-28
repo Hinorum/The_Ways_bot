@@ -17,7 +17,7 @@ from app.leaderboard import (
     settle_week_if_due,
     weekly_top,
 )
-from app.models import Payout, Player, Round, RoundStatus, Vote, WatcherState, WeeklyPot, WinRule
+from app.models import Payout, Player, Round, RoundStatus, Stake, Vote, WatcherState, WeeklyPot, WinRule
 from app.ton_utils import to_nano
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
@@ -81,6 +81,18 @@ async def _seed_closed_round(session: AsyncSession, day_index: int, opens_at: da
     return round_row
 
 
+def _set_stake(session: AsyncSession, round_row: Round, pid: int, status: str = "confirmed") -> None:
+    session.add(
+        Stake(
+            round_id=round_row.id,
+            player_id=pid,
+            amount_nanotons=to_nano(1),
+            tx_hash="tx_" + os.urandom(16).hex(),
+            status=status,
+        )
+    )
+
+
 async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ступени счёта получают 20%/30%/50%; без кошелька или дней — мимо, доля переносится."""
     monkeypatch.setattr(settings, "ton_enabled", True)
@@ -116,6 +128,10 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
             for pid, count in plan.items():
                 if offset < count:
                     session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            # Ставили в течение недели только достойные (best и second) — один день.
+            if offset == 0:
+                for pid in (pid_best, pid_second):
+                    _set_stake(session, round_row, pid)
         pot_total = to_nano(10)
         week_key = previous_week_key()
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
@@ -154,6 +170,7 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
             await session.execute(WeeklyPot.__table__.delete())
             for round_row in rounds:
                 await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in (pid_best, pid_second, pid_nowallet, pid_lazy):
                 player = await session.get(Player, pid)
@@ -202,6 +219,10 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
             # delta: 4 дня участия при трёх верных — четвёртый день промахом.
             if offset == 3:
                 session.add(Vote(round_id=round_row.id, player_id=pid_d3, card_position=1))
+            # Ставили в течение недели обладатели ступеней (все, кроме lazy без кошелька).
+            if offset == 0:
+                for pid in (pid_a7, pid_b7, pid_c5, pid_d3):
+                    _set_stake(session, round_row, pid)
         pot_total = to_nano(10)
         week_key = previous_week_key()
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
@@ -237,6 +258,7 @@ async def test_settle_week_splits_tiers_and_skips_gaps(monkeypatch: pytest.Monke
             await session.execute(WeeklyPot.__table__.delete())
             for round_row in rounds:
                 await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in (pid_a7, pid_b7, pid_c5, pid_d3, pid_e6_lazy):
                 player = await session.get(Player, pid)
@@ -271,6 +293,9 @@ async def test_settle_week_single_tier_rolls_rest(monkeypatch: pytest.MonkeyPatc
             rounds.append(round_row)
             for pid in pids:
                 session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            if offset == 0:
+                for pid in pids:
+                    _set_stake(session, round_row, pid)
         pot_total = to_nano(10)
         week_key = previous_week_key()
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
@@ -295,6 +320,7 @@ async def test_settle_week_single_tier_rolls_rest(monkeypatch: pytest.MonkeyPatc
             await session.execute(WeeklyPot.__table__.delete())
             for round_row in rounds:
                 await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in pids:
                 player = await session.get(Player, pid)
@@ -398,4 +424,115 @@ async def test_weekly_top_orders_by_correct_then_days(session: AsyncSession) -> 
     await session.execute(Vote.__table__.delete())
     for round_row in rounds:
         await session.delete(round_row)
+
+
+async def test_settle_week_excludes_player_without_stake(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Одинаково достойные, но не поставивший игрок не получает приз недели."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    base = 960_000
+    pid_staked, pid_no_stake = base, base + 1
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_staked, pid_no_stake)}
+    prev_start, _ = week_bounds(previous_week_key())
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_staked, username="staked", wallet_address=wallets[pid_staked]),
+                Player(id=pid_no_stake, username="nostake", wallet_address=wallets[pid_no_stake]),
+            ]
+        )
+        rounds: list[Round] = []
+        day = 840_000
+        for offset in range(3):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid in (pid_staked, pid_no_stake):
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            if offset == 0:
+                _set_stake(session, round_row, pid_staked)
+        session.add(WeeklyPot(week=previous_week_key(), nanotons=to_nano(10)))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            paid = {
+                p.player_id
+                for p in (
+                    await session.execute(select(Payout).where(Payout.kind == "weekly"))
+                ).scalars()
+            }
+            assert pid_staked in paid
+            assert pid_no_stake not in paid
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY))
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_staked, pid_no_stake):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_refunded_stake_counts_rejected_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Возврат ставки (refunded) считается, нарушитель (rejected) — нет."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    base = 970_000
+    pid_refunded, pid_rejected = base, base + 1
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in (pid_refunded, pid_rejected)}
+    prev_start, _ = week_bounds(previous_week_key())
+
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Player(id=pid_refunded, username="refunded", wallet_address=wallets[pid_refunded]),
+                Player(id=pid_rejected, username="rejected", wallet_address=wallets[pid_rejected]),
+            ]
+        )
+        rounds: list[Round] = []
+        day = 845_000
+        for offset in range(3):
+            round_row = await _seed_closed_round(
+                session, day + offset, prev_start + timedelta(days=offset, hours=11)
+            )
+            rounds.append(round_row)
+            for pid in (pid_refunded, pid_rejected):
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+            if offset == 0:
+                _set_stake(session, round_row, pid_refunded, status="refunded")
+                _set_stake(session, round_row, pid_rejected, status="rejected")
+        session.add(WeeklyPot(week=previous_week_key(), nanotons=to_nano(10)))
+        await session.commit()
+        try:
+            assert await settle_week_if_due(bot=None) is True
+            paid = {
+                p.player_id
+                for p in (
+                    await session.execute(select(Payout).where(Payout.kind == "weekly"))
+                ).scalars()
+            }
+            assert pid_refunded in paid
+            assert pid_rejected not in paid
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == WEEKLY_MARKER_KEY))
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_refunded, pid_rejected):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
 

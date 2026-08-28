@@ -660,7 +660,7 @@ async def test_submin_already_staked_is_refunded_with_revote_hint(
             ).first()._mapping
             assert row["kind"] == "refund" and row["round_id"] == round_row.id
             sent = bot.send_message.await_args.args[1]
-            assert "не распознал твой комментарий rv" in sent
+            assert "не распознал комментарий rv" in sent
         finally:
             await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
             await db.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))

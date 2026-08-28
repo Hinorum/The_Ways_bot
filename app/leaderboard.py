@@ -7,15 +7,18 @@
 каждому треть суммы. Ступени платят по WEEKLY_PRIZE_PCTS (по умолчанию
 20/30/50%): нижняя ступень пьедестала забирает половину копилки — так стая
 платит больше тем, кто держался сзади. Претендент обязан иметь привязанный
-кошелёк и минимум WEEKLY_MIN_DAYS дней голосования за неделю — иначе фермы
-мультиаккаунтов собирают приз дешёвыми голосами. Пустая ступень (некому
+кошелёк, минимум WEEKLY_MIN_DAYS дней голосования за неделю и хотя бы одну
+ставку в этой неделе — иначе фермы мультиаккаунтов собирают приз дешёвыми
+голосами. Ставка-требование считается заново каждую неделю: приз не уйдёт
+тому, кто в прошедшей неделе не поставил ни грамма. Пустая ступень (некому
 платить) не открывается, её доля переносится в копилку новой недели.
 
 **Месяц.** 1-го числа сумма всех накопленных месяцев до текущего уходит
-игроку или игрокам с максимумом верных ответов за тот период. Ничья —
-сумма делится поровну. Лидер без привязанного кошелька не блокирует
-остальных: горш делится между оплачиваемыми, а месяц остаётся «незакрытым»,
-пока хоть кому-то нельзя заплатить и никого оплатить нельзя вовсе.
+игроку или игрокам с максимумом верных ответов за тот период (обязательна хотя
+бы одна ставка в этом месяце). Ничья — сумма делится поровну. Лидер без
+привязанного кошелька или без ставки в периоде не блокирует остальных: горш
+делится между оплачиваемыми, а месяц остаётся «незакрытым», пока хоть кому-то
+нельзя заплатить и никого оплатить нельзя вовсе.
 
 Метки «выплачено до X» живут в watcher_state и переживают рестарт.
 """
@@ -31,7 +34,7 @@ from sqlalchemy import case, delete, func, or_, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Vote, WatcherState, WeeklyPot
+from app.models import LeaderboardPot, Payout, Player, Round, RoundStatus, Stake, Vote, WatcherState, WeeklyPot
 from app.stakes import split_equal
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
@@ -98,6 +101,37 @@ async def _top_correct_voters(session, since: datetime, until: datetime) -> list
     return [row for row in rows if row[1] == best]
 
 
+async def _players_with_stake(
+    session,
+    period_start: datetime,
+    period_end: datetime,
+    by: str = "opens_at",
+) -> set[int]:
+    """Игроки, поставившие в периоде [period_start, period_end) хотя бы одну ставку.
+
+    Требование «приз только тем, кто ставил»: бесплатные голоса не должны
+    собирать копилки. Ставка — реальный TON-обязательство стаи, момент расчёта
+    статусы уже разрешены: считаем confirmed и refunded (возврат ставки — когда
+    платить некому — не отменяет того факта, что игрок ставил); rejected
+    (нарушители) в зачёт не идут. Окно по колонке дня должно совпадать с окном,
+    в котором settle-считает голоса ("opens_at" для недели, "tally_ends_at" для
+    месяца). Проверка живёт внутри каждого периода, поэтому ставку нужно делать
+    заново под каждый завершившийся лидерборд.
+    """
+    window = Round.opens_at if by == "opens_at" else Round.tally_ends_at
+    rows = await session.execute(
+        select(Stake.player_id)
+        .join(Round, Round.id == Stake.round_id)
+        .where(
+            Stake.status.in_(["confirmed", "refunded"]),
+            window >= period_start,
+            window < period_end,
+        )
+        .distinct()
+    )
+    return {int(pid) for pid in rows.scalars().all()}
+
+
 async def settle_month_if_due(bot: Bot | None = None) -> bool:
     """Выплачивает копилку прошедших месяцев (безопасно при параллельных вызовах)."""
     async with _month_settle():
@@ -134,12 +168,17 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
             year, mon = map(int, pots[0].month.split("-"))
             period_start = datetime(year, mon, 1, tzinfo=timezone.utc)
         winners = await _top_correct_voters(session, period_start, month_start)
+        staked = await _players_with_stake(session, period_start, month_start, by="tally_ends_at")
 
         payable_ids: list[int] = []
         wallets: dict[int, str] = {}
         for player_id, _count in winners:
             player = await session.get(Player, player_id)
-            if player is not None and player.wallet_address:
+            if (
+                player is not None
+                and player.wallet_address
+                and player_id in staked
+            ):
                 wallets[player_id] = player.wallet_address
                 payable_ids.append(player_id)
 
@@ -147,7 +186,8 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         if not payable_ids:
             # Платить некому: метку НЕ двигаем, копилка ждёт следующего цикла.
             logger.warning(
-                "Копилка %d нанотонов ждёт: у лидеров (%s) нет привязанного кошелька",
+                "Копилка %d нанотонов ждёт: у лидеров (%s) нет привязанного кошелька "
+                "или ставки в этом месяце",
                 total,
                 [pid for pid, _ in winners] or "нет голосов",
             )
@@ -367,12 +407,13 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
 
         min_days = 0 if relaxed else max(1, settings.weekly_min_days)
         rows = await weekly_top(session, period_start, period_end, limit=50)
+        staked = await _players_with_stake(session, period_start, period_end, by="opens_at")
         # Места недели — три верхних УРОВНЯ верных ответов, а не три игрока:
         # ступень 7-6-5 может сжаться до 7-5-3, если шестёрок и четвёрок нет.
         # Внутри ступени приз делится между всеми её членами поровну.
         candidates: list[tuple[int, int, str]] = []
         for pid, correct, days in rows:
-            if correct <= 0 or days < min_days:
+            if correct <= 0 or days < min_days or pid not in staked:
                 continue
             player = await session.get(Player, pid)
             if player is None or not player.wallet_address:
@@ -389,7 +430,8 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
         if not tiers:
             # Достойных нет: метку НЕ двигаем, копилка ждёт следующей недели.
             logger.warning(
-                "Копилка недели %d нанотонов ждёт: нет игроков с кошельком и %s+ днями голосования%s",
+                "Копилка недели %d нанотонов ждёт: нет игроков с кошельком, %s+ днями голосования "
+                "и ставкой за неделю%s",
                 total,
                 min_days or settings.weekly_min_days,
                 " (короткая стартовая неделя — порог снят)" if relaxed else "",

@@ -687,8 +687,8 @@ def _economy_text() -> str:
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
         f"• {pct(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
         f"• {pct(settings.weekly_pot_pct)}% — копилка недели: в понедельник её делят три призовых места "
-        f"({pcts}%); нужен кошелёк и {settings.weekly_min_days} дней голосования\n"
-        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: её забирают лидеры /top\n"
+        f"({pcts}%); нужен кошелёк, {settings.weekly_min_days}+ дней голосования и хотя бы одна ставка за неделю\n"
+        f"• {pct(settings.leaderboard_rake_pct)}% — копилка месяца: её забирают лидеры /top (нужна хотя бы одна ставка в месяце)\n"
         f"• {pct(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
         "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
     )
@@ -1156,7 +1156,7 @@ async def on_stake_view(callback: CallbackQuery) -> None:
 def _format_top(
     week_rows: list[tuple[str, int, bool]],
     week_pot_nanotons: float,
-    month_rows: list[tuple[str, int]],
+    month_rows: list[tuple[str, int, bool]],
     month_pot_nanotons: float,
 ) -> str:
     from app.style import money_mark
@@ -1172,8 +1172,8 @@ def _format_top(
             ticket = "🎟" if eligible else "🔒"
             lines.append(f"{medal} {ticket} {name} — {count}")
     lines.append(
-        f"🎟 призовое место · 🔒 нужен кошелёк и {max(1, settings.weekly_min_days)} дней "
-        "голосования · выплата в понедельник"
+        f"🎟 призовое место · 🔒 нужен кошелёк, {max(1, settings.weekly_min_days)} дней "
+        "голосования и хотя бы одна ставка за неделю · выплата в понедельник"
     )
     lines.append("")
     lines.append(f"{money_mark('top')} Копилка месяца: {month_pot_nanotons:g} Gram")
@@ -1181,16 +1181,19 @@ def _format_top(
         lines.append("Верных путей в этом месяце ещё нет.")
     else:
         lines.append("Лидеры месяца по верным путям:")
-        for place, (name, count) in enumerate(month_rows, 1):
-            lines.append(f"{place}. {name} — {count}")
+        for place, (name, count, eligible) in enumerate(month_rows, 1):
+            ticket = "🎟" if eligible else "🔒"
+            lines.append(f"{place}. {ticket} {name} — {count}")
+    lines.append("🎟 призовое место · 🔒 нужна хотя бы одна ставка в этом месяце и кошелёк · выплата 1-го")
     return "\n".join(lines)
 
 
 @router.message(Command("top"))
 async def cmd_top(message: Message) -> None:
-    from app.leaderboard import weekly_top
+    from app.leaderboard import _players_with_stake, weekly_top
     from app.models import WeeklyPot
     from app.weeks import iso_week_key, week_bounds
+    from datetime import timedelta
 
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1222,11 +1225,14 @@ async def cmd_top(message: Message) -> None:
                 )
             ).scalars().all()
             wallets = set(wallet_rows)
+        week_staked = await _players_with_stake(session, week_start, week_end, by="opens_at")
         week_rows = [
             (
                 week_names.get(pid, f"игрок {pid}"),
                 correct,
-                pid in wallets and days >= max(1, settings.weekly_min_days),
+                pid in wallets
+                and pid in week_staked
+                and days >= max(1, settings.weekly_min_days),
             )
             for pid, correct, days in week_raw
         ]
@@ -1245,7 +1251,32 @@ async def cmd_top(message: Message) -> None:
         )
         month_raw = [(pid, count) for pid, count in result.all()]
         month_names = await named(month_raw)
-        month_rows = [(month_names.get(pid, f"игрок {pid}"), count) for pid, count in month_raw]
+        month_pids = [pid for pid, _count in month_raw]
+        month_wallets: set[int] = set()
+        if month_pids:
+            month_wallet_rows = (
+                await session.execute(
+                    select(Player.id).where(
+                        Player.id.in_(month_pids),
+                        Player.wallet_address.is_not(None),
+                    )
+                )
+            ).scalars().all()
+            month_wallets = set(month_wallet_rows)
+        next_month = (month_start + timedelta(days=35)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        month_staked = await _players_with_stake(
+            session, month_start, next_month, by="tally_ends_at"
+        )
+        month_rows = [
+            (
+                month_names.get(pid, f"игрок {pid}"),
+                count,
+                pid in month_wallets and pid in month_staked,
+            )
+            for pid, count in month_raw
+        ]
 
         month = now.strftime("%Y-%m")
         pot_row = (
@@ -1311,9 +1342,9 @@ async def cmd_change(message: Message) -> None:
                 "⭐ <b>Stars</b> — надёжно и мгновенно (кнопка оплаты в Telegram).\n"
                 "💎 <b>Gram</b> — перевод казначею: от "
                 f"{settings.revote_ton:g} до {_revote_gram_ceiling():g} Gram (строго меньше минимума ставки "
-                f"{settings.stake_min_ton:g} Gram). Мемо — только если приложишь, то "
-                "точь-в-точь `rv:день`; без мемо сумма из той же вилки зачтётся "
-                "сама как оплата смены.",
+                f"{settings.stake_min_ton:g} Gram). Мемо не обязателен: сумма из вилки "
+                "зачтётся сама как оплата смены. Если приложишь комментарий — "
+                "бот найдёт `rv:день` в любой части текста, даже с подписью кошелька.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_revote_keyboard(round_id),
             )
@@ -1491,7 +1522,8 @@ async def on_payton(callback: CallbackQuery) -> None:
         f"{money_mark(raw)} Переведи от {settings.revote_ton:g} до {_revote_gram_ceiling():g} Gram "
         f"(строго меньше минимума ставки {settings.stake_min_ton:g} Gram) на адрес казначея:\n"
         f"<code>{address}</code>\n\n"
-        f"С комментарием (memo), точь-в-точь:\n<code>{revote_memo(int(raw))}</code>\n\n"
+        f"Комментарий (memo) не обязателен — сумма из вилки зачтётся автоматически.\n"
+        f"Можно приложить (бот распознает `rv:день` в любой части текста):\n<code>{revote_memo(int(raw))}</code>\n\n"
         "Эту сумму ставкой быть не может — потолок ниже минимума ставки. "
         "Ровно 0.5 Gram не подойдёт: это уже минимальная ставка, а не оплата смены пути "
         "(бот примет её как ставку дня). Если кошелёк приложит мемо — оплата привяжется "
