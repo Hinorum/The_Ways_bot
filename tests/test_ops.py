@@ -46,6 +46,7 @@ def _closed_round(day_index: int, tally_at: datetime) -> Round:
         tally_ends_at=tally_at,
         winner_card=1,
         vote_counts_json="{}",
+        payouts_finalized=True,
     )
 
 
@@ -672,6 +673,171 @@ async def test_monthly_pot_waits_when_leader_has_no_stake(monkeypatch: pytest.Mo
             player = await session.get(Player, pid)
             if player is not None:
                 await session.delete(player)
+            await session.commit()
+
+
+async def test_monthly_pot_waits_until_last_day_finalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Незафинализированный последний день месяца откладывает выплату целиком.
+
+    Аналог недельного гейта: копилка может быть недолита, пока хоть один
+    день периода не закрыл выплаты — метку не двигаем, горш цел.
+    """
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    async with SessionLocal() as session:
+        now = datetime.now(timezone.utc)
+        prev_month = now.replace(day=1) - timedelta(days=5)
+        unfinished = Round(
+            day_index=704_001,
+            status=RoundStatus.TALLYING,
+            win_rule=WinRule.MAJORITY,
+            rule_commitment="c",
+            chapter_title="t",
+            chapter_text="text",
+            lore_summary="lore",
+            opens_at=prev_month - timedelta(days=1, hours=1),
+            voting_ends_at=prev_month - timedelta(hours=1),
+            tally_ends_at=prev_month,
+            winner_card=None,
+            vote_counts_json="{}",
+        )
+        session.add(unfinished)
+        player_row = Player(
+            id=950_100 + int.from_bytes(os.urandom(2), "big"),
+            username="u",
+            wallet_address="0:" + os.urandom(32).hex(),
+        )
+        session.add(player_row)
+        await session.flush()
+        session.add(Vote(round_id=unfinished.id, player_id=player_row.id, card_position=1))
+        pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(2))
+        month_key = pot.month
+        session.add(pot)
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is False
+            assert (
+                await session.scalar(select(LeaderboardPot.nanotons).where(LeaderboardPot.month == month_key))
+            ) == to_nano(2)
+            assert await session.get(WatcherState, MARKER_KEY) is None
+        finally:
+            await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(Vote.__table__.delete().where(Vote.round_id == unfinished.id))
+            await session.delete(unfinished)
+            player = await session.get(Player, player_row.id)
+            if player is not None:
+                await session.delete(player)
+            await session.commit()
+
+
+async def test_monthly_pot_not_burned_by_empty_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пустые monthly_prize_weights (опечатка конфига) не сжигают горш.
+
+    Раньше пустой список весов давал пустые выплаты, но копилка всё равно
+    удалялась и метка двигалась — месячная казна пропадала бесследно.
+    """
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "monthly_prize_weights", "")
+    pid = 959_000 + int.from_bytes(os.urandom(2), "big")
+    async with SessionLocal() as session:
+        session.add(
+            Player(id=pid, username=f"u{pid}", wallet_address="0:" + os.urandom(32).hex())
+        )
+        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        round_row = _closed_round(705_001, prev_month - timedelta(days=3))
+        session.add(round_row)
+        await session.flush()
+        session.add(Vote(round_id=round_row.id, player_id=pid, card_position=1))
+        session.add(
+            Stake(
+                round_id=round_row.id, player_id=pid, amount_nanotons=to_nano(1),
+                tx_hash="tx_" + os.urandom(16).hex(), status="confirmed",
+            )
+        )
+        pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(2))
+        month_key = pot.month
+        session.add(pot)
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is False
+            assert (
+                await session.scalar(select(LeaderboardPot.nanotons).where(LeaderboardPot.month == month_key))
+            ) == to_nano(2)
+            assert await session.get(WatcherState, MARKER_KEY) is None
+        finally:
+            await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(Vote.__table__.delete().where(Vote.player_id == pid))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id == pid))
+            await session.delete(round_row)
+            player = await session.get(Player, pid)
+            if player is not None:
+                await session.delete(player)
+            await session.commit()
+
+
+async def test_monthly_pot_gram_tiebreak_at_third_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Грам-лидер на границе топ-3 с бОльшим id не выпадает из призов.
+
+    Раньше _rank_window резал SQL-LIMIT до грам-тайбрейка: при равном счёте
+    на 3-м месте выбирались меньшие player_id, игрок с большим вкладом
+    Gram (и большим id) терял место. Теперь LIMIT режет после грам-сортировки.
+    """
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    base = 958_000 + int.from_bytes(os.urandom(1), "big") * 100
+    pids = [base + i for i in range(5)]
+    grams = [1, 2, 3, 4, 6]
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in pids}
+    async with SessionLocal() as session:
+        session.add_all(
+            Player(id=pid, username=f"p{i}", wallet_address=wallets[pid])
+            for i, pid in enumerate(pids)
+        )
+        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        rounds: list[Round] = []
+        for i in range(5):
+            round_row = _closed_round(707_001 + i, prev_month - timedelta(days=9 + i))
+            session.add(round_row)
+            rounds.append(round_row)
+        await session.flush()
+        for i, round_row in enumerate(rounds):
+            for pid in pids:
+                session.add(Vote(round_id=round_row.id, player_id=pid, card_position=1))
+            session.add(
+                Stake(
+                    round_id=round_row.id, player_id=pids[i],
+                    amount_nanotons=to_nano(grams[i]),
+                    tx_hash="tx_" + os.urandom(16).hex(), status="confirmed",
+                )
+            )
+        pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(1))
+        month_key = pot.month
+        session.add(pot)
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is True
+            amounts = {
+                p.player_id: p.amount_nanotons
+                for p in (await session.execute(select(Payout).where(Payout.kind == "leaderboard"))).scalars()
+            }
+            # Все равны по верным путям — места решает вклад Gram: p5, p4, p3.
+            assert amounts == {
+                pids[4]: 500_000_000,
+                pids[3]: 300_000_000,
+                pids[2]: 200_000_000,
+            }
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
+            await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month == month_key))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(Vote.__table__.delete().where(Vote.player_id.in_(pids)))
+            await session.execute(Stake.__table__.delete().where(Stake.player_id.in_(pids)))
+            for round_row in rounds:
+                await session.delete(round_row)
+            for pid in pids:
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
             await session.commit()
 
 

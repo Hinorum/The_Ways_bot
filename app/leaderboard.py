@@ -177,6 +177,8 @@ async def _rank_window(
     Порядок — ровно тот, что использует выплата: верные пути ↓, вклад Gram
     ↓, player_id ↑ (претензия Claim докладывается уже после фильтра достойных
     в _order_by_ties). Верные пути — с учётом потолка leaderboard_correct_cap.
+    LIMIT применяется ПОСЛЕ пересортировки: усечение до грам-тайбрейка
+    выкидывало бы претендента с большим вкладом, но большим player_id.
     """
     correct_expr = _capped(
         func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)),
@@ -196,15 +198,15 @@ async def _rank_window(
             window < until,
         )
         .group_by(Vote.player_id)
-        .order_by(correct_expr.desc(), Vote.player_id.asc())
-        .limit(limit)
     )
     rows = [(pid, int(correct or 0), int(days)) for pid, correct, days in result.all()]
     if not rows:
         return []
     grams = await _gram_contributions(session, since, until, by=by)
     rows.sort(key=lambda row: (-row[1], -grams.get(row[0], 0), row[0]))
-    return [(pid, correct, days, grams.get(pid, 0)) for pid, correct, days in rows]
+    return [
+        (pid, correct, days, grams.get(pid, 0)) for pid, correct, days in rows[:limit]
+    ]
 
 
 async def _claim_times(session, kind: str, periods: list[str]) -> dict[int, datetime]:
@@ -316,6 +318,24 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
             year, mon = map(int, pots[0].month.split("-"))
             period_start = datetime(year, mon, 1, tzinfo=timezone.utc)
 
+        # Последние дни месяца ещё не финализированы (долгий тик, сбой) —
+        # их вклад в копилку может быть недолит. Как в неделе: платим только
+        # когда весь период закрыт и выплаты дней финализированы.
+        unfinished = await session.execute(
+            select(Round.id)
+            .where(
+                Round.tally_ends_at >= period_start,
+                Round.tally_ends_at < month_start,
+                or_(
+                    Round.status != RoundStatus.CLOSED,
+                    Round.payouts_finalized.is_(False),
+                ),
+            )
+            .limit(1)
+        )
+        if unfinished.scalar_one_or_none() is not None:
+            return False
+
         top_k = max(1, settings.monthly_prize_top_k)
         if top_k > 1:
             # Сглаживание дисперсии: платим топ-K по верности с весами,
@@ -359,6 +379,15 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
                 return False
             placed = _order_by_ties(candidates, claims)
             weights = parse_prize_pcts(settings.monthly_prize_weights)
+            if not weights:
+                # Пустой список весов (опечатка конфига) не должен сжечь горш:
+                # метку не трогаем, копилка ждёт, пока конфиг не починят.
+                logger.error(
+                    "Копилка %d нанотонов ждёт: monthly_prize_weights не содержат "
+                    "чисел — исправь конфиг, горш не тронут",
+                    total,
+                )
+                return False
             payments: list[tuple[int, str, int]] = []
             top_amount = _weighted_amounts(total, placed, weights)
             for (player_id, _score, _gram, wallet), amount in zip(placed, top_amount):
@@ -395,6 +424,15 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
                 (player_id, wallets[player_id], amount)
                 for player_id, amount in shares.items()
             ]
+
+        if not payments:
+            # Страховка на любой неожиданный путь top-K: пустые выплаты не
+            # двигают метку и не удаляют горш.
+            logger.error(
+                "Копилка %d нанотонов ждёт: нечего выплатить — метка не двигается",
+                total,
+            )
+            return False
 
         network = "testnet" if settings.is_testnet else "mainnet"
         for player_id, wallet, amount in payments:
