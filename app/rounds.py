@@ -1515,6 +1515,76 @@ def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) 
     return candidates[0]
 
 
+async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
+    """Пути дня, за которые есть хотя бы один подтверждённый ставщик."""
+    rows = await session.execute(
+        select(Vote.card_position, func.count(distinct(Vote.player_id)))
+        .join(
+            Stake,
+            (Stake.round_id == Vote.round_id) & (Stake.player_id == Vote.player_id),
+        )
+        .where(Vote.round_id == round_id, Stake.status == "confirmed")
+        .group_by(Vote.card_position)
+    )
+    return {int(p) for p, holders in rows.all() if holders > 0}
+
+
+def _pick_among(
+    counts: dict[int, int], rule: WinRule, seed: str | None, paths: list[int]
+) -> tuple[int, list[int]]:
+    """(победитель, претенденты) по закону ДНЯ только внутри заданного набора
+    путей. В отличие от pick_winner, «не заявленные» пути не существуют —
+    отсутствующий путь не трактуется как 0 голосов и не лезет в MINORITY-минимум."""
+    items = [(counts.get(p, 0), p) for p in paths]
+    if not items:
+        return 0, []
+    if rule is WinRule.MAJORITY:
+        ref = max(c for c, _ in items)
+    elif rule is WinRule.MINORITY:
+        ref = min(c for c, _ in items)
+    else:  # MEDIAN
+        ordered = sorted(items, key=lambda t: (t[0], t[1]))
+        ref = ordered[len(ordered) // 2][0]
+    cands = sorted(p for c, p in items if c == ref)
+    if len(cands) > 1 and seed:
+        winner = random.Random(f"law:{seed}").choice(cands)
+    else:
+        winner = cands[0]
+    return winner, cands
+
+
+def _prefer_staked(
+    counts: dict[int, int], rule: WinRule, seed: str | None, staked: set[int]
+) -> tuple[int, list[int]]:
+    """(победитель, претенденты) с приоритетом ставящих.
+
+    Если хотя бы один путь реально заблокирован ставкой TON, путь, за который
+    НИКТО не держит деньги, не может победить: закон пересчитывается строго
+    по ставящим путям. Это лечит MINORITY-патологию — там побеждает наименьший
+    счёт, и голос против «пустого» пути мог бы случайно выиграть; отсекаем
+    безденежные кандидатов до выбора. При отсутствии ставящих — исход по
+    прежнему чисто-подсчётному закону целиком.
+    """
+    if not staked:
+        return pick_winner(counts, rule, seed=seed), tied_positions(counts, rule)
+    return _pick_among(counts, rule, seed, sorted(staked))
+
+
+async def _winner_and_tied(
+    session: AsyncSession,
+    round_row: Round,
+    counts: dict[int, int],
+    seed: str,
+) -> tuple[int, list[int]]:
+    """Выбор победителя с необязательным приоритетом ставящих (win_rule_prefers_staked)."""
+    if getattr(settings, "win_rule_prefers_staked", False):
+        staked = await _staked_paths(session, round_row.id)
+        return _prefer_staked(counts, round_row.win_rule, seed=seed, staked=staked)
+    return pick_winner(counts, round_row.win_rule, seed=seed), tied_positions(
+        counts, round_row.win_rule
+    )
+
+
 async def _echoes_already_spawned(session: AsyncSession, day_index: int) -> bool:
     result = await session.execute(
         select(func.count())
@@ -1543,7 +1613,7 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     # этом не раскрывается: ни StoryBeat, ни счётчики не публикуются.
     counts = await count_votes_for_tally(session, round_row.id)
     seed = f"{round_row.rule_commitment}:{round_row.day_index}"
-    round_row.winner_card = pick_winner(counts, round_row.win_rule, seed=seed)
+    round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed)
     if not await _echoes_already_spawned(session, round_row.day_index):
         # Свежая копия с картами (selectinload): у переданного объекта карты
         # могут быть не загружены — ленивый доступ вне greenlet запрещён.
@@ -1569,8 +1639,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     # Жребий сеется утренним обязательством: игроки не могут знать исход
     # ничьей заранее, но после вскрытия обязательства результат проверяем.
     seed = f"{round_row.rule_commitment}:{round_row.day_index}"
-    winner = pick_winner(counts, round_row.win_rule, seed=seed)
-    tied = tied_positions(counts, round_row.win_rule)
+    winner, tied = await _winner_and_tied(session, round_row, counts, seed)
     tie_note: str | None = None
     if len(tied) > 1:
         # Театр жребия: детерминированная реплика к честному броску.
