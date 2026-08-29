@@ -43,7 +43,9 @@ async def test_resolve_dead_payout_actions(session: AsyncSession) -> None:
 
     assert await resolve_dead_payout(session, 101, "retry") == "pending"
     row = await session.get(Payout, 101)
-    assert row.status == "pending" and row.attempts == 0
+    # Счётчик попыток НЕ сбрасывается: попытка могла реально уйти в цепочку,
+    # и attempts >= 1 заставляет диспетчер свериться с memo перед повтором.
+    assert row.status == "pending" and row.attempts == 5
 
     # Уже отправленную не трогаем; несуществующей и неизвестного действия нет.
     assert await resolve_dead_payout(session, 102, "spam") is None

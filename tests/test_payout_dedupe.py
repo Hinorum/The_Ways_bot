@@ -132,6 +132,42 @@ async def test_first_attempt_skips_history_check(monkeypatch) -> None:
             await session.commit()
 
 
+async def test_admin_retry_keeps_history_check_on_redispatch(monkeypatch) -> None:
+    """Ручной retry НЕ сбрасывает attempts: попытка могла уже уйти в цепочку
+    (краш между вещанием и коммитом «sent»), и повтор без сверки с memo
+    задвоил бы реальный перевод. Регрессия на resolve_dead_payout(action=retry)."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "payout_max_attempts", 5)
+    payout_id = await _seed_payout(attempts=5)
+    async with SessionLocal() as session:
+        row = await session.get(Payout, payout_id)
+        row.status = "failed"
+        row.alerted = True
+        await session.commit()
+        assert await ton_pay.resolve_dead_payout(session, payout_id, "retry") == "pending"
+        row = await session.get(Payout, payout_id)
+        assert row.attempts == 5  # счётчик сохранён, анти-дубль остаётся активным
+
+    async def fake_markers() -> set[str]:
+        return {_comment(payout_id)}
+
+    transfer = AsyncMock(return_value=None)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", fake_markers)
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", transfer)
+
+    try:
+        sent = await ton_pay.dispatch_pending_payouts(bot=None)
+        assert sent == 1
+        assert transfer.await_count == 0  # вещания не было — денег дважды нет
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "sent"
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
 async def test_failed_transfer_records_reason(monkeypatch) -> None:
     """Причина неудачи пишется в last_error и переживает исчерпание ретраев."""
     monkeypatch.setattr(settings, "ton_enabled", True)
