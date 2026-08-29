@@ -60,6 +60,16 @@ class Player(Base):
     correct_picks: Mapped[int] = mapped_column(Integer, default=0)
     wallet_address: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     wallet_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Кошелёк подтверждён микро-переводом с него (мемо bv:<код>): привязка без
+    # доказательства владения давала бы присваивать любой публичный адрес и
+    # ловить на него чужие призы. Пока деньги включены, ставки с неподтверждённого
+    # кошелька не считаются — сначала владелец доказывает контроль.
+    wallet_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Код подтверждения привязки: известен только владельцу телеграм-аккаунта,
+    # отправить перевод с нужного адреса может только владелец кошелька — так
+    # совпадение «адрес + код» доказывает контроль. Null — ждать нечего.
+    wallet_verify_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    wallet_verify_created: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Призвание собаки (ключ из app.callings): косметика нарратива — титулы,
     # окраска личного эха и касания в главах. На деньги и вес голоса не влияет.
     calling: Mapped[str | None] = mapped_column(String(32), nullable=True)

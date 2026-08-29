@@ -47,6 +47,9 @@ _SQLITE_COLUMN_DDL = {
         "wallet_linked_at": "ALTER TABLE players ADD COLUMN wallet_linked_at DATETIME",
         "calling": "ALTER TABLE players ADD COLUMN calling VARCHAR(32)",
         "inspiration": "ALTER TABLE players ADD COLUMN inspiration INTEGER NOT NULL DEFAULT 0",
+        "wallet_verified": "ALTER TABLE players ADD COLUMN wallet_verified BOOLEAN NOT NULL DEFAULT 0",
+        "wallet_verify_code": "ALTER TABLE players ADD COLUMN wallet_verify_code VARCHAR(16)",
+        "wallet_verify_created": "ALTER TABLE players ADD COLUMN wallet_verify_created DATETIME",
     },
     "stakes": {
         "network": "ALTER TABLE stakes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
@@ -119,6 +122,17 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)"))
             await conn.execute(text(
                 "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0"
+            ))
+            # Подтверждение владения кошельком (мемо bv:<код>): привязка чужого
+            # адреса перестаёт быть ресурсом для кражи призов.
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ"
             ))
             await conn.execute(text(
                 "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"

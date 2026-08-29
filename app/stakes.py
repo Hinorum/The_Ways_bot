@@ -132,6 +132,12 @@ async def register_stake(
 
     if await is_game_paused(session):
         return "paused"
+    # Владелец кошелька не доказан: код подтверждения (мемо bv:<код>) ещё ждёт
+    # встречного микро-перевода. Пока он не подтверждён, ставки с адреса не
+    # считаются — иначе привязка чужого публичного адреса приписывала бы чужие
+    # ставки агрессору, а тот собирал бы с них лидерборд и копилки.
+    if player.wallet_verify_code:
+        return "wallet_unverified"
     duplicate = await session.execute(select(Stake.id).where(Stake.tx_hash == tx_hash))
     if duplicate.scalar_one_or_none() is not None:
         return "duplicate_tx"

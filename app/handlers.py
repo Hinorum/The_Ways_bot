@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -969,6 +970,13 @@ async def _wallet_view_text(user) -> str:
                 "Чтобы перепривязать: пришли одной строкой <code>/wallet</code> и адрес.\n"
                 "Как поставить на путь: /stake"
             )
+            if not player.wallet_verified and player.wallet_verify_code:
+                body += (
+                    "\n\n⚠️ Кошелёк ещё не подтверждён — с него не считаются ставки.\n"
+                    f"Подтверди владение: отправь с него микро-перевод казначею (/stake) "
+                    f"с комментарием <code>bv:{player.wallet_verify_code}</code>. "
+                    "Сумма вернётся целиком."
+                )
         else:
             body = (
                 f"{money_mark('none')} Кошелёк не привязан.\n"
@@ -1010,6 +1018,12 @@ async def _dialog_close(uid: int) -> None:
         if row is not None:
             await session.delete(row)
             await session.commit()
+
+
+def _wallet_verify_code() -> str:
+    """Случайный код подтверждения владения кошельком (мемо bv:<код>)."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(6))
 
 
 async def _bind_wallet(message: Message, address: str) -> bool:
@@ -1066,6 +1080,20 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             return True
         player.wallet_address = normalize_address(address)
         player.wallet_linked_at = datetime.now(timezone.utc)
+        if settings.ton_enabled:
+            # Деньги включены: привязка не доверяется сразу — иначе любой мог бы
+            # присвоить публичный адрес чужого кошелька (их видно в постах дня) и
+            # ловить на него чужие ставки и призы. Владелец доказывает контроль
+            # микро-переводом с адреса с мемо bv:<код>: код знает только владелец
+            # телеграм-аккаунта, а перевести с адреса может только владелец кошелька.
+            player.wallet_verified = False
+            player.wallet_verify_code = _wallet_verify_code()
+            player.wallet_verify_created = datetime.now(timezone.utc)
+        else:
+            # Бесплатная версия без ставок и призов: доказывать нечего.
+            player.wallet_verified = True
+            player.wallet_verify_code = None
+            player.wallet_verify_created = None
         try:
             await session.commit()
         except IntegrityError:
@@ -1078,7 +1106,16 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             )
             return True
     await _dialog_close(uid)
-    confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
+    if settings.ton_enabled:
+        confirmation = (
+            f"{ok_mark(str(uid))} Кошелёк привязан — осталось подтвердить, что он твой.\n"
+            f"Отправь с него микро-перевод казначею (адрес: /stake) с комментарием:\n"
+            f"<code>bv:{player.wallet_verify_code}</code>\n"
+            "Сумму вернём целиком. Играть со ставками можно только после подтверждения — "
+            "перевод до него вернётся обратно."
+        )
+    else:
+        confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(confirmation)
     else:

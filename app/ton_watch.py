@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
-from app.payments import parse_revote_memo
+from app.payments import parse_revote_memo, parse_verify_memo
 from app.ops import is_game_paused
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
@@ -501,6 +501,47 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
             return await _stash_refund(
                 session, transfer, None, ledger_result="unknown"
             )
+        # Подтверждение владения кошельком (защита от сквата чужих публичных
+        # адресов): микро-перевод с мемо bv:<код>. Код при привязке получил
+        # только владелец телеграм-аккаунта, а перевести с адреса может только
+        # владелец кошелька — совпадение «отправитель + код» доказывает контроль.
+        verify_code = parse_verify_memo(transfer.comment)
+        if verify_code:
+            if (
+                player.wallet_verify_code
+                and verify_code == player.wallet_verify_code
+                and player.wallet_address == normalize_address(transfer.source or "")
+            ):
+                player.wallet_verified = True
+                player.wallet_verify_code = None
+                player.wallet_verify_created = None
+                await session.commit()
+                result = await _stash_refund(
+                    session,
+                    transfer,
+                    None,
+                    ledger_result="walletverify:ok",
+                    ledger_player_id=player.id,
+                )
+                if result == "refund_queued":
+                    await _dm_stake(
+                        bot,
+                        player.id,
+                        f"✅ Кошелёк подтверждён. {from_nano(transfer.value_nanotons):g} Gram "
+                        "проверочного перевода возвращаются на него целиком.",
+                    )
+                else:
+                    await _dm_stake(
+                        bot,
+                        player.id,
+                        "✅ Кошелёк подтверждён — теперь переводы с него засчитываются ставками.",
+                    )
+                return f"walletverify_{result}"
+            # bv: с неверным/чужим кодом или не с привязанного адреса — это
+            # чужой перевод, возвращаем штатно.
+            return await _stash_refund(
+                session, transfer, None, ledger_result="unknown"
+            )
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)
@@ -669,6 +710,21 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
             )
             await _ledger_incoming(
                 session, transfer, player.id, round_row.id, f"stake:{result}"
+            )
+        elif result == "wallet_unverified":
+            await _stash_refund(
+                session,
+                transfer,
+                round_row.id,
+                ledger_result=f"stake:{result}",
+                ledger_player_id=player.id,
+            )
+            await _dm_stake(
+                bot,
+                player.id,
+                f"↩️ Перевод {amount} Gram возвращается: этот кошелёк ещё не подтверждён. "
+                "Сначала докажи владение — отправь с него микро-перевод казначею с мемо "
+                "bv:… (код из ответа при привязке, дублируется в /wallet).",
             )
         elif result == "ok":
             age = datetime.now(timezone.utc).timestamp() - transfer.utime
