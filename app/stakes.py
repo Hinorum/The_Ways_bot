@@ -144,13 +144,42 @@ async def register_stake(
     existing = await session.execute(
         select(Stake).where(Stake.round_id == round_row.id, Stake.player_id == player.id)
     )
-    if existing.scalar_one_or_none() is not None:
-        return "already_staked"
+    previous = existing.scalar_one_or_none()
     min_nano = to_nano(settings.stake_min_ton)
     status = "pending"
     reason = ""
     if amount_nanotons < min_nano:
         status, reason = "rejected", "too_small"
+    if previous is not None and (previous.status != "rejected" or status == "rejected"):
+        # Повтор неотклонённой ставки (confirmed/pending) — уже_staked; пылевая
+        # ставка поверх пылевой тоже не валидная замена — как вторая ставка дня.
+        return "already_staked"
+    if previous is not None:
+        # Отклонённая (пылевая) ставка НЕ занимает слот дня: валидная ставка
+        # записывается на её место — иначе игрок, пославший микро-перевод ниже
+        # минимума, физически не поставил бы в этот день (вторая попытка ловила
+        # already_staked и возвращалась). Пылевой остаток возвращается сразу
+        # тем же расчётом, что и поток финализации (с вычетом газа).
+        refund = refund_net_amount(previous.amount_nanotons)
+        if refund > 0:
+            session.add(
+                Payout(
+                    round_id=previous.round_id,
+                    player_id=previous.player_id,
+                    kind="refund",
+                    amount_nanotons=refund,
+                    dest_address=player.wallet_address or "",
+                    network=current_network(),
+                )
+            )
+        previous.status = status
+        previous.amount_nanotons = amount_nanotons
+        previous.tx_hash = tx_hash
+        previous.memo = memo[:64]
+        previous.network = current_network()
+        previous.created_at = datetime.now(timezone.utc)
+        await session.commit()
+        return reason or "ok"
     session.add(
         Stake(
             round_id=round_row.id,

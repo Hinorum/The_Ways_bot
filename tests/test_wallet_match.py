@@ -15,7 +15,7 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Payout, Player, Round, RoundStatus, Stake, WatcherState, WinRule
-from app.ton_utils import is_valid_ton_address, normalize_address
+from app.ton_utils import is_valid_ton_address, normalize_address, to_nano
 from app.ton_watch import (
     WALLET_NORM_KEY,
     Transfer,
@@ -188,4 +188,37 @@ async def test_rejected_stake_tells_the_reason(ton_on) -> None:
     assert status == "too_small"
     assert len(bot.messages) == 1
     assert "не принята" in bot.messages[0][1]
+
+
+async def test_dust_stake_does_not_block_real_stake(ton_on) -> None:
+    """Регрессия: отклонённая микровставка больше не занимает слот дня —
+    валидная ставка записывается на её место, пыль возвращается сразу."""
+    await _open_round(933)
+    raw = _raw(0x5F1D)
+    async with SessionLocal() as session:
+        session.add(Player(id=910_933, username="dusty", first_name="D", wallet_address=raw))
+        await session.commit()
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    bot = _RecorderBot()
+    assert await process_transfer(
+        Transfer(tx_hash="dm-dust-1", source=raw, value_nanotons=to_nano(0.02), comment="", utime=now),
+        bot=bot,
+    ) == "too_small"
+    assert await process_transfer(
+        Transfer(tx_hash="dm-dust-2", source=raw, value_nanotons=to_nano(0.5), comment="", utime=now),
+        bot=bot,
+    ) == "ok"
+    async with SessionLocal() as session:
+        stake = (await session.execute(select(Stake).where(Stake.tx_hash == "dm-dust-2"))).scalar_one()
+        assert stake.status == "pending"  # свежий — ждёт подтверждения
+        refund = (
+            await session.execute(
+                select(Payout).where(Payout.kind == "refund", Payout.player_id == 910_933)
+            )
+        ).scalar_one_or_none()
+        assert refund is not None
+        from app.stakes import refund_net_amount
+
+        assert refund.amount_nanotons == refund_net_amount(to_nano(0.02))
 
