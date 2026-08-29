@@ -83,6 +83,22 @@ class Player(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Referral(Base):
+    """Кто привёл кого по личной ссылке ?start=ref_<id>_<токен>.
+
+    Строго одна запись на приведённого: первый валидный переход фиксируется
+    навсегда, повторные /start с чужой ссылкой игнорируются. Сейчас тут только
+    факт приведения — награды и анти-сибил-штрафы появятся позже.
+    """
+
+    __tablename__ = "referrals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    referrer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    referred_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Chat(Base):
     """Чаты (группы/каналы), где бот состоит и куда рассылаются анонсы дней."""
 

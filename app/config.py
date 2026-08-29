@@ -254,6 +254,13 @@ class Settings(BaseSettings):
     webhook_secret: str = ""
     render_external_url: str = ""
     render_external_hostname: str = ""
+    # Личные приглашения (?start=ref_<id>_<токен>): секрет подписывает токен,
+    # чтобы нельзя было подставить чужой id в ссылку. Пусто — рефералки выключены.
+    referral_secret: str = ""
+    # Username бота без «@» (t.me/<username>?start=...). Пусто — бот запросит
+    # get_me при первом /invite и закэширует; если и это не выйдет, ссылки
+    # не строятся до появления значения.
+    bot_username: str = ""
 
     @property
     def admin_id_set(self) -> set[int]:

@@ -44,6 +44,7 @@ def _commands_help() -> list[str]:
         "<b>Команды каравана</b>",
         "/today — карты дня · /lore — Архив Начала и канон прожитых троп",
         "/score — твои Следы и хроника · /calling — призвание",
+        "/invite — позвать в стаю по личной ссылке",
         "/best — бестиарий Сети",
         "/help — эта памятка",
     ]
@@ -78,10 +79,34 @@ async def cmd_help(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+@router.message(Command("invite"))
+async def cmd_invite(message: Message) -> None:
+    """Личная ссылка приглашения ?start=ref_<id>_<токен> и счётчик приведённых."""
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    caller = message.from_user
+    if caller is None:
+        return
+    from app.referrals import invited_count, referral_link, resolve_bot_username
+
+    username = await resolve_bot_username(getattr(message, "bot", None))
+    link = referral_link(caller.id, username)
+    if not link:
+        await message.answer("🧭 Приглашения в стаю пока не открыты — приходи чуть позже.")
+        return
+    count = await invited_count(caller.id)
+    await message.answer(
+        f"🐾 Вот твоя ссылка приглашения:\n{link}\n\n"
+        "Кто придёт по ней — тот вошёл в стаю твоим следом. "
+        f"Приведено всего: {count}. Награды за приглашения — позже."
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     async with SessionLocal() as session:
         player = await upsert_player(session, message.from_user)
+        await _record_start_referral(session, message)
         keyboard = await _start_keyboard(session, player)
     uid = str(message.from_user.id) if message.from_user else "0"
     lines = [
@@ -116,6 +141,36 @@ async def cmd_start(message: Message) -> None:
         except Exception:
             logger.info("Стартовый кадр мира не доставлен новичку", exc_info=True)
     await cmd_today(message)
+
+
+async def _record_start_referral(session, message: Message) -> None:
+    """Фиксирует пришедшего по чужой ссылке один раз; всё побочное — молча.
+
+    Порядок: upsert_player уже создал строку, так что приглашающий существует
+    в таблице. Отказы (самоссылка, подделка, повтор) не должны мешать /start.
+    """
+    try:
+        from app.referrals import parse_referral_arg, record_referral
+
+        caller = message.from_user
+        if caller is None or caller.id <= 0:
+            return
+        get_args = getattr(message, "get_args", None)
+        if callable(get_args):
+            arg = (get_args() or "").strip()
+        else:
+            parts = (message.text or "").split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+        if not arg:
+            return
+        referrer_id = parse_referral_arg(arg)
+        if referrer_id is None:
+            return
+        await record_referral(session, referrer_id=referrer_id, referred_id=caller.id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("Реферальный переход не записан")
 
 
 async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
