@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
+from app.handlers import panel as panel_mod
 from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
 from app.rounds import _POT_CACHE
 
@@ -135,7 +135,7 @@ async def test_panel_refresh_callback_edits_for_admin(monkeypatch) -> None:
     async def fake_text(session=None):
         return "🎛 ПУЛЬТ ХРАНИТЕЛЯ"
 
-    monkeypatch.setattr(handlers_module, "_admin_panel_text", fake_text)
+    monkeypatch.setattr(panel_mod, "_admin_panel_text", fake_text)
     await on_panel_action(callback)
     callback.message.edit_text.assert_awaited_once()
     callback.answer.assert_awaited_once()
@@ -178,7 +178,7 @@ async def test_panel_advance_requires_double_press(monkeypatch) -> None:
     """Досрочное закрытие дня — с подтверждением: первый тап только предупреждает."""
     monkeypatch.setattr(settings, "admin_ids", "4242")
     advance_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(handlers_module, "cmd_advance", advance_mock)
+    monkeypatch.setattr(panel_mod, "cmd_advance", advance_mock)
 
     callback = make_callback(4242)
     callback.data = "panel:advance"
@@ -197,7 +197,7 @@ async def test_panel_advance_go_runs_command(monkeypatch) -> None:
         calls.append(shim_message)
         await shim_message.answer("День 98001 открыт.")
 
-    monkeypatch.setattr(handlers_module, "cmd_advance", fake_advance)
+    monkeypatch.setattr(panel_mod, "cmd_advance", fake_advance)
     callback = make_callback(4242)
     callback.data = "panel:advance:go"
     callback.bot = AsyncMock()
