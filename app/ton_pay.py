@@ -15,6 +15,12 @@ sending и неуспешные failed с attempts < PAYOUT_MAX_ATTEMPTS ожи�
 сбрасывает: он сам мог повернуть в очередь уже ушедший перевод, и только
 attempts >= 1 заставляет диспетчер сверяться с историей перед отправкой.
 
+Призы и возвраты без получателя (игрок не привязал кошелёк к моменту
+финализации) не тонут в failed: строки ждут в очереди, и когда игрок
+привязывает адрес, диспетчер вставляет его в следующий же цикл и платёж
+уходит сам. Доли казны без OWNER_WALLET_ADDRESS и переводы без игрока
+честно падают в failed с причиной-действием.
+
 tx_hash после отправки — метка вещания «bcast:<unix>»: лайтсервер не
 возвращает хеш транзакции. Фактический перевод ищется в эксплорере по адресу
 казначея и memo-комментарию вида way:<день>:<тип>#<id выплаты>.
@@ -33,7 +39,7 @@ from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Income, Payout, Round, RoundStatus, WatcherState
+from app.models import Income, Payout, Player, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
 from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
 
@@ -406,6 +412,66 @@ async def _alert_admin(bot: Bot | None, network: str) -> None:
 _TREASURY_KINDS = {"rake", "leaderboard"}
 
 
+async def _hydrate_player_dests(session, network: str) -> int:
+    """Оживляет выплаты без получателя, когда кошелёк уже привязан.
+
+    Призы и возвраты игроков без привязанного кошелька на момент финализации
+    не должны тонуть в failed (деньги спят, пока админ не разберёт вручную).
+    Строка остаётся в очереди, а как только игрок привязывает адрес (/wallet),
+    следующий же цикл диспетчера всталяет его в dest_address и платёж уходит
+    сам — retry из /payouts не нужен. Доли казны (rake/leaderboard) без
+    OWNER_WALLET_ADDRESS и выплаты без игрока (player_id пуст) оживлять нечем:
+    честный failed с причиной-действием, как раньше.
+
+    Возвращает число оживших строк (они поедут в пик этого же цикла).
+    """
+    rows = list(
+        (
+            await session.execute(
+                select(Payout).where(
+                    Payout.dest_address == "",
+                    Payout.status == "pending",
+                    Payout.network == network,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return 0
+    player_ids = {p.player_id for p in rows if p.player_id is not None}
+    wallet_map: dict[int, str] = {}
+    if player_ids:
+        players = await session.execute(
+            select(Player.id, Player.wallet_address).where(Player.id.in_(player_ids))
+        )
+        wallet_map = {pid: addr for pid, addr in players.all()}
+    revived = 0
+    for payout in rows:
+        if payout.kind in _TREASURY_KINDS:
+            if settings.owner_wallet_address:
+                payout.dest_address = normalize_address(settings.owner_wallet_address)
+                payout.last_error = None
+                revived += 1
+            else:
+                payout.status = "failed"
+                payout.last_error = "нет адреса получателя: для доли казны задай OWNER_WALLET_ADDRESS"
+        elif payout.player_id is None:
+            payout.status = "failed"
+            payout.last_error = "нет адреса получателя (кошелёк игрока не найден)"
+        else:
+            addr = wallet_map.get(payout.player_id) or ""
+            if addr:
+                payout.dest_address = addr
+                payout.last_error = None
+                revived += 1
+            else:
+                payout.last_error = "нет адреса получателя: кошелёк игрока ещё не привязан"
+    await session.commit()
+    return revived
+
+
 async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> int:
     sent = 0
     network = "testnet" if settings.is_testnet else "mainnet"
@@ -413,10 +479,18 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
         # Ретрай: зависшие failed с неисчерпанным лимитом снова в очередь.
         await _reset_retriable(session, network)
         await session.commit()
+        # Призы без кошелька оживают сами, когда игрок привязал адрес: это
+        # отдельный проход, а НЕ статус failed, иначе строки тонули бы в
+        # мёртвых письмах, а игрок терял бы деньги без веской причины.
+        await _hydrate_player_dests(session, network)
         result = await session.execute(
             select(Payout)
             .where(
                 Payout.status == "pending",
+                # Пустые получатели в пик не берём: они либо оживают выше в этом
+                # же цикле, либо ждут кошелёк. Иначе они съедали бы лимит из
+                # 50 строк и голодали настоящие выплаты.
+                Payout.dest_address != "",
                 Payout.amount_nanotons > 0,
                 Payout.network == network,
             )
@@ -424,16 +498,6 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
             .limit(limit)
         )
         payouts = list(result.scalars().all())
-        # Доля казны могла быть создана раньше, чем владелец задал адрес:
-        # подставляем актуальный OWNER_WALLET_ADDRESS прямо перед отправкой —
-        # старые «пустые» строки оживают сами, ручной retry не нужен.
-        for payout in payouts:
-            if (
-                not payout.dest_address
-                and payout.kind in _TREASURY_KINDS
-                and settings.owner_wallet_address
-            ):
-                payout.dest_address = normalize_address(settings.owner_wallet_address)
         # Предохранитель баланса: не вещаем переводы, которые сеть отвергнет
         # из-за нехватки средств на казначее. Fail-fast с понятной причиной:
         # статус остаётся pending, попытки НЕ сгорают — после пополнения
@@ -497,23 +561,14 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
             claimed_ids.add(payout.id)
         await session.commit()
         # Работаем только строками, что реально забрали мы: сама рассылка
-        # (claimed) плюс «без адреса» (их ниже пометим failed). Строки другой
-        # копии диспетчера в эту сессию НЕ трогаем.
-        payouts = [p for p in payouts if p.id in claimed_ids or not p.dest_address]
+        # (claimed). Строки другой копии диспетчера в эту сессию НЕ трогаем.
+        payouts = [p for p in payouts if p.id in claimed_ids]
         # Сверка с историей нужна только для повторов: свежая выплата
         # (attempts == 0) вещаться ещё не могла. Один проход истории на цикл.
         markers: set[str] = set()
         if any(payout.attempts > 1 for payout in payouts):
             markers = await fetch_broadcast_markers()
         for payout in payouts:
-            if not payout.dest_address:
-                payout.status = "failed"
-                payout.last_error = (
-                    "нет адреса получателя: для доли казны задай OWNER_WALLET_ADDRESS"
-                    if payout.kind in _TREASURY_KINDS
-                    else "нет адреса получателя (кошелёк игрока не найден)"
-                )
-                continue
             # Свободный комментарий (возвраты при паузе) либо служебное memo
             # «way:<день>:<тип>#<id>» — по нему же работает анти-дубль.
             comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"

@@ -2773,6 +2773,26 @@ async def _admin_panel_text(session=None) -> str:
         parts.append(f"failed-возвратов {d_refund}")
     if parts:
         lines.append(f"  · {', '.join(parts)}")
+    # Призы, ждущие кошелька игрока: финализация не знала адреса, диспетчер
+    # оживит строку сам, как только игрок привяжет /wallet (retry не нужен).
+    try:
+        no_wallet_count = (
+            await session.execute(
+                select(func.count()).select_from(Payout).where(
+                    Payout.dest_address == "",
+                    Payout.kind.in_(["prize", "refund"]),
+                    Payout.player_id.isnot(None),
+                    Payout.status.notin_(["sent", "dismissed"]),
+                )
+            )
+        ).scalar_one()
+        if no_wallet_count:
+            lines.append(
+                f"🪙 Призов без кошелька: {no_wallet_count} — уйдут сами, "
+                "когда игрок привяжет адрес. Разбор: /payouts."
+            )
+    except Exception:
+        pass
     pending_stakes = snap.get("pending_stakes") or 0
     if settings.ton_enabled:
         stakes_note = f"⏳ Переводов не обработано: {pending_stakes}"

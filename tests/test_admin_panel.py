@@ -98,6 +98,35 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
             await db.commit()
 
 
+async def test_panel_shows_prizes_waiting_for_wallet(session, monkeypatch) -> None:
+    """Призы без кошелька видны в пульте: ждут привязки, уйдут сами."""
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    async with SessionLocal() as db:
+        db.add(Player(id=975_011, username="late", wallet_address=""))
+        db.add(Payout(
+            round_id=None,
+            player_id=975_011,
+            kind="prize",
+            amount_nanotons=100_000_000,
+            dest_address="",
+            status="pending",
+        ))
+        await db.commit()
+
+    try:
+        async with SessionLocal() as g:
+            text = await _admin_panel_text(g)
+        assert "Призов без кошелька: 1" in text
+        assert "/payouts" in text
+    finally:
+        from sqlalchemy import delete as _d
+
+        async with SessionLocal() as db:
+            await db.execute(_d(Payout).where(Payout.player_id == 975_011))
+            await db.execute(_d(Player).where(Player.id == 975_011))
+            await db.commit()
+
+
 async def test_panel_refresh_callback_edits_for_admin(monkeypatch) -> None:
     monkeypatch.setattr(settings, "admin_ids", "4242")
     callback = make_callback(4242)
