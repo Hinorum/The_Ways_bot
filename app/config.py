@@ -30,10 +30,14 @@ def postgres_connect_args(url: str) -> dict:
     converted = sqlalchemy_url(url)
     if not converted.startswith("postgresql"):
         return {}
+    # Всегда создаём таблицы в public: при подмене/сбросе Postgres-ресурса
+    # Render search_path новой базы может не содержать схемы, и любой DDL
+    # падал бы «no schema has been selected to create in».
+    args: dict = {"server_settings": {"search_path": "public"}}
     host = urlparse(converted).hostname or ""
-    if host in {"localhost", "127.0.0.1"}:
-        return {}
-    return {"ssl": True}
+    if host not in {"localhost", "127.0.0.1"}:
+        args["ssl"] = True
+    return args
 
 
 class Settings(BaseSettings):

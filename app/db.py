@@ -81,6 +81,13 @@ def _ensure_sqlite_columns(sync_conn) -> None:
 async def init_db() -> None:
     Path("data").mkdir(exist_ok=True)
     async with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            # Render мог подсунуть свежую или чужую Postgres, где в search_path
+            # нет схемы (DROP/RESET базы): без неё create_all падает
+            # «no schema has been selected to create in». Гарантируем, что
+            # public существует и является схемой этого подключения.
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
+            await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "postgresql":
             await conn.execute(text("ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)"))
