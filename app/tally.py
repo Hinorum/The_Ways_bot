@@ -26,6 +26,11 @@ from app.weeks import iso_week_key
 _CHUNK = 500  # лимит параметров IN(...): большие дни чанкуются
 
 
+def _clip(text: str, limit: int) -> str:
+    """Обрезка с многоточием — последствия в итогах не растягивают пост."""
+    return text if len(text) <= limit else text[: limit - 1].rstrip(" ,.;:") + "…"
+
+
 def _chunks(ids: list[int], size: int = _CHUNK):
     for start in range(0, len(ids), size):
         yield ids[start : start + size]
@@ -229,7 +234,7 @@ def format_results(round_row: Round) -> str:
     consequence = next(
         card.consequence for card in round_row.cards if card.position == round_row.winner_card
     )
-    lines += ["", f"📜 Канон: {winner}", consequence]
+    lines += ["", f"📜 Канон: {winner}", _clip(consequence, 240)]
     return "\n".join(lines)
 
 

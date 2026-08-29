@@ -16,21 +16,21 @@ def _prompt(season_block: str | None) -> str:
 
 def test_base_chapter_length() -> None:
     prompt = _prompt("СЕЗОН: акт 2.")
-    assert "1800-2600 знаков" in prompt
+    assert "1200-1500 знаков" in prompt
     # Оба места: инструкция и JSON-схема.
-    assert prompt.count("1800-2600") == 2
+    assert prompt.count("1200-1500") == 2
 
 
 def test_expanded_in_prologue_and_midpoint() -> None:
     prologue = _prompt("Сезон: акт 1.\nПРОЛОГ, день 2 — «Архивариус».")
-    assert "2200-3000 знаков" in prologue and prologue.count("2200-3000") == 2
+    assert "1400-1700 знаков" in prologue and prologue.count("1400-1700") == 2
     midpoint = _prompt("Сезон: акт 2.\nПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки.")
-    assert "2200-3000 знаков" in midpoint
+    assert "1400-1700 знаков" in midpoint
 
 
 def test_card_description_budget_unchanged() -> None:
     prompt = _prompt(None)
-    assert "до 600 знаков" in prompt
+    assert "не больше 210 знаков" in prompt
 
 
 def test_sniff_scene_appends_trail_tint() -> None:
