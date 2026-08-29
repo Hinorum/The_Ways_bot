@@ -38,6 +38,7 @@ _SQLITE_COLUMN_DDL = {
         "place": "ALTER TABLE rounds ADD COLUMN place VARCHAR(80)",
         "sealed": "ALTER TABLE rounds ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT 0",
         "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
+        "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
     },
     "cards": {
         "tag": "ALTER TABLE cards ADD COLUMN tag VARCHAR(16) NOT NULL DEFAULT 'care'",
@@ -50,6 +51,7 @@ _SQLITE_COLUMN_DDL = {
         "wallet_verified": "ALTER TABLE players ADD COLUMN wallet_verified BOOLEAN NOT NULL DEFAULT 0",
         "wallet_verify_code": "ALTER TABLE players ADD COLUMN wallet_verify_code VARCHAR(16)",
         "wallet_verify_created": "ALTER TABLE players ADD COLUMN wallet_verify_created DATETIME",
+        "dm_subscribed": "ALTER TABLE players ADD COLUMN dm_subscribed BOOLEAN NOT NULL DEFAULT 1",
     },
     "stakes": {
         "network": "ALTER TABLE stakes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
@@ -116,6 +118,11 @@ async def init_db() -> None:
             await conn.execute(text(
                 "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE"
             ))
+            # «Денежный режим» дня: ставки живут только в помеченных днях
+            # (/panel переключает), снимок дня — Round.money_mode.
+            await conn.execute(text(
+                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
             # Призвание собаки и жетоны «Второго нюха» (Правила Стаи).
@@ -133,6 +140,11 @@ async def init_db() -> None:
             ))
             await conn.execute(text(
                 "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ"
+            ))
+            # Личные дубликаты рассылок: подписанные игроки получают итоги и
+            # анонсы в личку (/start тумблером). (Старым игрокам — да.)
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE"
             ))
             await conn.execute(text(
                 "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
