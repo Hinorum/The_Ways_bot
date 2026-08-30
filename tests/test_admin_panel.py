@@ -83,7 +83,9 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         assert "ПУЛЬТ ХРАНИТЕЛЯ" in text
         assert "День 97500 · open" in text
         assert "Банк дня: 1.25 Gram · ставок 3" in text
-        assert "Акт" in text and "до Лая" in text  # строка забега
+        # Строка забега: акт всегда на месте, хвост зависит от календаря —
+        # в финальный день сезона это «финал сегодня», иначе «до Лая N дн.».
+        assert "Акт" in text and ("до Лая" in text or "финал сегодня" in text)
         assert "Выплаты:" in text and "failed 1" in text
         assert "#1" in text or "#2" in text  # топ долгов в панели
         assert "LITESERVER_CONFIG_URL" in text  # причина видна прямо тут

@@ -383,8 +383,10 @@ def compose_chapter(
     rng = _rng(day_index, f"{salt}|{'|'.join(previous_beats[-5:])}")
     history_tags = tags_from_beats(previous_beats)
     last = previous_beats[-1] if previous_beats else None
-    # Фаза 1 прегенерации: итог «вчера» ещё не вскрыт — глава начинается сразу
-    # со сцены, а отголосок допишет patch_prepared_day после итогов.
+    # pending_outcome — пережиток двухфазной прегенерации (итог «вчера» ещё
+    # не вскрыт): глава начиналась бы сразу со сцены, а отголосок дописывал
+    # отдельный вызов после итогов. В инлайн-днях не используется (всегда
+    # False), параметр оставлен для тестов собирателя.
     echo = "" if pending_outcome else _echo(last, history_tags)
     place_idx = (day_index + len(history_tags)) % len(_PLACES)
     place = _PLACES[place_idx]
@@ -957,8 +959,8 @@ def _narrowed_card(
     rng = _rng(day_index, f"echo:{tag}:{'|'.join(window)}:{salt}")
     if hot:
         warm = (
-            f" Стая уже знает эту тропу: её нос помнит, как пахнет подобный выбор.",
-            f" След знаком — стая делала это недавно и знает цену заранее.",
+            " Стая уже знает эту тропу: её нос помнит, как пахнет подобный выбор.",
+            " След знаком — стая делала это недавно и знает цену заранее.",
         )
         return replace(
             card,

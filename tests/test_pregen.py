@@ -1,6 +1,7 @@
-"""Прегенерация: заготовка дня в час подсчёта, мгновенное открытие, мягкая деградация."""
+"""Инлайн-день: новый день рендерится сразу целиком (без двухфазной
+прегенерации), библия дня сохраняется в watcher_state, остатки заготовок
+чистятся, а банк повторов дедуплицирует формулировки и места канона."""
 
-import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -11,10 +12,12 @@ from app.art_director import offline_bible
 from app.lore import compose_chapter
 from app.models import Card, PreparedDay, Round, RoundStatus, StoryBeat, WatcherState, WinRule
 from app.rounds import (
-    PREPARED_PAYLOAD_VERSION,
+    _day_bible_key,
+    _load_day_bible,
+    _save_day_bible,
     create_next_round_detailed,
-    patch_prepared_day,
-    prepare_next_day,
+    recent_repeats_block,
+    reset_game,
 )
 
 
@@ -50,17 +53,18 @@ def offline_generation(monkeypatch):
     monkeypatch.setattr(rounds_mod, "fetch_day_image", AsyncMock(return_value=True))
 
 
-async def _seed_tallying_day(session) -> Round:
+async def _seed_day(session, day_index: int, chapter_title: str = "День") -> Round:
     now = datetime.now(timezone.utc)
     round_row = Round(
-        day_index=5,
-        status=RoundStatus.TALLYING,
+        day_index=day_index,
+        status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
         rule_commitment="c:s",
-        chapter_title="День пятый",
+        chapter_title=chapter_title,
         chapter_text="Текст дня.",
         lore_summary="Канон.",
         cover_path="",
+        place="Старый приют",
         opens_at=now - timedelta(hours=30),
         voting_ends_at=now - timedelta(hours=1),
         tally_ends_at=now + timedelta(minutes=40),
@@ -82,51 +86,123 @@ async def _seed_tallying_day(session) -> Round:
     return round_row
 
 
-async def test_prepare_next_day_creates_prepared(session) -> None:
-    round_row = await _seed_tallying_day(session)
+async def test_new_day_is_rendered_inline(session) -> None:
+    """Нет заготовки — день рендерится сразу целиком и открывается."""
+    await _seed_day(session, 5)
 
-    started = await prepare_next_day(session, round_row.day_index)
-    assert started is True
-    prepared = await session.get(PreparedDay, 6)
-    assert prepared is not None
-    payload = json.loads(prepared.payload)
-    assert payload["day_index"] == 6
-    # Фаза 1 кладёт три полные ветки дня (по одной на путь «вчера»).
-    assert set(payload["branches"].keys()) == {"0", "1", "2"}
-    for branch in payload["branches"].values():
-        assert branch["chapter_title"]
-        assert len(branch["cards"]) == 3
-    # Плоской top-level главы ещё нет: её разложит патч победителя (фаза 2).
-    assert not payload.get("chapter_title")
-    # Лок снят после успеха.
-    assert await session.get(WatcherState, "pregen_lock:6") is None
+    new_round, created = await create_next_round_detailed(session)
+    assert created is True
+    assert new_round.day_index == 6
+    assert new_round.status == RoundStatus.OPEN
+    assert new_round.chapter_title
+    cards = (
+        await session.execute(select(Card).where(Card.round_id == new_round.id))
+    ).scalars().all()
+    assert len(cards) == 3
 
 
-async def test_pregen_phase_one_builds_three_branches(session) -> None:
-    """Фаза 1 (час подсчёта): три полные ветки дня — по одной на каждый из
-    трёх путей «вчера». Итог ещё не вскрыт, поэтому ветки не патчатся — их
-    выберет patch_prepared_day по фактическому победителю."""
-    round_row = await _seed_tallying_day(session)
-    assert await prepare_next_day(session, round_row.day_index) is True
-    payload = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert int(payload["v"]) == PREPARED_PAYLOAD_VERSION
-    branches = payload["branches"]
-    assert len(branches) == 3
-    # Каждая ветка — полная глава с началом от своего итога (не «затычка»).
-    for branch in branches.values():
-        assert branch["chapter_title"]
-        assert branch["chapter_text"]
-        assert len(branch["cards"]) == 3
-    # Сетевой вызов генератора не понадобился при извлечении веток.
-    assert not payload.get("chapter_title")
+async def test_first_day_renders_on_empty_db(session) -> None:
+    new_round, created = await create_next_round_detailed(session)
+    assert created is True
+    assert new_round.day_index == 1
+    assert new_round.chapter_title
 
 
-async def test_patch_applies_outcome_and_survives_materialization(session, monkeypatch) -> None:
-    """    Фаза 2: по победителю (winner_card=0) выбрана его ветка, разложена в
-    плоский payload и нарисована её обложка; материализация мгновенная."""
-    round_row = await _seed_tallying_day(session)
-    assert await prepare_next_day(session, round_row.day_index) is True
+async def test_stale_prepared_row_is_cleared(session) -> None:
+    """Остаток старой двухфазной прегенерации не перезаписывает новый день."""
+    await _seed_day(session, 5)
+    session.add(PreparedDay(day_index=6, payload="заготовка вчерашней ночи"))
+    await session.commit()
 
+    new_round, created = await create_next_round_detailed(session)
+    assert created is True
+    assert new_round.chapter_title
+    assert await session.get(PreparedDay, 6) is None
+
+
+async def test_duplicate_day_race_returns_existing(session) -> None:
+    """День уже открыт тиком — повторный вызов не эскалирует в следующий."""
+    existing = await _seed_day(session, 6)
+    row, created = await create_next_round_detailed(session, base_day_index=5)
+    assert created is False
+    assert row.day_index == existing.day_index
+
+
+async def test_day_bible_roundtrip_via_watcher_state(session) -> None:
+    """Полная библия дня хранится под art_bible:{day_index} и читается обратно."""
+    bible = {
+        "palette": "rust orange over teal",
+        "lighting": "low sun through fog",
+        "shots": {"cover": {"scene": "aerial view of the pack at the gates"}},
+        "motifs": ["rusted iron", "drifting sparks"],
+    }
+    await _save_day_bible(session, 3, bible)
+
+    row = await session.get(WatcherState, _day_bible_key(3))
+    assert row is not None and row.value
+    loaded = await _load_day_bible(session, 3)
+    assert loaded["palette"] == bible["palette"]
+    assert loaded["shots"]["cover"]["scene"] == bible["shots"]["cover"]["scene"]
+
+    # Нет записи — None без исключений.
+    assert await _load_day_bible(session, 99) is None
+
+
+async def test_create_round_persists_day_bible(session) -> None:
+    await _seed_day(session, 5)
+    await create_next_round_detailed(session)
+
+    bible = await _load_day_bible(session, 6)
+    assert bible is not None
+    assert bible.get("shots")
+
+
+async def test_recent_repeats_block_gathers_canon(session) -> None:
+    """Банк повторов собирает места и формулировки последних дней."""
+    await _seed_day(session, 4, chapter_title="День четвёртый")
+    await _seed_day(session, 5, chapter_title="День пятый")
+
+    block = await recent_repeats_block(session, 7)
+    assert block is not None
+    assert "Старый приют" in block
+    assert "Тропа" in block
+    # Окно шире дня: день под самими собой не попадает (day_index 4 в окне).
+    block_again = await recent_repeats_block(session, 8)
+    assert block_again is not None
+
+
+async def test_recent_repeats_block_empty(session) -> None:
+    await _seed_day(session, 1)
+    # Ни одного прошлого дня в окне ≥7 — блока нет.
+    assert await recent_repeats_block(session, 1) is None
+
+
+@pytest.mark.slow
+async def test_reset_clears_prepared_rows_and_stale_day_bibles(session) -> None:
+    session.add(PreparedDay(day_index=9, payload="заготовка старого мира"))
+    await _save_day_bible(session, 9, {"shots": {}, "palette": "x", "lighting": "y"})
+    await session.commit()
+
+    await reset_game(session)
+    assert (await session.execute(select(PreparedDay))).scalars().all() == []
+    # Старые библии стёрты; сброс открыл новый первый день — его библия своя.
+    stale = (
+        await session.execute(
+            select(WatcherState).where(WatcherState.key == _day_bible_key(9))
+        )
+    ).scalar_one_or_none()
+    assert stale is None
+    fresh = (
+        await session.execute(
+            select(WatcherState).where(WatcherState.key == _day_bible_key(1))
+        )
+    ).scalar_one_or_none()
+    assert fresh is not None and fresh.value
+
+
+async def test_added_for_roundtrip_storybeat_safety(session) -> None:
+    """StoryBeat-запись дня не мешает materialize следующего (регрессия фазы 2)."""
+    await _seed_day(session, 5)
     session.add(
         StoryBeat(
             day_index=5,
@@ -136,163 +212,8 @@ async def test_patch_applies_outcome_and_survives_materialization(session, monke
             vote_counts="{}",
         )
     )
-    round_row.epilogue_text = "Ночь прошла тревожно: кабель трещал во сне."
-    await session.commit()
-
-    payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
-    expected_branch = payload_before["branches"]["0"]
-
-    assert await patch_prepared_day(session, round_row) is True
-    patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"] == expected_branch["chapter_text"]
-    assert "branches" not in patched
-    assert patched.get("cover_path", "").endswith("_cover.jpg")
-
-    created_round, created = await create_next_round_detailed(session)
-    assert created is True
-    assert created_round.chapter_text == expected_branch["chapter_text"]
-
-
-async def test_patch_without_today_outcome_is_noop(session, monkeypatch) -> None:
-    """Патч до записи StoryBeat ничего не делает и не генерирует зря."""
-    round_row = await _seed_tallying_day(session)
-    assert await prepare_next_day(session, round_row.day_index) is True
-
-    assert await patch_prepared_day(session, round_row) is False
-
-
-async def test_patch_offline_fallback_when_llm_silent(session, monkeypatch) -> None:
-    """Патч берёт ветку победителя из готовых (даже если генерации были офлайн)."""
-
-    round_row = await _seed_tallying_day(session)
-    assert await prepare_next_day(session, round_row.day_index) is True
-    session.add(
-        StoryBeat(
-            day_index=5,
-            winning_title="Кабель в зубах",
-            winning_text="Кабель удержался.",
-            win_rule="majority",
-            vote_counts="{}",
-        )
-    )
-    await session.commit()
-
-    payload_before = json.loads((await session.get(PreparedDay, 6)).payload)
-    expected_branch = payload_before["branches"]["0"]  # ветка под winner_card=0
-
-    assert await patch_prepared_day(session, round_row) is True
-    patched = json.loads((await session.get(PreparedDay, 6)).payload)
-    assert patched["chapter_text"] == expected_branch["chapter_text"]
-
-
-async def test_patch_skips_when_no_prepared(session, monkeypatch) -> None:
-    """Заготовки нет (сеть упала в фазе 1) — день честно соберётся синхронно."""
-    round_row = await _seed_tallying_day(session)
-    session.add(
-        StoryBeat(
-            day_index=5,
-            winning_title="t",
-            winning_text="x",
-            win_rule="majority",
-            vote_counts="{}",
-        )
-    )
-    await session.commit()
-
-    async def explode(**kwargs):
-        raise AssertionError("без заготовки патчить нечего")
-
-    assert await patch_prepared_day(session, round_row) is False
-
-
-async def test_prepare_skips_when_already_prepared_or_locked(session) -> None:
-    round_row = await _seed_tallying_day(session)
-
-    assert await prepare_next_day(session, round_row.day_index) is True
-    # Повторный вызов (следующий тик) — не плодит вторую генерацию.
-    assert await prepare_next_day(session, round_row.day_index) is False
-    assert (await session.execute(select(PreparedDay))).scalars().all() != []
-
-
-async def test_prepare_refuses_while_lock_is_fresh(session) -> None:
-    round_row = await _seed_tallying_day(session)
-    stamp = str(int(datetime.now(timezone.utc).timestamp()))
-    session.add(WatcherState(key="pregen_lock:6", value=stamp))
-    await session.commit()
-
-    assert await prepare_next_day(session, round_row.day_index) is False
-    assert await session.get(PreparedDay, 6) is None
-
-
-async def test_create_consumes_prepared_without_regeneration(session, monkeypatch) -> None:
-    from app import rounds as rounds_mod
-
-    round_row = await _seed_tallying_day(session)
-    assert await prepare_next_day(session, round_row.day_index) is True
-
-    async def explode(*args, **kwargs):
-        raise AssertionError("генерация не должна запускаться при готовой заготовке")
-
-    monkeypatch.setattr(rounds_mod, "generate_chapter", explode)
-
-    created_round, created = await create_next_round_detailed(session)
-    assert created is True
-    assert created_round.day_index == 6
-    assert created_round.status == RoundStatus.OPEN
-    assert created_round.chapter_title
-    # Заготовка израсходована.
-    assert await session.get(PreparedDay, 6) is None
-    cards = (
-        await session.execute(select(Card).where(Card.round_id == created_round.id))
-    ).scalars().all()
-    assert len(cards) == 3
-
-
-async def test_corrupt_prepared_falls_back_to_full_generation(session) -> None:
-    await _seed_tallying_day(session)
-    session.add(PreparedDay(day_index=6, payload="{битый json"))
     await session.commit()
 
     new_round, created = await create_next_round_detailed(session)
     assert created is True
-    assert new_round.day_index == 6
-    assert new_round.chapter_title
-    assert await session.get(PreparedDay, 6) is None
-
-
-async def test_prepared_from_other_version_is_discarded(session) -> None:
-    """Заготовка чужой версии формата не материализуется: мир честно
-    генерируется заново, а устаревшая строка удаляется."""
-    await _seed_tallying_day(session)
-    stale = json.dumps(
-        {
-            "v": 999,
-            "day_index": 6,
-            "rule": "majority",
-            "commitment": "c:s",
-            "chapter_title": "Устаревший формат",
-            "chapter_text": "текст",
-            "lore_summary": "лор",
-            "cover_path": "",
-            "cards": [],
-        }
-    )
-    session.add(PreparedDay(day_index=6, payload=stale))
-    await session.commit()
-
-    new_round, created = await create_next_round_detailed(session)
-    assert created is True
-    assert new_round.chapter_title != "Устаревший формат"
-    assert len(new_round.cards) == 3
-    assert await session.get(PreparedDay, 6) is None
-
-
-@pytest.mark.slow
-async def test_reset_clears_prepared_days(session) -> None:
-    from app.rounds import reset_game
-
-    session.add(PreparedDay(day_index=9, payload="заготовка старого мира"))
-    await session.commit()
-
-    await reset_game(session)
-    assert (await session.execute(select(PreparedDay))).scalars().all() == []
+    assert await _load_day_bible(session, new_round.day_index) is not None

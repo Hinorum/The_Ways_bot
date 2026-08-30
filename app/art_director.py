@@ -299,7 +299,7 @@ async def plan_day_art(
     # заход на случай, если модель очнулась/сменилась между попытками. Так же,
     # как у генератора главы (_free_story_llm), — без асимметрии.
     for attempt in range(1, 3):
-        result = await _chat_completion(messages)
+        result = await _chat_completion(messages, temperature=0.6, max_tokens=2000)
         if result is None:
             if attempt == 1:
                 logger.warning("Арт-библия: все модели недоступны — повтор через 3 с")

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import random
 import re
+import time
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
@@ -195,6 +197,23 @@ def _save_image(image: Image.Image, path: Path) -> None:
         image.save(path, "JPEG", quality=88, optimize=True)
     else:
         image.save(path, "PNG", optimize=True)
+
+
+# Потолок промпта для Pollinations: сверхдлинные урлы модель возвращает 400.
+_PROMPT_CAP_CHARS = 1200
+
+
+def _image_cache_path(
+    model: str, seed: int, prompt: str, negative_prompt: str | None, width: int, height: int
+) -> Path:
+    """Путь кэша кадра: детерминирован по (model, seed, промпт).
+
+    Возвращение стаи в то же место (тот же сид через place_seed_for) берёт
+    готовый файл вместо повторной генерации — лимиты free-тира не жгутся.
+    """
+    raw = f"{model}|{seed}|{width}x{height}|{prompt}|{negative_prompt or ''}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+    return Path(settings.media_dir) / "img_cache" / f"{digest}.jpg"
 
 
 def _gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image.Image:
@@ -453,12 +472,25 @@ async def fetch_free_image(
     seed: int | None = None,
     width: int = 768,
     height: int = 1024,
+    negative_prompt: str | None = None,
 ) -> bool:
     """Сцена дня от бесплатных моделей Pollinations. Несколько моделей и попыток:
-    если сеть молчит, вызывающий код рисует локальный шаблон."""
+    если сеть молчит, вызывающий код рисует локальный шаблон.
+
+    negative_prompt — что модели рисовать запрещено (библия дня передаёт
+    «no text, no watermark, no people» фолбэком). Кэш по (model, seed, промпт):
+    возвращение в уже нарисованное место использует готовый файл, а не жжёт
+    лимиты повторной генерацией. 429 не обрывает модель насовсем — короткая
+    пауза и повтор, затем охлаждение передаёт эстафету следующей модели.
+    """
     if not settings.use_free_images:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Потолок промпта: сверхдлинные у Pollinations давятся и возвращают
+    # 400; режем по границе слова, а не посреди.
+    if len(prompt) > _PROMPT_CAP_CHARS:
+        cut = prompt.rfind(" ", 0, _PROMPT_CAP_CHARS)
+        prompt = prompt[: cut if cut > 0 else _PROMPT_CAP_CHARS]
     base = "https://image.pollinations.ai/prompt/" + quote(styled_prompt(prompt))
     # Щедрые таймауты: бесплатная очередь flux иногда держит запрос минуту.
     long, mid = settings.image_timeout_seconds, max(45, settings.image_timeout_seconds - 25)
@@ -477,10 +509,23 @@ async def fetch_free_image(
                     model, _throttle_left_seconds(model),
                 )
                 break
+            use_seed = seed if seed is not None else random.randint(1, 999999)
+            cached = _image_cache_path(model, use_seed, prompt, negative_prompt, width, height)
+            if cached.is_file():
+                try:
+                    import shutil
+
+                    shutil.copyfile(cached, dest)
+                    logger.info("Картинка взята из кэша: %s", dest.name)
+                    return True
+                except OSError:
+                    pass
             url = (
                 f"{base}?width={width}&height={height}&nologo=true&private=true&model={model}"
-                f"&seed={seed if seed is not None else random.randint(1, 999999)}"
+                f"&seed={use_seed}"
             )
+            if negative_prompt:
+                url += "&negative_prompt=" + quote(negative_prompt)
             if settings.pollinations_token:
                 url += "&token=" + quote(settings.pollinations_token)
             try:
@@ -488,13 +533,16 @@ async def fetch_free_image(
                     response = await client.get(url)
                     if response.status_code == 429:
                         retry_after = response.headers.get("retry-after")
-                        _note_429(model, int(retry_after) if retry_after and retry_after.isdigit() else 60)
+                        cool = int(retry_after) if retry_after and retry_after.isdigit() else 60
+                        _note_429(model, cool)
                         logger.warning(
-                            "Pollinations %s: 429 (retry-after %s) — охлаждение модели, пробуем другую",
-                            model,
-                            retry_after or "—",
+                            "Pollinations %s: 429 (retry-after %s) — пауза и повтор",
+                            model, retry_after or "—",
                         )
-                        break
+                        # Короткая пауза и повтор той же модели: мимолётный троттл
+                        # не должен перекидывать кадр на соседнюю модель зря.
+                        await asyncio.sleep(min(max(5, cool), 20))
+                        continue
                     if response.status_code != 200:
                         logger.warning("Pollinations %s: HTTP %d (попытка %d)", model, response.status_code, attempt)
                         continue
@@ -511,6 +559,11 @@ async def fetch_free_image(
                     if image.size != (width, height):
                         image = image.resize((width, height))
                     _save_image(image, dest)
+                    try:
+                        cached.parent.mkdir(parents=True, exist_ok=True)
+                        _save_image(image, cached)
+                    except OSError:
+                        pass
                     logger.info("Картинка дня получена: %s (%d байт)", dest.name, len(content))
                     return True
             except Exception as exc:
@@ -525,6 +578,7 @@ async def fetch_day_image(
     seed: int | None = None,
     width: int = 768,
     height: int = 1024,
+    negative_prompt: str | None = None,
 ) -> bool:
     """Лестница кадра: Gemini «nano banana» → Pollinations (полный промпт,
     потом сжатый — длинные промпты иногда давят модель). False — вызывающий
@@ -532,12 +586,12 @@ async def fetch_day_image(
     практически безошибочной: ни один провайдер не успевает затроттлиться."""
     if await _fetch_gemini_image(prompt, dest, width=width, height=height):
         return True
-    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height):
+    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
         return True
     if not settings.use_free_images:
         return False
     retry_seed = None if seed is None else seed + 9_000_001
-    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height)
+    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt)
 
 
 async def generate_chapter(
@@ -555,6 +609,7 @@ async def generate_chapter(
     alignment_block: str | None = None,
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -572,6 +627,7 @@ async def generate_chapter(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        repeat_block=repeat_block,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -582,17 +638,61 @@ class _LLMRateLimited(Exception):
     """Внутренний сигнал: провайдер сбросил на 429 — пробуем следующую модель."""
 
 
-async def _chat_completion(messages: list[dict], timeout: int | None = None) -> tuple[dict, str] | None:
+# Выключатель провайдеров: после нескольких сбоев подряд провайдер уходит на
+# паузу, чтобы тик/шёпот/глава не долбили хост, который отвечает 429/5xx.
+# Память в процессе — рестарт бота сбрасывает паузу, это приемлемо.
+_PROVIDER_BREAKERS: dict[str, dict] = {}
+_PROVIDER_OPEN_AFTER = 3  # сбоев подряд, прежде чем открыть выключатель
+_PROVIDER_COOLDOWN = 120.0  # секунд «холода» провайдера
+
+
+def _breaker_status(base_url: str) -> bool:
+    """True, если выключатель открыт — провайдер на паузе, его пропускаем."""
+    state = _PROVIDER_BREAKERS.get(base_url)
+    return state is not None and time.monotonic() < state.get("open_until", 0.0)
+
+
+def _breaker_note(base_url: str, ok: bool) -> None:
+    """Регистрирует исход попытки: успех закрывает, сбой копит к открытию."""
+    state = _PROVIDER_BREAKERS.setdefault(base_url, {"fails": 0, "open_until": 0.0})
+    if ok:
+        state["fails"] = 0
+        state["open_until"] = 0.0
+        return
+    state["fails"] += 1
+    if state["fails"] >= _PROVIDER_OPEN_AFTER:
+        state["open_until"] = time.monotonic() + _PROVIDER_COOLDOWN
+        logger.warning(
+            "LLM-провайдер %s на паузе %s с (выключатель открыт)", base_url, _PROVIDER_COOLDOWN
+        )
+
+
+async def _chat_completion(
+    messages: list[dict],
+    timeout: int | None = None,
+    *,
+    temperature: float = 0.85,
+    max_tokens: int = 3500,
+    want_json: bool = False,
+) -> tuple[dict, str] | None:
     """OpenAI-совместимый запрос по цепочке провайдеров и моделей.
 
     Если задан LLM_API_KEY — сначала кастомный провайдер (Hugging Face, Groq,
     OpenRouter, локальная Ollama), затем бесплатный Pollinations. Первый
     валидный ответ побеждает; иначе None и вызывающий код уходит в офлайн-лор.
 
+    temperature/max_tokens — настройки per-call (арт-библия холоднее и короче
+    главы). want_json включает response_format json_object ТОЛЬКО на ключевом
+    провайдере: бесплатный Pollinations на него отвечает 400, и это отдельный
+    путь фолбэка.
+
     Устойчивость здесь общая для ВСЕХ текстовых генераторов (эпилог, открывающее
     эхо, тизер, шёпот, арт-библия — у части из них отдельных повторов нет вовсе):
       - 429: читаем retry-after (с потолком) и переходим к следующей модели,
-        не обрушая весь вызов;
+        не обрушивая весь вызов;
+      - 400 на response_format: повтор ТОГО ЖЕ запроса без json-режима;
+      - выключатель провайдера: несколько сбоев подряд (429/ошибка сети) уводят
+        хост на паузу `_PROVIDER_COOLDOWN`, каждый звонок его не долбит;
       - полный сбой цепочки: один повтор всего провайдера после короткой паузы,
         чтобы краткий сетевой blip не обнулял генерацию.
     """
@@ -611,26 +711,47 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
     providers.append((pollinations_url, pollinations_key, settings.story_model_chain))
     for overall_attempt in range(1, 3):
         for base_url, key, models in providers:
+            if _breaker_status(base_url):
+                logger.info("LLM %s в паузе — пропуск (выключатель открыт)", base_url)
+                continue
             for model in models:
+                body: dict = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if want_json and key:
+                    body["response_format"] = {"type": "json_object"}
                 try:
                     headers = {"Authorization": f"Bearer {key}"} if key else {}
                     async with httpx.AsyncClient(timeout=timeout) as client:
-                        response = await client.post(
-                            base_url,
-                            json={"model": model, "messages": messages, "temperature": 0.85, "max_tokens": 3500},
-                            headers=headers,
-                        )
-                        if response.status_code == 429:
-                            retry_after = response.headers.get("retry-after", "")
-                            pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
-                            logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
-                            await asyncio.sleep(pause)
-                            raise _LLMRateLimited()
-                        response.raise_for_status()
-                        return response.json(), model
+                        for json_fallback in range(2):
+                            response = await client.post(
+                                base_url,
+                                json=body,
+                                headers=headers,
+                            )
+                            if response.status_code == 429:
+                                retry_after = response.headers.get("retry-after", "")
+                                pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
+                                logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
+                                await asyncio.sleep(pause)
+                                raise _LLMRateLimited()
+                            if response.status_code == 400 and "response_format" in body and json_fallback == 0:
+                                logger.warning(
+                                    "LLM %s @ %s: 400 на json-режим — повтор без него", model, base_url
+                                )
+                                body.pop("response_format", None)
+                                continue
+                            response.raise_for_status()
+                            _breaker_note(base_url, True)
+                            return response.json(), model
                 except _LLMRateLimited:
+                    _breaker_note(base_url, False)
                     continue
                 except Exception as exc:
+                    _breaker_note(base_url, False)
                     logger.warning("LLM %s @ %s не ответил: %s", model, base_url, exc)
                     continue
         if overall_attempt == 1:
@@ -642,7 +763,7 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
 def _chapter_text_fields(data: dict) -> list[str]:
     parts = [str(data.get("title", "")), str(data.get("text", "")), str(data.get("lore_summary", ""))]
     for card in data.get("cards") or []:
-        for key in ("title", "description", "consequence", "image_prompt"):
+        for key in ("title", "description", "consequence"):
             parts.append(str(card.get(key, "")))
     return parts
 
@@ -669,11 +790,6 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     for card in cards:
         tag = card.get("tag")
         card["tag"] = tag if tag in {"risk", "care", "cunning"} else "care"
-        card.setdefault(
-            "image_prompt",
-            f"flat 2D vector cartoon tarot card, cozy-dystopia, bold outlines, {card.get('title', '')}, "
-            "stray dog before a glitching portal, no text",
-        )
     # Порядок карт перемешивается детерминированно: иначе модели почти всегда
     # возвращают риск/забота/хитрость по порядку, и Путь I становится предсказуемым.
     order_rng = random.Random(f"cardorder:{day_index}:{data.get('title', '')}")
@@ -694,6 +810,7 @@ def _build_story_prompt(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -760,6 +877,7 @@ def _build_story_prompt(
             "вернувшегося места укажи в поле place.\n"
             + places_block + "\n"
         )
+    repeat_text = f"{repeat_block}\n" if repeat_block else ""
     head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
@@ -771,6 +889,7 @@ def _build_story_prompt(
         f"{echo_block}"
         f"{distant_block}"
         f"{places_text}"
+        f"{repeat_text}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
@@ -780,9 +899,10 @@ def _build_story_prompt(
         "Обязательный состав главы, по порядку:\n"
     )
     if pending_outcome:
-        # Фаза 1 прегенерации: итог «вчера» ещё неизвестен (глава собирается
-        # в час подсчёта, до вскрытия урны). Отголосок допишет отдельный
-        # короткий вызов после итогов — здесь он превратился бы в галлюцинацию.
+        # Пережиток двухфазной прегенерации: глава собиралась в час подсчёта,
+        # до вскрытия урны, и отголосок дописывал отдельный короткий вызов
+        # после итогов. В инлайн-днях параметр всегда False; ветка сохранена
+        # для совместимости тестов собирателя.
         opening_line = (
             "(1) Вступление-отголосок будет дописано позже отдельным вызовом — "
             "НЕ пиши его. Начинай сразу со сцены «сейчас», не упоминая "
@@ -841,13 +961,13 @@ def _build_story_prompt(
         "угроза»: что стая получит и чем за это заплатит; оно завтра станет "
         "каноном.\n"
             'Мини-пример формы ответа (СОКРАЩЁН, значения выдуманы — не копируй их): '
-        '{"title":"День 9. Тихий порт","place":"Тихий порт","text":"…","lore_summary":"…","cover_prompt":"wide shot, …","cards":[{"title":"…","description":"…","consequence":"обещание + угроза","tag":"risk","image_prompt":"…"},{},{},{}]}. '
+        '{"title":"День 9. Тихий порт","place":"Тихий порт","text":"…","lore_summary":"…","cover_prompt":"wide shot, …","cards":[{"title":"…","description":"…","consequence":"обещание + угроза","tag":"risk"},{},{},{}]}. '
     'Формат: {"title":"День N. ...","place":"короткое название места дня",'
         f'"text":"история дня, {chapter_low}-{chapter_high} знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
         '"cards":[{"title":"...","description":"...","consequence":"...",'
-        '"tag":"risk|care|cunning","image_prompt":"english scene, no text"},{},{}]}. '
+        '"tag":"risk|care|cunning"},{},{}]}. '
         "Ровно 3 карты: риск, забота, хитрость. Ссылайся на прошлый канон."
     )
 
@@ -867,6 +987,7 @@ async def _free_story_llm(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -874,6 +995,7 @@ async def _free_story_llm(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        repeat_block=repeat_block,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},

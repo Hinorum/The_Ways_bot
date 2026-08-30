@@ -4,7 +4,6 @@
 генераторы заменены мгновенными — интересует только конечный автомат дня.
 """
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -15,9 +14,8 @@ from app.art_director import offline_bible
 from app.lore import compose_chapter
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Card, PreparedDay, Round, RoundStatus, WatcherState, WinRule
-from app.rounds import _PREGEN_LOCK_PREFIX
-from app.scheduler import _prepare_job, tick
+from app.models import Card, PreparedDay, Round, RoundStatus, WinRule
+from app.scheduler import tick
 
 
 @pytest.fixture(autouse=True)
@@ -106,71 +104,33 @@ async def _drain_background(timeout: float = 10.0) -> None:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def test_prepare_job_seeds_next_day_and_clears_lock() -> None:
-    round_id = await _seed(9501, RoundStatus.TALLYING, voting_in=timedelta(hours=-2), tally_in=timedelta(minutes=30))
-    try:
-        await _prepare_job(round_id)
-        async with SessionLocal() as db:
-            prepared = await db.get(PreparedDay, 9502)
-            lock = (
-                await db.execute(select(WatcherState).where(WatcherState.key == f"{_PREGEN_LOCK_PREFIX}9502"))
-            ).scalar_one_or_none()
-        assert prepared is not None and prepared.payload
-        assert lock is None  # лок снят после успеха
-    finally:
-        await _cleanup(9501)
-
-
-async def test_prepare_job_ignores_open_round(monkeypatch) -> None:
-    prepare = AsyncMock(return_value=True)
-    monkeypatch.setattr("app.scheduler.prepare_next_day", prepare)
-    round_id = await _seed(9511, RoundStatus.OPEN, voting_in=timedelta(hours=5), tally_in=timedelta(hours=6))
-    try:
-        await _prepare_job(round_id)
-        assert prepare.await_count == 0  # день ещё живой — готовить нечего
-    finally:
-        await _cleanup(9511)
-
-
-async def test_prepare_job_swallows_errors(monkeypatch) -> None:
-    async def boom(session, day_index):
-        raise RuntimeError("генератор упал")
-
-    monkeypatch.setattr("app.scheduler.prepare_next_day", boom)
-    round_id = await _seed(9521, RoundStatus.TALLYING, voting_in=timedelta(hours=-2), tally_in=timedelta(hours=1))
-    try:
-        await _prepare_job(round_id)  # не роняет вызывающий тик
-        async with SessionLocal() as db:
-            lock = (
-                await db.execute(select(WatcherState).where(WatcherState.key == f"{_PREGEN_LOCK_PREFIX}9522"))
-            ).scalar_one_or_none()
-        # Лок остался: следующий тик сможет повторить попытку после TTL.
-        assert lock is not None or (await db.get(PreparedDay, 9522)) is None
-    finally:
-        await _cleanup(9521)
-
-
 async def test_tick_closes_voting_when_window_over() -> None:
     await _seed(9531, RoundStatus.OPEN, voting_in=timedelta(minutes=-5), tally_in=timedelta(hours=1))
     try:
         await tick(None)
         assert await _status_of(9531) == RoundStatus.TALLYING
     finally:
+        # Тизер окон подсчёта уходит фоном в этом же окне — ждём, чтобы
+        # его сессия БД не держала SQLite-лок для следующего теста.
+        await _drain_background()
         await _cleanup(9531)
 
 
-async def test_tick_schedules_preparation_during_tally_window(monkeypatch) -> None:
-    prepare_job = AsyncMock()
-    monkeypatch.setattr("app.scheduler._prepare_job", prepare_job)
+async def test_tick_does_not_prepare_next_day_during_tally_window() -> None:
+    """Прегенерация убрана: в (легаси) окне подсчёта заготовка следующего
+    дня не создаётся — день откроется инлайн-генерацией при финализации."""
     await _seed(9541, RoundStatus.TALLYING, voting_in=timedelta(hours=-3), tally_in=timedelta(minutes=20))
     try:
         await tick(None)
-        for _ in range(20):
-            await asyncio.sleep(0)  # даём фоновой задаче стартовать
-        assert prepare_job.await_count == 1
-        assert prepare_job.await_args.args[0] >= 1
-    finally:
         await _drain_background()
+        async with SessionLocal() as db:
+            prepared = (
+                await db.execute(
+                    select(PreparedDay).where(PreparedDay.day_index == 9542).limit(1)
+                )
+            ).scalar_one_or_none()
+        assert prepared is None
+    finally:
         await _cleanup(9541)
 
 

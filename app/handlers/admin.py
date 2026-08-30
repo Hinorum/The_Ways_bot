@@ -34,7 +34,6 @@ from app.rounds import (
     ensure_current_round,
     finish_tally,
     get_active_round,
-    patch_prepared_day,
     reset_game,
     write_epilogue,
 )
@@ -78,19 +77,6 @@ async def track_chat(event: ChatMemberUpdated) -> None:
     logger.info("Чат %s (%s): статус бота %s, active=%s", chat.id, chat.type, status, active)
 
 
-async def _patch_prepared_safe(session, round_row) -> None:
-    """Фаза 2 прегенерации для /advance: итог дня вплетается в заготовку.
-
-    Падение не роняет команду — день откроется заготовкой как есть.
-    Латентный баг истории: функция была sync и звала async patch_prepared_day
-    без await, а вызывали её через await — каждый ручной /advance открытого
-    дня падал TypeError'ом уже ПОСЛЕ подсчёта, не открывая следующий день."""
-    try:
-        await patch_prepared_day(session, round_row)
-    except Exception:
-        logger.exception("Патч заготовки итогом дня %s не удался", round_row.day_index)
-
-
 @router.message(Command("advance"))
 async def cmd_advance(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -127,14 +113,12 @@ async def cmd_advance(message: Message) -> None:
             if closed_here:
                 await award_points(session, round_row)
                 await write_epilogue(session, round_row)
-                await _patch_prepared_safe(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         elif round_row.status.value == "tallying":
             round_row, closed_here = await finish_tally(session, round_row)
             if closed_here:
                 await award_points(session, round_row)
                 await write_epilogue(session, round_row)
-                await _patch_prepared_safe(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         else:
             return

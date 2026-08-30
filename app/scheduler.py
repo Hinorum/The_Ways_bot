@@ -20,7 +20,6 @@ from app.rounds import (
     ensure_current_round,
     finish_tally,
     get_latest_round,
-    prepare_next_day,
     utc_aware,
 )
 from app.story import _TEASER_FALLBACKS
@@ -37,25 +36,6 @@ def set_bot(bot: Bot) -> None:
     _bot = bot
 
 
-async def _prepare_job(round_id: int) -> None:
-    """Фоновая заготовка следующего дня в час подсчёта.
-
-    Ошибки не роняют тик: если заготовка не удалась, день откроется старым
-    синхронным путём (чуть позже по сетке) — деградация мягкая.
-    """
-    await asyncio.sleep(0)
-    try:
-        async with SessionLocal() as session:
-            round_row = await session.get(Round, round_id)
-            if round_row is None or round_row.status != RoundStatus.TALLYING:
-                return
-            started = await prepare_next_day(session, round_row.day_index)
-            if started:
-                logger.info("Заготовка дня %s собрана заранее", round_row.day_index + 1)
-    except Exception:
-        logger.exception("Прегенерация следующего дня не удалась — откроем синхронно")
-
-
 # Кадр вечернего костра. Темы-константы держим здесь, чтобы вечерний «привал»
 # оценивался как самостоятельная сцена: стая у огня, невыбранные карты,
 # воздух висящей развилки. 1 кадр в день — отдельная генерация от обложки.
@@ -69,12 +49,26 @@ _EVENING_CAMP_SCENE = (
 _EVENING_CAMP_ART = "day{day_index}_camp.jpg"
 
 
-def _campfire_bible(round_row) -> dict:
-    """Минимальная библия вечернего кадра: костёр, стая, невыбранные карты."""
+def _campfire_bible(round_row, day_bible: dict | None = None) -> dict:
+    """Минимальная библия вечернего кадра: костёр, стая, невыбранные карты.
+
+    day_bible — полная библия дня из watcher_state: вечер наследует палитру,
+    свет и мотивы утреннего кадра, чтобы день выглядел одним миром (утро-ночь),
+    а костёр не прыгал в чужие цвета.
+    """
     place = (getattr(round_row, "place", None) or "").strip()
     scene = _EVENING_CAMP_SCENE
     if place:
         scene = f"{scene}, the {place} stretching dark beyond the fire"
+    if day_bible:
+        motifs = [str(m) for m in (day_bible.get("motifs") or [])][:3]
+        motifs.append("a card glinting faintly in the firelight")
+        return {
+            "shots": {"cover": {"scene": scene, "composition": ""}},
+            "palette": str(day_bible.get("palette") or "deep indigo and ember orange"),
+            "lighting": str(day_bible.get("lighting") or "low firelight, long soft shadows"),
+            "motifs": motifs,
+        }
     return {
         "shots": {"cover": {"scene": scene, "composition": ""}},
         "palette": "deep indigo and ember orange",
@@ -88,11 +82,14 @@ async def _campfire_art(day_index: int, round_row) -> str | None:
     from pathlib import Path
 
     from app.art_director import build_image_prompt, short_image_prompt
+    from app.rounds import _load_day_bible
     from app.story import fetch_day_image, render_cover
 
+    async with SessionLocal() as session:
+        day_bible = await _load_day_bible(session, day_index)
     dest = Path(settings.media_dir) / _EVENING_CAMP_ART.format(day_index=day_index)
     seed = 40_000 + day_index * 11
-    bible = _campfire_bible(round_row)
+    bible = _campfire_bible(round_row, day_bible)
     fetched = await fetch_day_image(
         build_image_prompt(bible, "cover", seed=seed),
         short_image_prompt(bible, "cover", seed=seed),
@@ -533,15 +530,6 @@ async def tick(bot: Bot | None = None) -> None:
                 await announce_new_day(bot, current)
 
         now = _now()
-        # Прегенерация следующего дня — в PREGEN_HOUR_UTC (за пару часов до
-        # закрытия): глава, арт-библия и картинки готовы заранее, поэтому
-        # на закрытии день откроется мгновенно.
-        if (
-            current.status == RoundStatus.OPEN
-            and now.hour == settings.pregen_hour_utc % 24
-            and now.minute < 15
-        ):
-            asyncio.create_task(_prepare_job(current.id))
         if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
             # БЕСШОВНОЕ ЗАКРЫТИЕ: подсчёт мгновенный — не выходим из тика,
             # а проваливаемся дальше к финализации в этом же проходе.
@@ -559,9 +547,9 @@ async def tick(bot: Bot | None = None) -> None:
             if already is None:
                 asyncio.create_task(_micro_event_job(current.id, current.day_index))
         if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
-            # ЛЕГАСИ-окно (старые раунды с часом подсчёта): готовим следующий
-            # день и тизер. Новая сетка проходит здесь насквозь мгновенно.
-            asyncio.create_task(_prepare_job(current.id))
+            # ЛЕГАСИ-окно (старые раунды с часом подсчёта): следующий день
+            # откроется синхронной генерацией в финализации. Новая сетка
+            # проходит здесь насквозь мгновенно.
             # Тизер ожидания: раз за день, сразу после закрытия голосования.
             from app.models import WatcherState
 
@@ -617,20 +605,20 @@ async def _finalize_new_day_job(finished_id: int) -> None:
     """Тяжёлая доработка нового дня — фоном, по готовности нейро-контента.
 
     Итоги уже разосланы отдельно (_announce_results_job). Здесь: эпилог →
-    пост эпилога → обложка победившей ветки → материализация нового дня →
-    пост дня → личные эха. Итоги не дублируются: announce_new_day зовётся
-    без finished. Свои краткоживущие сессии (нельзя переиспользовать сессию
-    тика — она за пределами этого контекста).
+    пост эпилога → новый день (инлайн-генерация по итогу «вчера») → пост дня →
+    личные эха. Итоги не дублируются: announce_new_day зовётся без finished.
+    Свои краткоживущие сессии (нельзя переиспользовать сессию тика — она за
+    пределами этого контекста).
     """
     from app.models import Round
 
     try:
         from app.broadcast import announce_epilogue, announce_new_day
-        from app.rounds import create_next_round_detailed, patch_prepared_day, write_epilogue
+        from app.rounds import create_next_round_detailed, write_epilogue
 
         # 1. Эпилог подтверждает выбор и закрепляется в БД (идемпотентно).
-        # cards грузим сразу: write_epilogue/patch_prepared_day ходят по ним
-        # синхронно, ленивая подгрузка вне await дала бы MissingGreenlet.
+        # cards грузим сразу: write_epilogue ходит по ним синхронно, ленивая
+        # подгрузка вне await дала бы MissingGreenlet.
         async with SessionLocal() as session:
             finished = (
                 await session.execute(
@@ -644,18 +632,13 @@ async def _finalize_new_day_job(finished_id: int) -> None:
             # читать его day_index из отвязанного объекта было бы ошибкой.
             finished_day_index = finished.day_index
             await write_epilogue(session, finished)
-            # Фаза 2 прегенерации: заготовка завтра собрана до вскрытия
-            # итогов — теперь итог дня известен и вплетается в её начало.
-            try:
-                await patch_prepared_day(session, finished)
-            except Exception:
-                logger.exception("Патч заготовки итогом дня не удался — день откроется как есть")
         # 2. Дописываем эпилог отдельным корочким постом (итоги уже ушли без него).
         async with SessionLocal() as session:
             finished = await session.get(Round, finished_id)
             if finished is not None:
                 await announce_epilogue(_bot, finished)
-        # 3. Материализуем и открываем новый день (по готовой заготовке).
+        # 3. Материализуем и открываем новый день. День рендерится сразу
+        # целиком по известному итогу «вчера» — без заготовки из часа подсчёта.
         # Финализация открывает ровно день после закрытого (N+1), а не
         # latest+1: так тик, уже создавший N+1, не провоцирует эскалацию в N+2
         # (двойной день, потерянные итоги N+1).

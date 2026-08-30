@@ -56,7 +56,7 @@ async def test_llm_bible_is_used_when_valid(monkeypatch) -> None:
         ]
     }
 
-    async def fake_chat(messages, timeout=40):
+    async def fake_chat(messages, timeout=40, **kwargs):
         return payload, "test-model"
 
     monkeypatch.setattr("app.art_director._chat_completion", fake_chat)
@@ -66,7 +66,7 @@ async def test_llm_bible_is_used_when_valid(monkeypatch) -> None:
 
 
 async def test_broken_llm_answer_falls_back_offline(monkeypatch) -> None:
-    async def fake_chat(messages, timeout=40):
+    async def fake_chat(messages, timeout=40, **kwargs):
         return {"choices": [{"message": {"content": "не JSON вообще"}}]}, "m"
 
     monkeypatch.setattr(settings, "use_free_story_llm", True)

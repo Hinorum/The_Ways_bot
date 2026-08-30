@@ -1,6 +1,5 @@
 """Квиз памяти: детерминированный расклад, условная кнопка, всплытие."""
 
-import random
 
 from app.echoes import build_memory_quiz, surfaced_echoes_for_round
 from app.models import LoreEcho
