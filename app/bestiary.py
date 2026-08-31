@@ -95,6 +95,13 @@ BEASTIES: dict[str, tuple[str, str]] = {
         "счёт против выбора. Встаёт в День Первого Лая и решает, разомкнётся "
         "ли петля, — что стая положила на чашу, то и станет осадком следующего.",
     ),
+    "archivist": (
+        "Архивариус Хранитель Спорных Версий",
+        "Торговец расхождениями: видит обе версии каждого дня — записанную "
+        "и помнитую стаёй — и торгует между ними. Никогда не врёт, но говорит "
+        "полуправдами. Его очки-лупы показывают разный текст в каждом стекле. "
+        "Хранит папки всех кругов, включая стёртые.",
+    ),
 }
 
 
@@ -109,6 +116,10 @@ async def note_round(session: AsyncSession, round_row: Round, season_key_value: 
     if bool(getattr(round_row, "sealed", False)):
         title, desc = BEASTIES["pit"]
         wanted.append(("pit", f"{title}. {desc}"))
+    else:
+        # Закон объявлен — Архивариус вышел из тени и показал расхождение.
+        title, desc = BEASTIES["archivist"]
+        wanted.append(("archivist", f"{title}. {desc}"))
     anchor_moment = round_row.opens_at
     from app.season import run_position, get_cached_anchor
 

@@ -22,7 +22,8 @@ def test_shift_mapping_and_clamp() -> None:
     for _ in range(5):
         apply_winner_shift(relations, "cunning")
     assert relations["liner"] == 3  # +6 → кламп до 3
-    assert relations["archivist"] == -3
+    # Хитрость = новые расхождения для Архивариуса: +1 за ход → +6 → кламп до 3.
+    assert relations["archivist"] == 3
     assert relations["master"] == 3
     # Хитрость — ремесло Еретика: +5 → кламп до 3.
     assert relations["heretic"] == 3
@@ -57,7 +58,7 @@ async def test_apply_round_result_commits_step(session) -> None:
     changed = await apply_round_result(session, "risk")
     assert changed is True
     loaded = await load_relations(session)
-    assert loaded["master"] == 1 and loaded["liner"] == -1 and loaded["archivist"] == 0
+    assert loaded["master"] == 1 and loaded["liner"] == -1 and loaded["archivist"] == -1
     # Трещина мира — Еретик доволен.
     assert loaded["heretic"] == 1
     # Неизвестный тег — шага нет.

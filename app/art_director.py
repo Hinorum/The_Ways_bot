@@ -110,12 +110,14 @@ _CHARACTER_MOTIFS = {
     "архивариус": (
         "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
         "drifting paper dust, loupe spectacles reflecting a different text "
-        "in each lens, whispering folders"
+        "in each lens, whispering folders, trader of discrepancies between "
+        "written records and living memory"
     ),
     "хранитель спорных версий": (
         "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
         "drifting paper dust, loupe spectacles reflecting a different text "
-        "in each lens, whispering folders"
+        "in each lens, whispering folders, trader of discrepancies between "
+        "written records and living memory"
     ),
     "администратор": (
         "faceless Administrator, a tall silhouette of counting hands and "

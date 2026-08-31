@@ -32,13 +32,13 @@ async def test_note_round_records_masks_once_per_season(session) -> None:
     await session.flush()
     created = await note_round(session, first, season_key_value="2026-08")
     await session.commit()
-    # День 1 сезона: маска закона + Крыса (ранний круг сансары).
-    assert created == 2
+    # День 1 сезона: маска закона + Крыса (ранний круг сансары) + Архивариус (закон объявлен).
+    assert created == 3
     keys = {
         row[0]
         for row in (await session.execute(select(BestiarySighting.beast_key))).all()
     }
-    assert {"wolf", "rat"} <= keys
+    assert {"wolf", "rat", "archivist"} <= keys
 
     # Второй день с той же маской — дубля нет.
     second = _open_round(1001, rule=WinRule.MINORITY)
@@ -52,7 +52,7 @@ async def test_note_round_records_masks_once_per_season(session) -> None:
     # Новый сезон — запись появляется заново.
     created = await note_round(session, second, season_key_value="2026-09")
     await session.commit()
-    assert created == 2
+    assert created == 3
 
 
 async def test_sealed_day_records_pit(session) -> None:
