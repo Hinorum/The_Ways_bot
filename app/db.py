@@ -153,6 +153,13 @@ async def init_db() -> None:
             await conn.execute(text(
                 "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE"
             ))
+            # Серия верных путей для титулов и.retention.
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_streak INTEGER NOT NULL DEFAULT 0"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS best_streak INTEGER NOT NULL DEFAULT 0"
+            ))
             await conn.execute(text(
                 "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
             ))
