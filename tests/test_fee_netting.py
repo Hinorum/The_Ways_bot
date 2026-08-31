@@ -113,9 +113,9 @@ async def test_dust_shares_roll_to_weekly_pot(session: AsyncSession, monkeypatch
 
     created = await stakes_mod.finalize_day_payouts(session, round_row)
     payouts = list((await session.execute(select(Payout))).scalars())
-    # Только доли казны: рейк и копилка месяца. Призовых переводов нет.
-    assert created == 2
-    assert {row.kind for row in payouts} == {"rake", "leaderboard"}
+    # Только рейк казны. Копилка месяца — отдельный учёт в LeaderboardPot, не Payout.
+    assert created == 1
+    assert {row.kind for row in payouts} == {"rake"}
 
     pot = to_nano(10)
     weekly_cut = pot * 200 // 10_000
@@ -159,7 +159,7 @@ async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
     }
     assert "prize" not in kinds
     assert "refund" not in kinds  # ставка победителя не «возвращена» — она разыграна
-    assert created == 2  # только доли казны
+    assert created == 1  # только рейк казны (копилка месяца — в LeaderboardPot)
 
     pot = to_nano(1)
     weekly_cut = pot * 200 // 10_000

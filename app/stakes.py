@@ -349,7 +349,6 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             if house_cut > 0:
                 created += add_treasury_payout("rake", house_cut)
             if board_cut > 0:
-                created += add_treasury_payout("leaderboard", board_cut)
                 month = round_row.tally_ends_at.strftime("%Y-%m")
                 pot_row = (await session.execute(
                     select(LeaderboardPot).where(LeaderboardPot.month == month)

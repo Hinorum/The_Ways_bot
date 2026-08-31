@@ -700,6 +700,10 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
             session.add(WatcherState(key=WEEKLY_MARKER_KEY, value=prev_key))
         else:
             marker.value = prev_key
+        try:
+            nomination = await _memory_nomination(session, period_start, period_end)
+        except Exception:
+            nomination = None
         await session.commit()
 
     logger.info(
@@ -715,10 +719,6 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
         "При равенстве верных путей Стая смотрит на вклад Gram, а затем — "
         "кто раньше всех заявил о месте."
     )
-    try:
-        nomination = await _memory_nomination(session, period_start, period_end)
-    except Exception:
-        nomination = None
     if nomination:
         lines.append(nomination)
     if rolled > 0:
