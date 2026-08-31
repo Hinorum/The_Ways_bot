@@ -80,6 +80,9 @@ class Player(Base):
     # вечерний пост и прочие анонсы) в личку бота. По умолчанию — да; игрок
     # может снять или вернуть её кнопкой в /start.
     dm_subscribed: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Стрик: текущая серия правильных голосований и лучшая за всё время.
+    current_streak: Mapped[int] = mapped_column(Integer, default=0)
+    best_streak: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

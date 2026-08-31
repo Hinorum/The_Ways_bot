@@ -739,6 +739,8 @@ def start_scheduler() -> None:
     from app.rounds import polish_stub_images
 
     _register_job("img-polish", polish_stub_images, "interval", hours=2)
+    # Напоминание о голосовании: каждый час с 11:00 до 22:00 UTC
+    _register_job("vote-reminder", _vote_reminder_job, "cron", hour="11-22", minute=30)
     # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
     from app.style_review import run_weekly_review_and_notify
 
@@ -750,4 +752,98 @@ def start_scheduler() -> None:
         hour=18,
         minute=0,
     )
+    # Еженедельный отчёт стаи: воскресенье 20:00 UTC
+    _register_job(
+        "weekly-report",
+        _weekly_report_job,
+        "cron",
+        day_of_week="sun",
+        hour=20,
+        minute=0,
+    )
     scheduler.start()
+
+
+async def _vote_reminder_job() -> None:
+    """Напоминание игрокам проголосовать: DM тем, кто ещё не голосовал сегодня."""
+    from app.handlers.common import bot_instance
+
+    bot = bot_instance
+    if bot is None:
+        return
+    try:
+        async with SessionLocal() as session:
+            current = await get_active_round(session)
+            if current is None or current.status != RoundStatus.OPEN:
+                return
+            # Получаем всех игроков, которые ещё не голосовали
+            from sqlalchemy import select as _select
+
+            from app.models import Vote
+
+            voted_result = await session.execute(
+                _select(Vote.player_id).where(Vote.round_id == current.id)
+            )
+            voted_ids = {row[0] for row in voted_result.all()}
+
+            from app.models import Player
+
+            all_players = await session.execute(
+                _select(Player).where(Player.dm_subscribed == True)
+            )
+            unbotted = [p for p in all_players.scalars().all() if p.id not in voted_ids]
+
+            if not unbotted:
+                return
+
+            law_name = {
+                "MAJORITY": "Большинство",
+                "MINORITY": "Меньшинство",
+                "MEDIAN": "Медиана",
+            }.get(current.win_rule.value, "???")
+
+            text = (
+                f"🐺 День {current.day_index} открыт, но ты ещё не выбрал путь!\n"
+                f"⚖️ Закон сегодня: {law_name}\n"
+                f"📖 {current.chapter_title}\n\n"
+                f"Голосование закрывается через несколько часов. Успей!"
+            )
+
+            from app.broadcast import _dm_send_all
+
+            async def _deliver(pid: int) -> None:
+                try:
+                    await bot.send_message(pid, text)
+                except Exception:
+                    pass
+
+            sent = await _dm_send_all(bot, _deliver, "vote-reminder")
+            logger.info("Напоминание о голосовании отправлено: %d сообщений", sent)
+    except Exception as exc:
+        logger.warning("Ошибка напоминания о голосовании: %s", exc)
+
+
+async def _weekly_report_job() -> None:
+    """Еженедельный отчёт стаи: статистика + топ стриков."""
+    from app.handlers.common import bot_instance
+    from app.streaks import weekly_report
+
+    bot = bot_instance
+    if bot is None:
+        return
+    try:
+        async with SessionLocal() as session:
+            report = await weekly_report(session)
+
+        from app.broadcast import _dm_send_all
+
+        async def _deliver(pid: int) -> None:
+            try:
+                await bot.send_message(pid, report)
+            except Exception:
+                pass
+
+        sent = await _dm_send_all(bot, _deliver, "weekly-report")
+        logger.info("Еженедельный отчёт отправлен: %d сообщений", sent)
+    except Exception as exc:
+        logger.warning("Ошибка еженедельного отчёта: %s", exc)

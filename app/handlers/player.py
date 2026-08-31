@@ -441,10 +441,17 @@ async def _score_text(user) -> str:
         choice = f"{path_mark('care', str(user.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}."
     else:
         choice = f"В прошлом дне ты выбрал путь {POSITIONS[vote.card_position]}."
+
+    from app.streaks import streak_text, path_legacy
+
+    streak_info = streak_text(player)
+    legacy = await path_legacy(session, limit=3)
+
     text = (
         f"{choice}\n{result_mark(f'score:{user.id}')} "
         f"Очки: {player.score} · Угаданных законов: {player.correct_picks}\n"
-        f"🧠 Память сети: {memory_hits} · ✨ Второй нюх: {player.inspiration}"
+        f"🧠 Память сети: {memory_hits} · ✨ Второй нюх: {player.inspiration}\n\n"
+        f"{streak_info}"
     )
     if calling is not None:
         text += f"\n{calling.emoji} Призвание: {calling.title}."
@@ -452,6 +459,11 @@ async def _score_text(user) -> str:
         text += "\nПризвание ещё не выбрано — /calling"
     if stats is not None:
         text += f"\n{trail_line(stats)}"
+    if legacy:
+        text += "\n\n🌫 Следы, которые могут вернуться:"
+        for item in legacy[:3]:
+            tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(item["tag"], "❓")
+            text += f"\n  {tag_emoji} День {item['day']}: «{item['title']}»"
     if chronicle:
         text += "\n\n📜 Твоя хроника:\n" + "\n".join(chronicle)
     return text
@@ -489,6 +501,53 @@ async def on_score_view(callback: CallbackQuery) -> None:
         return
     # Лимит окна — 200 символов, счёт компактный и помещается.
     text = await _score_text(callback.from_user)
+    await callback.answer(text[:200], show_alert=True)
+
+
+@router.message(Command("rank"))
+async def cmd_rank(message: Message) -> None:
+    """Показывает рейтинг игрока среди стаи."""
+    from app.streaks import calc_rank, title_for_streak
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, message.from_user)
+        rank = await calc_rank(session, player.id)
+        title = title_for_streak(player.current_streak)
+
+    text = (
+        f"{title.emoji} **Твой рейтинг**\n\n"
+        f"📊 Общий: #{rank['overall_rank']} из {rank['overall_total']}\n"
+        f"📅 На этой неделе: #{rank['week_rank']} из {rank['week_total']} ({rank['week_votes']} голосов)\n"
+        f"🗓 В этом месяце: {rank['month_votes']} голосов\n\n"
+        f"🔥 Серия: {player.current_streak} | Лучшая: {player.best_streak}"
+    )
+
+    if message.chat.type == ChatType.PRIVATE:
+        await message.answer(text)
+    else:
+        await message.answer(
+            "Рейтинг — только в личке.",
+            reply_markup=_personal_keyboard("rank:view", "Мой рейтинг"),
+        )
+
+
+@router.callback_query(F.data == "rank:view")
+async def on_rank_view(callback: CallbackQuery) -> None:
+    from app.streaks import calc_rank, title_for_streak
+
+    if callback.message is None:
+        await callback.answer()
+        return
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        rank = await calc_rank(session, player.id)
+        title = title_for_streak(player.current_streak)
+
+    text = (
+        f"{title.emoji} Рейтинг\n"
+        f"📊 #{rank['overall_rank']} из {rank['overall_total']} | "
+        f"📅 Неделя: #{rank['week_rank']} ({rank['week_votes']})"
+    )
     await callback.answer(text[:200], show_alert=True)
 
 

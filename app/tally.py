@@ -67,6 +67,23 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
             .where(Player.id.in_(chunk), (Player.correct_picks % 7) == 0, Player.correct_picks > 0)
             .values(inspiration=Player.inspiration + 1)
         )
+
+    # Обновление стриков: победители увеличивают, проигравшие сбрасывают
+    from app.streaks import update_streak
+
+    # Все голосовавшие
+    all_voters_result = await session.execute(
+        select(Player).where(Player.id.in_(voter_ids))
+    )
+    all_voters = {p.id: p for p in all_voters_result.scalars().all()}
+
+    winner_set = set(winner_ids)
+    for voter_id in voter_ids:
+        player = all_voters.get(voter_id)
+        if player:
+            was_correct = voter_id in winner_set
+            await update_streak(session, player, was_correct)
+
     await session.commit()
     return len(winner_ids)
 
