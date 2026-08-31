@@ -22,7 +22,7 @@ RELATION_KEY = "npc_relations"
 NPC_TITLES = {
     "liner": "Лайнер",
     "archivist": "Архивариус",
-    "master": "Хозяин Ошибки",
+    "master": "Администратор",
     "heretic": "Еретик",
 }
 

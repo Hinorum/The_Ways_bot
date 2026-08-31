@@ -266,7 +266,7 @@ async def get_run_anchor(session: AsyncSession) -> dict:
 async def _villain_block(
     session: AsyncSession, open_moment: datetime, anchor: dict
 ) -> str | None:
-    """Сюжет-машина сезона: продвигает план Хозяина Ошибки и отдаёт блок промпта.
+    """Сюжет-машина сезона: продвигает план Администратора и отдаёт блок промпта.
 
     Состояние живёт в watcher_state (один ключ на весь мир): ступень и список
     событий. Ступени считаются по дням ЗАБЕГА (от сброса), а не календаря.
@@ -798,7 +798,7 @@ async def _materialize_round(
         round_row.cards.append(Card(**card))
     session.add(round_row)
     await session.flush()
-    # Бестиарий: маска закона дня и (со 2-й ступени) Хозяин Ошибки —
+    # Бестиарий: маска закона дня и (со 2-й ступени) Администратор —
     # по записи за сезон, идемпотентно.
     from app.bestiary import note_round as bestiary_note_round
 

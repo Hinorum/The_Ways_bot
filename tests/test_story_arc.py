@@ -1,4 +1,4 @@
-"""Арка месяца: этапы, миссии дня, приметы Лая, офлайн-пулы и вплетение в лор."""
+"""Арка месяца: акты, миссии дня, приметы Лая, офлайн-пулы и вплетение в лор."""
 
 from __future__ import annotations
 
@@ -23,29 +23,29 @@ from app.story_arc import (
 
 
 def test_stage_buckets_cover_month() -> None:
+    """Границы актов: 0.0-0.27 Вход, 0.27-0.60 Поиск, 0.60-0.93 Кризис, 0.93-1.01 Финал."""
     total = 28
-    assert arc_stage_index(1, total) == 0      # приход
-    assert arc_stage_index(2, total) == 0      # первые дни
-    assert arc_stage_index(3, total) == 0      # граница (2/27 = 7.4%)
-    assert arc_stage_index(4, total) == 1      # завязка
-    assert arc_stage_index(14, total) == 3     # дилемма (середина)
-    assert arc_stage_index(21, total) == 4     # подготовка (20/27 = 74%)
-    assert arc_stage_index(23, total) == 5     # кульминация (22/27 = 81%)
-    assert arc_stage_index(28, total) == 6     # финал
-    # Двухдневная петля: всё сводится к последнему этапу.
-    assert arc_stage_index(2, 2) == 6
-    assert arc_stage_index(1, 1) == 6
+    assert arc_stage_index(1, total) == 0      # Вход: (0)/(27) = 0.0
+    assert arc_stage_index(2, total) == 0      # Вход: (1)/(27) = 0.037
+    assert arc_stage_index(3, total) == 0      # Вход: (2)/(27) = 0.074
+    assert arc_stage_index(4, total) == 0      # Вход: (3)/(27) = 0.111
+    assert arc_stage_index(9, total) == 1      # Поиск: (8)/(27) = 0.296
+    assert arc_stage_index(14, total) == 1     # Поиск: (13)/(27) = 0.481
+    assert arc_stage_index(21, total) == 2     # Кризис: (20)/(27) = 0.741
+    assert arc_stage_index(27, total) == 3     # Финал: (26)/(27) = 0.963
+    assert arc_stage_index(28, total) == 3     # Финал: (27)/(27) = 1.0
+    # Двухдневная петля: последний день попадает в финал.
+    assert arc_stage_index(2, 2) == 3
 
 
 def test_block_carries_stable_tokens() -> None:
     block = arc_block(12, 28, run_key="2026-09")
-    assert "ЭТАП=3" in block
+    # День 12: 11/27 = 0.407 -> Поиск (акт 1)
+    assert "ЭТАП=1" in block
     assert "Миссия дня:" in block
-    # Разбор кормит офлайн-сборку лора тем же текстом.
     details = arc_details_from_block(block)
-    assert details["stage"] == 3
+    assert details["stage"] == 1
     assert details["mission"] in arc_stage(12, 28)["missions"]
-    # Грабли не путают: без арки разбор пустой.
     assert arc_details_from_block(None) == {}
     assert arc_details_from_block("просто текст без арки") == {}
 
@@ -61,28 +61,14 @@ def test_whisper_and_teaser_pools_stage_bound() -> None:
     total = 28
     assert whisper_pool(1, total) == whisper_pool_for_stage(0)
     assert teaser_pool(21, total) == arc_stage(21, total)["teaser"]
-    assert whisper_pool_for_stage(6), "финал не остаётся пустым для вечера"
+    assert whisper_pool_for_stage(3), "Финал не остаётся пустым для вечера"
 
 
-def test_howl_signs_appear_on_milestone_stages_only() -> None:
-    total = 28
-    assert sign_for(1, total) is None        # приход
-    assert sign_for(4, total) is not None    # завязка → примета №1
-    assert sign_for(4, total)[0] == "№1"
-    assert sign_for(14, total)[0] == "№2"    # дилемма
-    assert sign_for(21, total) is None       # подготовка — без приметы
-    assert sign_for(23, total)[0] == "№3"    # кульминация
-    assert sign_for(28, total) is None       # финал
-    # Текст приметы — из своего пула.
-    assert sign_for(14, total)[1] in _HOWL_SIGNS[1]
-
-
-def test_block_shows_sign_and_samsara_line() -> None:
+def test_block_shows_memory_line() -> None:
     block = arc_block(14, 28, run_key="2026-09")
-    assert "ПРИМЕТА ЛАЯ №2:" in block
-    samsara = arc_block(1, 28, run_key="2026-10", previous_season_summary="прошлый месяц закрылся выбором дома")
-    assert "сансара" in samsara.lower()
-    assert "прошлый месяц закрылся выбором дома" in samsara
+    assert "Миссия дня:" in block
+    memory = arc_block(1, 28, run_key="2026-10", previous_season_summary="прошлый месяц закрылся выбором дома")
+    assert "прошлый месяц закрылся выбором дома" in memory
     assert arc_block(1, 1) == ""
 
 
@@ -90,48 +76,49 @@ def test_mission_flows_into_offline_chapter() -> None:
     """Офлайн-глава несёт миссию дня из арки (связный текст без сети)."""
     block = arc_block(12, 28, run_key="2026-09")
     mission = arc_details_from_block(block)["mission"]
-    assert mission, "у этапа должна быть миссия"
+    assert mission, "у акта должна быть миссия"
     chapter = compose_chapter(
         12, ["Костёр стаи: появился общий костёр"], season_block=block, salt="t"
     )
     assert mission in chapter["text"]
-    # Без арки текст строится без неё.
     plain = compose_chapter(12, ["Костёр стаи: появился общий костёр"], salt="t")
     assert mission not in plain["text"]
 
 
 def test_offline_cards_wear_stage_titles() -> None:
-    """Карты офлайн-дня надевают названия своего этапа (лицо месяца)."""
-    block = arc_block(12, 28, run_key="2026-09")  # этап 3 «Дилемма»
+    """Карты офлайн-дня надевают названия своего акта (лицо месяца)."""
+    block = arc_block(12, 28, run_key="2026-09")  # акт 1 «Поиск»
     chapter = compose_chapter(
         12, ["Костёр стаи: появился общий костёр"], season_block=block, salt="arc-cards"
     )
     stage_titles: dict[str, list[str]] = {
-        tag: list(arc_card_titles(3, tag)) for tag in ("risk", "care", "cunning")
+        tag: list(arc_card_titles(1, tag)) for tag in ("risk", "care", "cunning")
     }
     for card in chapter["cards"]:
         assert card["title"] in stage_titles[card["tag"]], (
-            f"карта {card['title']} не из пула этапа 3"
+            f"карта {card['title']} не из пула акта 1"
         )
 
 
 def test_card_title_pools_cover_all_stages_and_meanings() -> None:
-    assert len(_ARC_CARD_TITLES) == 7
+    assert len(_ARC_CARD_TITLES) == 4
     for stage_idx, by_tag in _ARC_CARD_TITLES.items():
         for tag in ("risk", "care", "cunning"):
-            assert len(by_tag.get(tag, ())) >= 2, f"этап {stage_idx} / {tag} пуст"
-    # Запрещённые для карты слова пока не просочились в названия.
+            assert len(by_tag.get(tag, ())) >= 2, f"акт {stage_idx} / {tag} пуст"
     titles = " ".join(t for by_tag in _ARC_CARD_TITLES.values() for t in by_tag.values() for t in t)
     for banned in ("вчера", "голосова", "итог"):
         assert banned not in titles.lower()
 
 
 def test_secret_revealed_on_milestone_blocks() -> None:
-    assert arc_secret(1) and arc_secret(3)
-    assert "СЕКРЕТ АРКИ" in arc_block(14, 28, run_key="2026-09")
-    # На приходе / финале секрета нет.
+    # Приметы и секреты на ступенях 1 (Поиск), 2 (Кризис), 3 (Финал)
+    assert arc_secret(1) and arc_secret(2) and arc_secret(3)
+    # День 14 ->	stage 1 (Поиск): примета №1 + секрет
+    block_14 = arc_block(14, 28, run_key="2026-09")
+    assert "ПРИМЕТА ЛАЯ №1:" in block_14
+    assert "СЕКРЕТ АРКИ" in block_14
+    # День 1 (Вход): без приметы, без секрета
     assert "СЕКРЕТ АРКИ" not in arc_block(1, 28, run_key="2026-09")
-    assert "СЕКРЕТ АРКИ" not in arc_block(28, 28, run_key="2026-09")
 
 
 def test_mission_scenes_translated_for_all_active_stages() -> None:
@@ -139,11 +126,10 @@ def test_mission_scenes_translated_for_all_active_stages() -> None:
     for total in (20, 28, 30):
         for day in range(1, total + 1):
             mission = mission_for(day, total, run_key="2026-09")
-            if not mission:  # этап «Финал» без миссий
+            if not mission:
                 continue
             assert mission in _ARC_MISSION_SCENES, f"нет сцены: {mission}"
             assert mission_scene(mission), f"пустая сцена: {mission}"
-    # Один и тот же день месяц к месяцу даёт ту же сцену.
     assert mission_scene(mission_for(12, 28, "2026-09")) == mission_scene(
         mission_for(12, 28, "2026-09")
     )
@@ -152,14 +138,13 @@ def test_mission_scenes_translated_for_all_active_stages() -> None:
 
 def test_cover_prompt_wears_mission_scene() -> None:
     """Офлайн-обложка дня несёт визуал миссии арки (мини-связка арта)."""
-    block = arc_block(12, 28, run_key="2026-09")  # этап 3, сцена из миссии
+    block = arc_block(12, 28, run_key="2026-09")
     chapter = compose_chapter(
         12, ["Костёр стаи: появился общий костёр"], season_block=block, salt="art"
     )
     scene = mission_scene(arc_details_from_block(block)["mission"])
-    assert scene, "у этапа 3 должна быть сцена"
+    assert scene, "у акта 1 должна быть сцена"
     assert scene in chapter["cover_prompt"]
-    # Без арки — ровный промпт места без сцены.
     plain = compose_chapter(
         12, ["Костёр стаи: появился общий костёр"], season_block=None, salt="art"
     )
