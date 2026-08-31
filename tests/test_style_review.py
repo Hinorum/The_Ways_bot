@@ -24,7 +24,7 @@ async def test_review_returns_editor_list(monkeypatch) -> None:
             ))
         await db.commit()
 
-    async def fake_chat(messages, timeout=90):
+    async def fake_chat(messages, timeout=90, **kwargs):
         # Промпт должен нести корпус глав.
         assert "Тропа 0" in messages[1]["content"]
         return (

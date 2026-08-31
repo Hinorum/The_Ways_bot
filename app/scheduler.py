@@ -923,6 +923,9 @@ async def _gepa_evolution_job() -> None:
             await session.commit()
 
             best = pop.best_gene()
+            # Обновляем кэш активного гена
+            from app.narrative_ai import set_active_gene
+            set_active_gene(best)
             logger.info(
                 "GEPA gen %d: best=%.3f tone='%s' sensory='%s' pacing='%s'",
                 pop.generation, best.fitness,
@@ -930,32 +933,3 @@ async def _gepa_evolution_job() -> None:
             )
     except Exception as exc:
         logger.warning("GEPA эволюция не удалась: %s", exc)
-
-
-def get_active_gepa_gene_sync() -> "PromptGene | None":
-    """Синхронно получает лучший ген GEPA из watcher_state (для prompt building).
-    Вызывается из story.py при построении промпта."""
-    from app.models import WatcherState
-    from app.narrative_ai import GEPAPopulation
-    from sqlalchemy import select as _select
-
-    try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return None  # не блокируем event loop
-
-        async def _load():
-            async with SessionLocal() as session:
-                result = await session.execute(
-                    _select(WatcherState).where(WatcherState.key == "gepa_population")
-                )
-                ws = result.scalar_one_or_none()
-                if ws and ws.value:
-                    pop = GEPAPopulation.from_json(ws.value)
-                    return pop.best_gene()
-                return None
-
-        return loop.run_until_complete(_load())
-    except Exception:
-        return None

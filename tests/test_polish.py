@@ -794,7 +794,7 @@ async def test_chapter_generation_retries_on_bad_payload(monkeypatch) -> None:
         ensure_ascii=False,
     )
 
-    async def flaky(messages, timeout=45):
+    async def flaky(messages, timeout=45, **kwargs):
         if flaky.calls == 0:
             flaky.calls = 1
             return {"choices": [{"message": {"content": "битый ответ без json"}}]}, "m1"

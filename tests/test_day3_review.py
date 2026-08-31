@@ -67,7 +67,7 @@ async def test_short_neural_chapter_falls_back_offline(monkeypatch) -> None:
             ]
         }
 
-    async def fake_chat(messages, timeout=40):
+    async def fake_chat(messages, timeout=40, **kwargs):
         return payload_for(300), "short-model"
 
     monkeypatch.setattr("app.story._chat_completion", fake_chat)
@@ -78,7 +78,7 @@ async def test_short_neural_chapter_falls_back_offline(monkeypatch) -> None:
 
     long_call = {"count": 0}
 
-    async def fake_chat_long(messages, timeout=40):
+    async def fake_chat_long(messages, timeout=40, **kwargs):
         long_call["count"] += 1
         return payload_for(2000), "long-model"
 

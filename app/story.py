@@ -1193,11 +1193,11 @@ def _build_story_prompt(
             + places_block + "\n"
         )
     repeat_text = f"{repeat_block}\n" if repeat_block else ""
-    # GEPA: динамический промпт от эволюционного гена
+    # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
     try:
-        from app.scheduler import get_active_gepa_gene_sync
-        _gene = get_active_gepa_gene_sync()
+        from app.narrative_ai import get_active_gene
+        _gene = get_active_gene()
         if _gene is not None:
             _gepa_block = _gene.to_prompt_block() + "\n"
     except Exception:
@@ -1404,8 +1404,11 @@ async def _free_story_llm(
     # Полный отказ сети — не приговор: повторная попытка всей цепочки после
     # короткой паузы. Раньше код возвращал None сразу (вопреки замыслу), и
     # краткий сетевой сбой уводил день в офлайн-лор без нужды.
-    for attempt in range(1, 3):
-        result = await _chat_completion(messages)
+    _sa_params: GenerationParams | None = None
+    _candidate_texts: list[str] = []
+    _current_temp = settings.llm_temperature
+    for attempt in range(1, 4):
+        result = await _chat_completion(messages, temperature=_current_temp)
         if result is None:
             if attempt == 1:
                 logger.warning("Все модели недоступны (сетевой сбой) — повтор через 5 с")
@@ -1481,15 +1484,14 @@ async def _free_story_llm(
                     logger.warning("Голосовое нарушение дня %d: %s", day_index, v)
                 # ── Shannon Entropy gate ──
                 _chapter_text = str(data.get("text", ""))
+                _ent = text_entropy(_chapter_text) if _chapter_text else 0.0
                 if len(_chapter_text.split()) > 20:
-                    _ent = text_entropy(_chapter_text)
                     if should_retry_entropy(_chapter_text, attempt):
                         logger.warning(
                             "Низкая энтропия дня %d: %.2f < %.1f (попытка %d) — повтор",
                             day_index, _ent, 3.0, attempt,
                         )
                         continue
-                    # Динамическая температура для следующей попытки
                     if _ent > 4.5:
                         logger.info(
                             "Высокая энтропия дня %d: %.2f > %.1f — понижаем температуру",
@@ -1507,6 +1509,26 @@ async def _free_story_llm(
                     logger.warning(
                         "Текст дня %d избыточен (Kolmogorov=%.2f < 0.25, попытка %d)",
                         day_index, _kol, attempt,
+                    )
+                # ── Dynamic temperature: adapt for next attempt ──
+                _candidate_texts.append(_chapter_text)
+                _current_temp = dynamic_temperature(_current_temp, _ent)
+                # ── SA for sealed/important days: optimize params on retry ──
+                if sealed and attempt >= 2 and len(_candidate_texts) >= 2:
+                    _base = GenerationParams(
+                        temperature=_current_temp,
+                        max_tokens=settings.llm_max_tokens,
+                        frequency_penalty=settings.llm_frequency_penalty,
+                        presence_penalty=settings.llm_presence_penalty,
+                    )
+                    _sa_result = sa_optimize_params(
+                        _base, _candidate_texts,
+                        rounds=3, seed=f"sa:{day_index}:{attempt}",
+                    )
+                    _current_temp = _sa_result.temperature
+                    logger.info(
+                        "SA для sealed дня %d: temp=%.2f → %.2f (попытка %d)",
+                        day_index, settings.llm_temperature, _current_temp, attempt,
                     )
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data

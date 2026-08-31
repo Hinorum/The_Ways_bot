@@ -212,7 +212,7 @@ async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypat
 
     captured: dict = {}
 
-    async def fake_chat_completion(messages, timeout=None):
+    async def fake_chat_completion(messages, timeout=None, **kwargs):
         captured["user"] = messages[1]["content"]
         return [{"choices": [{"message": {"content": "Вечерняя сцена у огня."}}]}]
 

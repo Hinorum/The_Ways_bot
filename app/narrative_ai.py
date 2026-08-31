@@ -53,7 +53,9 @@ def entropy_score(text: str) -> float:
 
 def should_retry_entropy(text: str, attempt: int, max_attempts: int = 3) -> bool:
     """Нужна ли повторная генерация из-за низкой энтропии.
-    На последней попытке не отказываем — принимаем что есть."""
+    На последней попытке (attempt >= max_attempts) не отказываем — принимаем что есть.
+    NOTE: в _free_story_llm цикл range(1, 4) → попытки 1,2,3. При attempt=3
+    max_attempts=3 → False, текст принимается даже с низкой энтропией."""
     if attempt >= max_attempts:
         return False
     ent = text_entropy(text)
@@ -472,8 +474,50 @@ def entropy_score_from_value(ent: float) -> float:
 # Интеграция: динамический промпт от лучшего гена
 # ─────────────────────────────────────────────────────────────────────
 
+# Module-level cache: лучший ген загружается при старте бота,
+# обновляется после каждой еженедельной эволюции.
+_active_gene: PromptGene | None = None
+
+
+def get_active_gene() -> PromptGene | None:
+    """Получить текущий лучший ген (sync, из cache)."""
+    return _active_gene
+
+
+async def load_active_gene() -> PromptGene | None:
+    """Загрузить лучший ген из watcher_state (async). Вызывать при старте бота."""
+    global _active_gene
+    try:
+        from app.db import SessionLocal
+        from app.models import WatcherState
+        from sqlalchemy import select as _select
+
+        async with SessionLocal() as session:
+            result = await session.execute(
+                _select(WatcherState).where(WatcherState.key == "gepa_population")
+            )
+            ws = result.scalar_one_or_none()
+            if ws and ws.value:
+                pop = GEPAPopulation.from_json(ws.value)
+                _active_gene = pop.best_gene()
+                logger.info(
+                    "GEPA: загружен ген gen=%d tone='%s' fitness=%.3f",
+                    pop.generation, _active_gene.system_tone, _active_gene.fitness,
+                )
+                return _active_gene
+    except Exception as exc:
+        logger.warning("GEPA: не удалось загрузить ген: %s", exc)
+    return None
+
+
+def set_active_gene(gene: PromptGene) -> None:
+    """Установить активный ген (вызывать после эволюции)."""
+    global _active_gene
+    _active_gene = gene
+    logger.info("GEPA: активный ген обновлён tone='%s'", gene.system_tone)
+
+
 def apply_gene_to_prompt(base_prompt: str, gene: PromptGene) -> str:
     """Инжект гена в базовый промпт. Добавляет ген-специфичные инструкции."""
     gene_block = gene.to_prompt_block()
-    # Вставляем после основных инструкций, перед контекстом дня
     return base_prompt + "\n\n" + gene_block

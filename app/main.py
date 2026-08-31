@@ -78,6 +78,12 @@ async def boot_game(bot) -> None:
         log.exception("Первый тик не удался — повторится по расписанию")
     start_scheduler()
     from app.scheduler import boot_maintenance
+    # GEPA: загружаем лучший ген в memory-cache при старте
+    try:
+        from app.narrative_ai import load_active_gene
+        await load_active_gene()
+    except Exception:
+        log.exception("GEPA: не удалось загрузить ген при старте")
 
     for name, step in (("backup", boot_maintenance), ("profile", lambda: apply_profile(bot))):
         try:
