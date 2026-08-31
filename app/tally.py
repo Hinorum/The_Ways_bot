@@ -219,7 +219,7 @@ def format_results(round_row: Round) -> str:
     mark_key = str(getattr(round_row, "id", round_row.day_index))
     reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     lines = [
-        f"{result_mark(mark_key)} Итог дня {round_row.day_index}",
+        f"{result_mark(mark_key)} День {round_row.day_index} закрыт",
         f"🕯 Архивариус вскрывает урну: {reveal}.",
     ]
     total_votes = sum(counts.values())
@@ -234,13 +234,13 @@ def format_results(round_row: Round) -> str:
         if alt_name:
             word = _votes_word(k)
             lines.append(
-                f"🩸 Канон держался на волоске: ещё {k} {word} за «{alt_name}» — "
+                f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
                 "и тропа повела бы иначе."
             )
     if getattr(round_row, "sealed", False):
-        lines.append(f"🗝 Запечатанный с утра закон оказался: {RULE_PHRASES[round_row.win_rule]}")
+        lines.append(f"🗝 Запечатанный закон: {RULE_PHRASES[round_row.win_rule]}")
     else:
-        lines.append(f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}")
+        lines.append(f"⚖️ Закон: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
     for position in range(3):
         mark = " ← 🏆 След" if position == round_row.winner_card else ""

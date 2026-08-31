@@ -134,7 +134,7 @@ async def test_results_reach_subscribed_players(tmp_path, monkeypatch) -> None:
         sent = {
             (call.args[0], call.args[1])
             for call in bot.send_message.await_args_list
-            if call.args and "Итог дня" in str(call.args[1])
+            if call.args and "закрыт" in str(call.args[1])
         }
         assert any(pid == subscribed for pid, _ in sent)
     finally:

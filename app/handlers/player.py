@@ -112,15 +112,15 @@ async def cmd_start(message: Message) -> None:
     lines = [
         f"{day_mark(uid)} <b>{settings.world_name}</b>",
         "",
-        "Ты — голос стаи потерянных собак, идущей сквозь сеть глючных миров.",
-        "Каждое утро Архивариус выносит три тропы и объявляет Закон дня:",
-        "большинство, меньшинство или середина — чей зов станет явью.",
+        "Потерянные собаки идут сквозь сеть глючных порталов.",
+        "Ты — один из них. Каждое утро Архивариус выносит три тропы",
+        "и объявляет Закон дня: большинство, меньшинство или середина.",
         "",
-        "Один выбор на всех. Победивший путь впечатается в мир,",
-        "и завтрашняя глава вырастет из него.",
+        "Один выбор на всех. Победивший путь впечатается в мир.",
+        "Завтрашняя глава вырастет из того, что ты выберешь сейчас.",
         "",
-        "🐾 Сутки Стаи: голосование идёт до закрытия дня — итоги и новая",
-        "развилка приходят сами, сразу после него.",
+        "🐾 Голосование идёт до закрытия дня.",
+        "Итоги и новая развилка придут сразу после.",
     ]
     lines.extend(_commands_help())
     if settings.ton_enabled:
@@ -436,11 +436,11 @@ async def _score_text(user) -> str:
         except Exception:
             stats = None
     if vote is None:
-        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал путь."
+        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал тропу."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
-        choice = f"{path_mark('care', str(user.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}."
+        choice = f"{path_mark('care', str(user.id))} Твоя тропа сегодня: {POSITIONS[vote.card_position]}."
     else:
-        choice = f"В прошлом дне ты выбрал путь {POSITIONS[vote.card_position]}."
+        choice = f"Вчера ты шёл тропой {POSITIONS[vote.card_position]}."
 
     from app.streaks import streak_text, path_legacy
 
@@ -449,18 +449,18 @@ async def _score_text(user) -> str:
 
     text = (
         f"{choice}\n{result_mark(f'score:{user.id}')} "
-        f"Очки: {player.score} · Угаданных законов: {player.correct_picks}\n"
+        f"Следы: {player.score} · Верных путей: {player.correct_picks}\n"
         f"🧠 Память сети: {memory_hits} · ✨ Второй нюх: {player.inspiration}\n\n"
         f"{streak_info}"
     )
     if calling is not None:
-        text += f"\n{calling.emoji} Призвание: {calling.title}."
+        text += f"\n{calling.emoji} Призвание: {calling.title}"
     else:
-        text += "\nПризвание ещё не выбрано — /calling"
+        text += "\nПризвание не выбрано — /calling"
     if stats is not None:
         text += f"\n{trail_line(stats)}"
     if legacy:
-        text += "\n\n🌫 Следы, которые могут вернуться:"
+        text += "\n\n🌫 Тропы, которые могут вернуться:"
         for item in legacy[:3]:
             tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(item["tag"], "❓")
             text += f"\n  {tag_emoji} День {item['day']}: «{item['title']}»"
@@ -515,11 +515,11 @@ async def cmd_rank(message: Message) -> None:
         title = title_for_streak(player.current_streak)
 
     text = (
-        f"{title.emoji} **Твой рейтинг**\n\n"
-        f"📊 Общий: #{rank['overall_rank']} из {rank['overall_total']}\n"
-        f"📅 На этой неделе: #{rank['week_rank']} из {rank['week_total']} ({rank['week_votes']} голосов)\n"
+        f"{title.emoji} <b>{title.name}</b>\n\n"
+        f"🐺 Ты среди стаи: #{rank['overall_rank']} из {rank['overall_total']}\n"
+        f"📅 На этой неделе: #{rank['week_rank']} ({rank['week_votes']} голосов)\n"
         f"🗓 В этом месяце: {rank['month_votes']} голосов\n\n"
-        f"🔥 Серия: {player.current_streak} | Лучшая: {player.best_streak}"
+        f"🔥 Серия верных путей: {player.current_streak} · Лучшая: {player.best_streak}"
     )
 
     if message.chat.type == ChatType.PRIVATE:
@@ -877,9 +877,9 @@ async def on_vote(callback: CallbackQuery) -> None:
             await callback.answer(hint[:200], show_alert=True)
             return
     texts = {
-        "ok": f"{ok_mark(str(round_id))} Путь {POSITIONS[position]} принят. Счёт скрыт до итогов.",
-        "already": f"{hint_mark('already')} Ты уже оставил След сегодня.",
-        "closed": f"{warn_mark('closed')} Голосование закрыто — итоги рядом.",
-        "invalid": f"{warn_mark('invalid')} Такого пути нет на карте Стаи.",
+        "ok": f"{ok_mark(str(round_id))} Тропа {POSITIONS[position]} принята. Итоги скрыты до закрытия дня.",
+        "already": f"{hint_mark('already')} Ты уже оставил свой след сегодня.",
+        "closed": f"{warn_mark('closed')} День закрыт — итоги скоро.",
+        "invalid": f"{warn_mark('invalid')} Этой тропы нет на карте.",
     }
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)

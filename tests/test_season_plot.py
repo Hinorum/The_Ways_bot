@@ -256,7 +256,7 @@ def test_results_reveal_sealed_law() -> None:
         ],
     )
     text = format_results(round_row)
-    assert "Запечатанный с утра закон оказался" in text
+    assert "Запечатанный закон" in text
     assert "средним числом голосов" in text
 
 

@@ -55,8 +55,8 @@ async def test_score_in_private_is_direct() -> None:
     message = make_message("private", 700_002)
     await cmd_score(message)
     text = message.answer.call_args.args[0]
-    assert "Очки" in text
-    assert "Угаданных законов" in text
+    assert "Следы" in text
+    assert "Верных путей" in text
 
 
 async def test_score_button_alert_private_to_presser() -> None:
@@ -66,7 +66,7 @@ async def test_score_button_alert_private_to_presser() -> None:
     assert kwargs.get("show_alert") is True
     # Лимит Telegram на окно колбэка — 200 символов.
     assert len(args[0]) <= 200
-    assert "Очки" in args[0]
+    assert "Следы" in args[0]
     # Данные пересчитаны для нажавшего, а не для автора команды.
     assert callback.from_user.username in {f"u{callback.from_user.id}"}
 
@@ -105,4 +105,4 @@ async def test_button_press_by_another_user_shows_his_own_data() -> None:
     await on_score_view(presser_callback)
     args, kwargs = presser_callback.answer.call_args
     assert kwargs.get("show_alert") is True
-    assert "Очки" in args[0]
+    assert "Следы" in args[0]

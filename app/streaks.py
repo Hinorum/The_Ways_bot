@@ -71,16 +71,28 @@ def streak_text(player: Player) -> str:
     title = title_for_streak(current)
     nxt = next_title(current)
 
-    lines = [f"{title.emoji} {title.name}"]
-    lines.append(f"🔥 Серия: {current} | Лучшая: {best}")
+    lines = [f"{title.emoji} <b>{title.name}</b>"]
+    if current > 0:
+        lines.append(f"🔥 Серия верных путей: {current} · Лучшая: {best}")
+    else:
+        lines.append(f"🔥 Лучшая серия: {best}")
 
     if nxt:
         remaining = nxt.correct_needed - current
-        lines.append(f"📈 Следующий титул: {nxt.emoji} {nxt.name} (ещё {remaining})")
-    else:
-        lines.append("🏆 Максимальный титул достигнут!")
+        lines.append(f"📈 До следующего титула: {nxt.emoji} {nxt.name} — ещё {remaining} {remaining_word(remaining)}")
+    elif current >= TITLES[-1].correct_needed:
+        lines.append("🏆 Ты достиг вершины. Стая идёт за тобой.")
 
     return "\n".join(lines)
+
+
+def remaining_word(n: int) -> str:
+    """Склонение слова «путь/пути/путей» для числа."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "путь"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "пути"
+    return "путей"
 
 
 async def calc_rank(session: AsyncSession, player_id: int) -> dict:
@@ -241,11 +253,10 @@ async def weekly_report(session: AsyncSession) -> str:
 
     # Собираем отчёт
     lines = [
-        f"🐺 **Отчёт стаи за неделю**",
-        f"📅 {len(rounds)} дней пройдено",
-        f"🗳 {total_votes} голосов отдано",
+        f"🐺 <b>Неделя в пути</b>",
+        f"📅 {len(rounds)} дней пройдено · 🗳 {total_votes} голосов",
         "",
-        "**Настроение стаи:**",
+        "<b>Настроение стаи:</b>",
     ]
 
     for tag, count in tag_counts.items():
@@ -257,7 +268,7 @@ async def weekly_report(session: AsyncSession) -> str:
 
     if top_streaks:
         lines.append("")
-        lines.append("**🔥 Серии стаи:**")
+        lines.append("<b>🔥 Серии стаи:</b>")
         for i, p in enumerate(top_streaks, 1):
             name = p.first_name or p.username or f"#{p.id}"
             lines.append(f"{i}. {name} — {p.current_streak} подряд")

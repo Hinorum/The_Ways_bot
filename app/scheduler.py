@@ -803,10 +803,10 @@ async def _vote_reminder_job() -> None:
             }.get(current.win_rule.value, "???")
 
             text = (
-                f"🐺 День {current.day_index} открыт, но ты ещё не выбрал путь!\n"
-                f"⚖️ Закон сегодня: {law_name}\n"
+                f"🐺 День {current.day_index} открыт. Тропа ждёт.\n"
+                f"⚖️ Закон: {law_name}\n"
                 f"📖 {current.chapter_title}\n\n"
-                f"Голосование закрывается через несколько часов. Успей!"
+                f"Голосование закрывается скоро. Выбери тропу."
             )
 
             from app.broadcast import _dm_send_all

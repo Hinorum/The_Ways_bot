@@ -47,9 +47,8 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     )
     await h.cmd_start(message)
     text = message.answer.call_args_list[0].args[0]
-    # Нарративный старт под бесшовные сутки: итоги приходят сами,
-    # без «часа тайны урны» из прежней сетки.
-    assert "приходят сами" in text
+    # Нарративный старт под бесшовные сутки: итоги придут сразу после.
+    assert "придут сразу после" in text
     assert "час тайны урны" not in text
     assert "96%" in text
     assert "/top" in text
