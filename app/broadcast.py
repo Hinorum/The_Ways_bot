@@ -341,18 +341,16 @@ async def results_body(finished: Round, session=None) -> str:
     text = format_results(finished)
     round_id = getattr(finished, "id", None)
     if round_id is not None:
-        if session is not None:
-            row = await session.get(Round, round_id)
-        else:
-            async with SessionLocal() as fresh_session:
-                row = await fresh_session.get(Round, round_id)
-        if row is not None:
-            stats = await day_economics(session, row) if session is not None else (
-                await _economics_own_session(row)
-            )
+        try:
+            if session is not None:
+                stats = await day_economics(session, finished)
+            else:
+                stats = await _economics_own_session(finished)
             economics = format_economics(stats)
             if economics:
                 text += f"\n\n{economics}"
+        except Exception:
+            logger.exception("Экономика дня %s не посчитана", getattr(finished, "day_index", "?"))
     return text
 
 
@@ -516,6 +514,8 @@ async def _broadcast_text(bot: Bot, text: str) -> int:
     if not text.strip():
         return 0
     chat_ids = await active_chat_ids()
+    if not chat_ids:
+        logger.warning("_broadcast_text: нет активных чатов для рассылки (все деактивированы?)")
     if chat_ids:
         semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 
