@@ -125,7 +125,7 @@ async def test_echo_surfaces_and_chains(session) -> None:
     chained = (
         await session.execute(select(LoreEcho).where(LoreEcho.born_day == day))
     ).scalars().all()
-    assert any("второй след" in e.title for e in chained)
+    assert any("след" in e.title for e in chained)
 
 
 async def test_weak_echoes_may_fade(session) -> None:

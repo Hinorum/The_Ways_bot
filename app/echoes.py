@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,8 @@ from app.models import LoreEcho, Round
 
 logger = logging.getLogger(__name__)
 
+_GEN_RE = re.compile(r"\[gen:(\d+)\]")
+_MAX_CHAIN_GEN = 3
 
 _KINDS = {"risk": "угроза", "care": "память", "cunning": "обман"}
 
@@ -83,20 +86,70 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
         echo.surfaced_day = day_index
         surfaced.append(echo)
         if echo.strength >= 3:
+            parent_gen_m = _GEN_RE.search(echo.description)
+            parent_gen = int(parent_gen_m.group(1)) if parent_gen_m else 1
+            if parent_gen >= _MAX_CHAIN_GEN:
+                continue
+            child_gen = parent_gen + 1
+            gen_tag = f"[gen:{child_gen}]"
             chain_rng = random.Random(f"chain:{echo.id}:{day_index}")
+            chain_phrases = {
+                2: (
+                    "Теперь это примета мира, которую трудно не заметить.",
+                    "Сеть подхватила след — теперь он звучит громче.",
+                    "Эхо отозвалось в соседнем портале и вернулось иным.",
+                ),
+                3: (
+                    "Третий рубеж пройден — мир запомнил этот путь навсегда.",
+                    "Сеть прошептала имя следа. Теперь он — часть канона.",
+                    "Глубина хватила: это уже не след, а тропа, которую не стереть.",
+                ),
+            }
+            phrases = chain_phrases.get(child_gen, chain_phrases[3])
+            phrase = chain_rng.choice(phrases)
+            base_desc = _GEN_RE.sub("", echo.description).strip()
+            child_title = f"{echo.title}: след {child_gen}го поколения"[:160]
             session.add(
                 LoreEcho(
                     born_day=day_index,
                     source_day=echo.source_day,
                     kind=echo.kind,
-                    title=f"{echo.title}: второй след"[:160],
-                    description=f"{echo.description} Теперь это примета мира, которую трудно не заметить.",
-                    strength=2,
+                    title=child_title,
+                    description=f"{gen_tag} {base_desc} {phrase}",
+                    strength=max(2, 3 - child_gen + 1),
                     earliest_day=day_index + chain_rng.randint(2, 4),
                     status="dormant",
                 )
             )
     return surfaced
+
+
+async def echo_chain_depth(session: AsyncSession, echo_id: int) -> int:
+    """Count how deep the echo chain goes from this echo.
+
+    Walks the chain via title pattern matching (child title starts with
+    parent title). Returns 1 for an echo with no children, 2 if it has
+    one child, etc., capped at _MAX_CHAIN_GEN.
+    """
+    result = await session.execute(select(LoreEcho).where(LoreEcho.id == echo_id))
+    root = result.scalar_one_or_none()
+    if root is None:
+        return 0
+    depth = 1
+    current_title = root.title
+    while depth < _MAX_CHAIN_GEN:
+        child_result = await session.execute(
+            select(LoreEcho).where(
+                LoreEcho.title.like(f"{current_title}:%"),
+                LoreEcho.born_day > root.born_day,
+            ).order_by(LoreEcho.born_day.desc()).limit(1)
+        )
+        child = child_result.scalar_one_or_none()
+        if child is None:
+            break
+        depth += 1
+        current_title = child.title
+    return depth
 
 
 def echo_prompt_lines(echoes) -> list[str]:
