@@ -10,10 +10,11 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app import handlers
 from app.config import settings
 from app.db import SessionLocal
+from app.handlers import bootstrap as bootstrap_mod
 from app.handlers import cmd_today, handle_update_error
+from app.handlers import player as player_mod
 from app.models import Card, Round, RoundStatus, WinRule
 
 
@@ -35,7 +36,7 @@ def _message_event(chat_id: int = 555_002) -> SimpleNamespace:
 
 
 async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -> None:
-    monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    monkeypatch.setattr(bootstrap_mod, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
     # Алерт хранителю идёт отдельным каналом: не мешаем счётчикам игрока.
     # Хранитель должен быть задан явно: тест не зависит от ADMIN_IDS машины.
     monkeypatch.setattr(settings, "admin_ids", "42")
@@ -57,7 +58,7 @@ async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -
 
 
 async def test_message_error_skips_callback_answer(monkeypatch) -> None:
-    monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    monkeypatch.setattr(bootstrap_mod, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
     async def fake_notify(bot, text) -> None:
         pass
 
@@ -81,7 +82,7 @@ async def test_admin_alert_throttled_to_once_per_hour(monkeypatch) -> None:
         sent_to_admin.append(text)
 
     monkeypatch.setattr("app.ops.notify_admins", fake_notify)
-    monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    monkeypatch.setattr(bootstrap_mod, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
 
     await handle_update_error(AsyncMock(), _message_event())
     assert len(sent_to_admin) == 1
@@ -104,7 +105,7 @@ async def test_admin_alert_fires_on_fresh_process_uptime(monkeypatch) -> None:
         sent_to_admin.append(text)
 
     monkeypatch.setattr("app.ops.notify_admins", fake_notify)
-    monkeypatch.setattr(handlers, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
+    monkeypatch.setattr(bootstrap_mod, "_LAST_UPDATE_ERROR_ALERT", {"ts": 0.0})
     # Аптайм-подобное маленькое значение monotonic: стеночные часы от этого
     # не зависят, поэтому алерт обязан уйти.
     monkeypatch.setattr(_time, "monotonic", lambda: 100.0)
@@ -153,7 +154,7 @@ async def test_today_delivers_text_even_when_media_group_fails(monkeypatch, tmp_
     async def fake_round():
         return round_row
 
-    monkeypatch.setattr(handlers, "_ensure_round", fake_round)
+    monkeypatch.setattr(player_mod, "_ensure_round", fake_round)
     message = SimpleNamespace(
         chat=SimpleNamespace(type="private"),
         from_user=SimpleNamespace(id=87_001, username=None, first_name="Т"),
@@ -175,7 +176,7 @@ async def test_today_normal_path_sends_both(monkeypatch, tmp_path) -> None:
     async def fake_round():
         return round_row
 
-    monkeypatch.setattr(handlers, "_ensure_round", fake_round)
+    monkeypatch.setattr(player_mod, "_ensure_round", fake_round)
     message = SimpleNamespace(
         chat=SimpleNamespace(type="private"),
         from_user=SimpleNamespace(id=87_002, username=None, first_name="Т"),

@@ -132,6 +132,42 @@ async def test_first_attempt_skips_history_check(monkeypatch) -> None:
             await session.commit()
 
 
+async def test_admin_retry_keeps_history_check_on_redispatch(monkeypatch) -> None:
+    """Ручной retry НЕ сбрасывает attempts: попытка могла уже уйти в цепочку
+    (краш между вещанием и коммитом «sent»), и повтор без сверки с memo
+    задвоил бы реальный перевод. Регрессия на resolve_dead_payout(action=retry)."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "payout_max_attempts", 5)
+    payout_id = await _seed_payout(attempts=5)
+    async with SessionLocal() as session:
+        row = await session.get(Payout, payout_id)
+        row.status = "failed"
+        row.alerted = True
+        await session.commit()
+        assert await ton_pay.resolve_dead_payout(session, payout_id, "retry") == "pending"
+        row = await session.get(Payout, payout_id)
+        assert row.attempts == 5  # счётчик сохранён, анти-дубль остаётся активным
+
+    async def fake_markers() -> set[str]:
+        return {_comment(payout_id)}
+
+    transfer = AsyncMock(return_value=None)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", fake_markers)
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", transfer)
+
+    try:
+        sent = await ton_pay.dispatch_pending_payouts(bot=None)
+        assert sent == 1
+        assert transfer.await_count == 0  # вещания не было — денег дважды нет
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "sent"
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
 async def test_failed_transfer_records_reason(monkeypatch) -> None:
     """Причина неудачи пишется в last_error и переживает исчерпание ретраев."""
     monkeypatch.setattr(settings, "ton_enabled", True)
@@ -165,6 +201,60 @@ async def test_failed_transfer_records_reason(monkeypatch) -> None:
     finally:
         async with SessionLocal() as session:
             await session.delete(await session.get(Payout, payout_id))
+            await session.commit()
+
+
+async def test_no_wallet_prize_self_heals_when_player_binds(monkeypatch) -> None:
+    """Приз без кошелька не тонет в failed: ждёт привязки и уходит сам.
+
+    Регрессия: раньше пустой dest-адрес помечал выплату failed, и игрок,
+    привязавший кошелёк на следующий день, терял приз до ручного retry.
+    Теперь строка остаётся в очереди, а цикл после /wallet вставляет адрес
+    и платит в тот же момент."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    player_id = 930_001
+    async with SessionLocal() as session:
+        from app.models import Player
+
+        session.add(Player(id=player_id, username="late", wallet_address=""))
+        payout = Payout(round_id=8, player_id=player_id, kind="prize",
+                        amount_nanotons=400_000_000, dest_address="", status="pending")
+        session.add(payout)
+        await session.flush()
+        payout_id = payout.id
+        await session.commit()
+
+    transfer = AsyncMock(return_value="bcast:91")
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", AsyncMock(return_value=set()))
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", transfer)
+
+    try:
+        # Без кошелька: не отправляется, но и не failed — ждёт привязки.
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        assert transfer.await_count == 0
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "pending"
+        assert "кошелёк игрока ещё не привязан" in (row.last_error or "")
+
+        # Игрок привязал /wallet — следующий цикл сам платит приз.
+        async with SessionLocal() as session:
+            player = await session.get(Player, player_id)
+            player.wallet_address = "0:" + os.urandom(32).hex()
+            await session.commit()
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        assert transfer.await_count == 1
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "sent" and row.dest_address != ""
+    finally:
+        async with SessionLocal() as session:
+            from app.models import Player as _P
+
+            await session.delete(await session.get(Payout, payout_id))
+            player = await session.get(_P, player_id)
+            if player is not None:
+                await session.delete(player)
             await session.commit()
 
 

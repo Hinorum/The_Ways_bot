@@ -13,13 +13,13 @@ import pytest
 
 from app.config import settings
 from app.db import SessionLocal, init_db
-from app import handlers as handlers_module
 from app.handlers import (
     cmd_stake,
     cmd_wallet,
     on_private_fallback,
     on_stake_view,
 )
+from app.handlers import wallet as wallet_mod
 from app.ton_utils import normalize_address
 from app.models import Player, Round, RoundStatus, Stake, WalletDialog, WinRule
 
@@ -289,8 +289,8 @@ async def test_wallet_answers_fallback_when_builder_breaks(monkeypatch) -> None:
     async def boom(user):
         raise RuntimeError("внезапный сбой сборки")
 
-    monkeypatch.setattr(handlers_module, "_wallet_view_text", boom)
-    handlers_module._WALLET_LAST.clear()  # привязка выше уже потратила окно троттлинга
+    monkeypatch.setattr(wallet_mod, "_wallet_view_text", boom)
+    wallet_mod._WALLET_LAST.clear()  # привязка выше уже потратила окно троттлинга
     message = make_message("private", uid, "/wallet")
     await cmd_wallet(message)
     text = message.answer.call_args.args[0]
@@ -302,7 +302,7 @@ async def test_stake_answers_fallback_when_builder_breaks(monkeypatch) -> None:
     async def boom(user):
         raise RuntimeError("внезапный сбой сборки")
 
-    monkeypatch.setattr(handlers_module, "_stake_view_text", boom)
+    monkeypatch.setattr(wallet_mod, "_stake_view_text", boom)
     message = make_message("private", next_uid(), "/stake")
     await cmd_stake(message)
     text = message.answer.call_args.args[0]
@@ -316,7 +316,7 @@ async def test_wallet_survives_total_inner_crash(monkeypatch) -> None:
     async def db_down(session, user):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(handlers_module, "upsert_player", db_down)
+    monkeypatch.setattr(wallet_mod, "upsert_player", db_down)
     message = make_message("private", uid, "/wallet")
     await cmd_wallet(message)
     text = message.answer.call_args.args[0]
@@ -341,9 +341,17 @@ async def test_wallet_view_html_is_telegram_safe(monkeypatch) -> None:
 
     from app.handlers import _wallet_view_text
 
-    # 1. Сам источник больше не содержит литерал-виновника.
-    source = Path("app/handlers.py").read_text(encoding="utf-8")
-    assert "<адрес" not in source
+    # 1. Сам источник больше не содержит литерал-виновника. Исходник разъехался
+    # на пакет — скан распространяется на все модули app/handlers/.
+    pkg_dir = Path(__file__).resolve().parents[1] / "app" / "handlers"
+    sources = [pkg_dir / f if f != "__init__.py" else None
+               for f in ("common.py", "player.py", "wallet.py", "topup.py",
+                         "admin.py", "payout.py", "panel.py", "fallback.py",
+                         "bootstrap.py", "__init__.py")]
+    joined = "\n".join(
+        p.read_text(encoding="utf-8") for p in sources if p is not None and p.exists()
+    )
+    assert "<адрес" not in joined
 
     # 2. Сгенерированный вид (обе ветки) проходит Telegram-парсер.
     monkeypatch.setattr(settings, "ton_enabled", True)
@@ -456,8 +464,6 @@ async def test_stake_button_without_wallet_hints_dialog(monkeypatch) -> None:
 async def test_wallet_rate_limited_on_spam(monkeypatch) -> None:
     """Второй /wallet тем же игроком подряд встречает троттлинг, диалог
     не переоткрывается; админ и «остывший» игрок проходят свободно."""
-    from app import handlers
-
     uid = next_uid()
     first = make_message("private", uid, "/wallet")
     await cmd_wallet(first)
@@ -469,7 +475,7 @@ async def test_wallet_rate_limited_on_spam(monkeypatch) -> None:
     assert await _dialog_active(uid)  # старый диалог не тронут
 
     # Остывание: обнуляем окно — снова пускает.
-    monkeypatch.setattr(handlers, "_WALLET_COOLDOWN", 0.0)
+    monkeypatch.setattr(wallet_mod, "_WALLET_COOLDOWN", 0.0)
     third = make_message("private", uid, "/wallet")
     await cmd_wallet(third)
     assert "Не так часто" not in third.answer.call_args.args[0]

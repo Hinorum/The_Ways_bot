@@ -60,12 +60,42 @@ class Player(Base):
     correct_picks: Mapped[int] = mapped_column(Integer, default=0)
     wallet_address: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     wallet_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Кошелёк подтверждён микро-переводом с него (мемо bv:<код>): привязка без
+    # доказательства владения давала бы присваивать любой публичный адрес и
+    # ловить на него чужие призы. Пока деньги включены, ставки с неподтверждённого
+    # кошелька не считаются — сначала владелец доказывает контроль.
+    wallet_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Код подтверждения привязки: известен только владельцу телеграм-аккаунта,
+    # отправить перевод с нужного адреса может только владелец кошелька — так
+    # совпадение «адрес + код» доказывает контроль. Null — ждать нечего.
+    wallet_verify_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    wallet_verify_created: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Призвание собаки (ключ из app.callings): косметика нарратива — титулы,
     # окраска личного эха и касания в главах. На деньги и вес голоса не влияет.
     calling: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Жетоны «Второго нюха»: за находки памяти и верные серии. Тратятся на
     # личную микросцену дня; информации о законе не дают.
     inspiration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Подписка на личные дубликаты рассылок (итоги дня, новый день с обложкой,
+    # вечерний пост и прочие анонсы) в личку бота. По умолчанию — да; игрок
+    # может снять или вернуть её кнопкой в /start.
+    dm_subscribed: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Referral(Base):
+    """Кто привёл кого по личной ссылке ?start=ref_<id>_<токен>.
+
+    Строго одна запись на приведённого: первый валидный переход фиксируется
+    навсегда, повторные /start с чужой ссылкой игнорируются. Сейчас тут только
+    факт приведения — награды и анти-сибил-штрафы появятся позже.
+    """
+
+    __tablename__ = "referrals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    referrer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    referred_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -127,6 +157,11 @@ class Round(Base):
     # Доля дня, ушедшая в копилку недели (2% фонда) — для поста итогов.
     weekly_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Денежная версия дня (ставки TON + платная смена выбора): снимок режима
+    # на момент открытия дня. Хранитель переключает «версию со ставками/без»
+    # из /panel — новая версия вступает со СЛЕДУЮЩЕГО дня, а этот флаг
+    # замораживает решение текущего дня (банк, /stake, /change).
+    money_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     # Эпилог дня от нейросети: чем отозвался победивший путь (пусто — не написан).
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -293,9 +328,9 @@ class WeeklyPot(Base):
     """Копилка недели: 2% фонда каждого дня капает сюда.
 
     В понедельник сумма уходит топ-3 недели по числу верных ответов
-    (места делят приз по WEEKLY_PRIZE_PCTS, по умолчанию 20/30/50%);
-    неделя — ISO-ключ «YYYY-Www» по UTC-времени открытия дня.
-    Доле места без подходящего игрока (нет кошелька, мало дней
+    (места делят приз по WEEKLY_PRIZE_PCTS, по умолчанию 50/30/20%:
+    сильнейший забирает больше); неделя — ISO-ключ «YYYY-Www» по UTC-времени
+    открытия дня. Доле места без подходящего игрока (нет кошелька, мало дней
     голосования или нет ставки за неделю) ждать нечего — она переносится
     в копилку новой недели.
     """
@@ -306,6 +341,27 @@ class WeeklyPot(Base):
     week: Mapped[str] = mapped_column(String(16), unique=True)
     nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LeaderboardClaim(Base):
+    """Претензия на место лидерборда: решает ничьи по кнопке Claim в /start.
+
+    Ничья в периоде решается по верности путей, затем по сумме ставок Gram,
+    затем — кто раньше нажал Claim (кнопка видна в течение периода игрокам
+    с кошельком и ставкой). Запись фиксирует момент претензии; unique-тройка
+    (player_id, kind, period) делает Claim идемпотентным.
+    """
+
+    __tablename__ = "leaderboard_claims"
+    __table_args__ = (
+        UniqueConstraint("player_id", "kind", "period", name="uq_leaderboard_claims_player_kind_period"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)  # "week" | "month"
+    period: Mapped[str] = mapped_column(String(16), nullable=False)  # "YYYY-Www" | "YYYY-MM"
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class PackFund(Base):

@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, select
 
-from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
+from app.handlers import admin as admin_mod
 from app.handlers import cmd_advance, cmd_resetgame
 from app.models import (
     Card,
@@ -156,7 +156,7 @@ async def test_advance_auto_resumes_from_pause(offline_all, monkeypatch) -> None
 
     # Создание следующего дня тяжёлое — подменяем: интересует снятие паузы.
     monkeypatch.setattr(
-        handlers_module,
+        admin_mod,
         "create_next_round_detailed",
         AsyncMock(return_value=(round_row, False)),
     )

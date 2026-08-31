@@ -37,7 +37,7 @@ def previous_week_key(now: datetime | None = None) -> str:
 
 
 def parse_prize_pcts(spec: str) -> list[int]:
-    """«20,30,50» → [20, 30, 50]; мусор отбрасывается, пустой список → нет выплат."""
+    """«50,30,20» → [50, 30, 20]; мусор отбрасывается, пустой список → нет выплат."""
     pcts: list[int] = []
     for part in spec.split(","):
         part = part.strip()

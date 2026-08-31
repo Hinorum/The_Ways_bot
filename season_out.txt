@@ -1,0 +1,16 @@
+OK  s1 day1: got=(1, 31, 1) exp=(1, 31, 1)
+OK  s1 last: got=(31, 31, 1) exp=(31, 31, 1)
+OK  s2 day1 run_day: got=1 exp=1
+OK  s2 total: got=59 exp=59
+OK  s2 number: got=2 exp=2
+OK  s3 day1 run_day: got=1 exp=1
+OK  s3 number: got=3 exp=3
+OK  run_position shape: got=1 exp=1
+OK  current_season: got=2 exp=2
+OK  banner s2: got=True exp=True
+OK  banner s1: got=None exp=None
+OK  crisis s1 non-crisis: got=False exp=False
+OK  crisis s1 crisis: got=True exp=True
+OK  crisis s2 non-crisis: got=False exp=False
+OK  crisis s2 crisis: got=True exp=True
+OK  act_line season tag: got=True exp=True

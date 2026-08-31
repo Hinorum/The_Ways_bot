@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import stakes as stakes_mod
@@ -157,15 +158,31 @@ async def test_register_stake_flow(session: AsyncSession, monkeypatch: pytest.Mo
     # Повтор той же транзакции и вторая ставка тем же игроком отклоняются.
     assert await stakes_mod.register_stake(session, round_row, player, to_nano(1), "tx1") == "duplicate_tx"
     assert await stakes_mod.register_stake(session, round_row, player, to_nano(2), "tx2") == "already_staked"
-    # Лимиты: отклонённая ставка тоже занимает слот игрока в дне;
-    # верхней границы нет — крупная сумма принимается как обычная ставка.
+    # Лимиты: отклонённая микровставка НЕ занимает слот игрока в дне — валидная
+    # ставка записывается на её место, а пылевой остаток возвращается сразу
+    # (тем же расчётом, что и поток финализации). Верхней границы нет —
+    # крупная сумма принимается как обычная ставка.
     other = Player(id=12)
     session.add(other)
     third = Player(id=13)
     session.add(third)
     await session.commit()
     assert await stakes_mod.register_stake(session, round_row, other, to_nano(0.01), "tx3") == "too_small"
-    assert await stakes_mod.register_stake(session, round_row, other, to_nano(50), "tx4") == "already_staked"
+    assert await stakes_mod.register_stake(session, round_row, other, to_nano(50), "tx4") == "ok"
+    stake_row = (
+        await session.execute(select(Stake).where(Stake.tx_hash == "tx4"))
+    ).scalar_one()
+    assert stake_row.status == "pending" and stake_row.amount_nanotons == to_nano(50)
+    # Пылевая 0.01 Gram не потерялась: возврат той же величины расcчитан.
+    refund_row = (
+        await session.execute(
+            select(Payout).where(Payout.kind == "refund", Payout.player_id == 12)
+        )
+    ).scalar_one_or_none()
+    assert refund_row is not None
+    assert refund_row.amount_nanotons == stakes_mod.refund_net_amount(to_nano(0.01))
+    # Игрок с уже обычной пылевой в добавку к валидной ставке — снова already_staked.
+    assert await stakes_mod.register_stake(session, round_row, other, to_nano(0.01), "tx3b") == "already_staked"
     assert await stakes_mod.register_stake(session, round_row, third, to_nano(500), "tx5") == "ok"
     # Выключенная интеграция и закрытый день.
     monkeypatch.setattr(settings, "ton_enabled", False)
@@ -820,7 +837,7 @@ async def test_failed_revote_payments_are_refunded(monkeypatch: pytest.MonkeyPat
         await db.flush()
         await db.commit()
         try:
-            small = Transfer(hash_small, wallet, to_nano(0.01), f"rv:{open_round.id}", int(datetime.now(timezone.utc).timestamp()))
+            small = Transfer(hash_small, wallet, to_nano(0.2), f"rv:{open_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(small) == "revote_too_small"
             late = Transfer(hash_late, wallet, to_nano(2), f"rv:{closed_round.id}", int(datetime.now(timezone.utc).timestamp()))
             assert await process_transfer(late) == "revote_closed"

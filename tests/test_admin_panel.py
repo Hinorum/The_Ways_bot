@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app import handlers as handlers_module
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
+from app.handlers import panel as panel_mod
 from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
 from app.rounds import _POT_CACHE
 
@@ -83,7 +83,9 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         assert "ПУЛЬТ ХРАНИТЕЛЯ" in text
         assert "День 97500 · open" in text
         assert "Банк дня: 1.25 Gram · ставок 3" in text
-        assert "Акт" in text and "до Лая" in text  # строка забега
+        # Строка забега: акт всегда на месте, хвост зависит от календаря —
+        # в финальный день сезона это «финал сегодня», иначе «до Лая N дн.».
+        assert "Акт" in text and ("до Лая" in text or "финал сегодня" in text)
         assert "Выплаты:" in text and "failed 1" in text
         assert "#1" in text or "#2" in text  # топ долгов в панели
         assert "LITESERVER_CONFIG_URL" in text  # причина видна прямо тут
@@ -98,6 +100,35 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
             await db.commit()
 
 
+async def test_panel_shows_prizes_waiting_for_wallet(session, monkeypatch) -> None:
+    """Призы без кошелька видны в пульте: ждут привязки, уйдут сами."""
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    async with SessionLocal() as db:
+        db.add(Player(id=975_011, username="late", wallet_address=""))
+        db.add(Payout(
+            round_id=None,
+            player_id=975_011,
+            kind="prize",
+            amount_nanotons=100_000_000,
+            dest_address="",
+            status="pending",
+        ))
+        await db.commit()
+
+    try:
+        async with SessionLocal() as g:
+            text = await _admin_panel_text(g)
+        assert "Призов без кошелька: 1" in text
+        assert "/payouts" in text
+    finally:
+        from sqlalchemy import delete as _d
+
+        async with SessionLocal() as db:
+            await db.execute(_d(Payout).where(Payout.player_id == 975_011))
+            await db.execute(_d(Player).where(Player.id == 975_011))
+            await db.commit()
+
+
 async def test_panel_refresh_callback_edits_for_admin(monkeypatch) -> None:
     monkeypatch.setattr(settings, "admin_ids", "4242")
     callback = make_callback(4242)
@@ -106,7 +137,7 @@ async def test_panel_refresh_callback_edits_for_admin(monkeypatch) -> None:
     async def fake_text(session=None):
         return "🎛 ПУЛЬТ ХРАНИТЕЛЯ"
 
-    monkeypatch.setattr(handlers_module, "_admin_panel_text", fake_text)
+    monkeypatch.setattr(panel_mod, "_admin_panel_text", fake_text)
     await on_panel_action(callback)
     callback.message.edit_text.assert_awaited_once()
     callback.answer.assert_awaited_once()
@@ -149,7 +180,7 @@ async def test_panel_advance_requires_double_press(monkeypatch) -> None:
     """Досрочное закрытие дня — с подтверждением: первый тап только предупреждает."""
     monkeypatch.setattr(settings, "admin_ids", "4242")
     advance_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(handlers_module, "cmd_advance", advance_mock)
+    monkeypatch.setattr(panel_mod, "cmd_advance", advance_mock)
 
     callback = make_callback(4242)
     callback.data = "panel:advance"
@@ -168,7 +199,7 @@ async def test_panel_advance_go_runs_command(monkeypatch) -> None:
         calls.append(shim_message)
         await shim_message.answer("День 98001 открыт.")
 
-    monkeypatch.setattr(handlers_module, "cmd_advance", fake_advance)
+    monkeypatch.setattr(panel_mod, "cmd_advance", fake_advance)
     callback = make_callback(4242)
     callback.data = "panel:advance:go"
     callback.bot = AsyncMock()

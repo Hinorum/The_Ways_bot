@@ -10,8 +10,13 @@ def test_strips_libpq_sslmode_for_asyncpg() -> None:
     converted = sqlalchemy_url("postgres://u:p@ep-x.neon.tech/db?sslmode=require")
     assert "sslmode" not in converted
     assert converted.startswith("postgresql+asyncpg://")
-    assert postgres_connect_args("postgres://u:p@ep-x.neon.tech/db?sslmode=require") == {"ssl": True}
+    assert postgres_connect_args("postgres://u:p@ep-x.neon.tech/db?sslmode=require") == {
+        "ssl": True,
+        "server_settings": {"search_path": "public"},
+    }
 
 
 def test_local_postgres_skips_ssl() -> None:
-    assert postgres_connect_args("postgresql://u:p@localhost:5432/db") == {}
+    assert postgres_connect_args("postgresql://u:p@localhost:5432/db") == {
+        "server_settings": {"search_path": "public"},
+    }

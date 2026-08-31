@@ -33,6 +33,7 @@ from app.handlers import (
     on_paystars,
     on_pre_checkout,
 )
+from app.handlers import panel as panel_mod
 from app.lore import compose_chapter
 from app.models import Income, Payout, Player, Round, RoundStatus, Stake, WatcherState, WinRule
 from app.stakes import register_stake
@@ -830,7 +831,7 @@ async def test_panel_advance_double_press_now_executes(admin_only, monkeypatch) 
         calls.append(shim_message)
         await shim_message.answer("День 98001 открыт.")
 
-    monkeypatch.setattr(handlers_module, "cmd_advance", fake_advance)
+    monkeypatch.setattr(panel_mod, "cmd_advance", fake_advance)
 
     first = make_callback(ADMIN_ID, "panel:advance")
     first.message.edit_text = AsyncMock()

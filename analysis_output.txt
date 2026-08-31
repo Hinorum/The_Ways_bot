@@ -1,0 +1,52 @@
+DM_SYSTEM_PROMPT block length (chars): 6552
+DM_SYSTEM_PROMPT string literal chars: 5934
+DM_SYSTEM_PROMPT estimated tokens: ~2967
+
+_build_story_prompt block length (chars): 9289
+_build_story_prompt ALL string literal chars: 5525
+_build_story_prompt estimated tokens: ~2762
+
+ART_SYSTEM_PROMPT block length (chars): 1238
+ART_SYSTEM_PROMPT string literal chars: 1059
+ART_SYSTEM_PROMPT estimated tokens: ~529
+
+_build_art_prompt block length (chars): 1910
+_build_art_prompt string literal chars: 1245
+_build_art_prompt estimated tokens: ~622
+
+STYLE_SUFFIX: [', flat 2D vector cartoon, cozy-dystopia, bold clean outlines, muted matte colors, ', 'glow of an open portal, no text, no letters, no watermark']
+STYLE_SUFFIX chars: 139
+
+_NEGATIVE_SUFFIX: [', no text, no letters, no numbers, no typography, no watermark, no logo, ', 'no poster layout, no frames, no borders', ', photorealistic, 3D render, realistic fur, anime screencap, glossy render, ', 'digital painting, oil painting, painterly texture, watercolor wash, ', 'human hands, extra limbs, deformed face, cluttered background']
+_NEGATIVE_SUFFIX chars: 317
+
+_CHARACTER_MOTIFS: 11 keys
+  - лайнер
+  - архивариус
+  - хранитель спорных версий
+  - хозяин ошибки
+  - еретик
+  - свернувший с пути
+  - баркод
+  - стежка
+  - вектор
+  - пиксель
+  - безымянная
+_COVER_COMPOSITIONS: 4 entries
+_CARD_COMPOSITIONS: 4 entries
+_CAMERA_TEXTURES: 4 entries
+_PALETTE_ROTATION: 8 entries
+
+echoes.py: 5521 chars
+lore.py: 44436 chars
+  _RISK_PATHS: 0 cards
+  _CARE_PATHS: 0 cards
+  _CUNNING_PATHS: 0 cards
+season.py: 29799 chars
+
+--- PROMPT SECTION BREAKDOWN (string literal chars) ---
+  [1] head block (day, history, law, season, villain, echoes): 661
+  [2] return tail (format, card instructions, rules): 2567
+  [3] TOTAL user prompt static: 3228
+  [4] dynamic content added at runtime: echoes, season, villain, alignment, places
+  Estimated user prompt tokens (dynamic + static): ~1614 base + dynamic

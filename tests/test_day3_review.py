@@ -167,8 +167,12 @@ def _round_with_story(day_index: int, tmp_path, story_len: int):
     return round_row, build_day_post
 
 
-def test_short_story_merges_into_cover_caption(tmp_path) -> None:
+def test_short_story_merges_into_cover_caption(tmp_path, monkeypatch) -> None:
     round_row, build = _round_with_story(1, tmp_path, 60)
+    # Стартовый кадр дня 1 не должен влиять на слияние подписи: пинним медиа-дир
+    # без run_intro.jpg, чтобы тест не зависел от окружения (живой запуск кладёт
+    # кадр в ./media/generated, и день 1 получал бы второй пост).
+    monkeypatch.setattr(settings, "media_dir", str(tmp_path / "generated"))
     media, story_in_caption = build(round_row)
     assert len(media) == 1
     assert story_in_caption is True

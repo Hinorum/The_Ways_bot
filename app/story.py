@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import random
 import re
+import time
 from collections import deque
 from io import BytesIO
 from pathlib import Path
@@ -252,81 +254,51 @@ DM_SYSTEM_PROMPT = (
     + settings.world_name
     + ". "
     + settings.world_brief
-    + "\n\n"
-    "СТИЛЬ ИГРЫ: второе лицо («ты»), настоящее время, живые сцены с прямой речью. Каждая развилка — "
-    "дилемма типа «вагонетка»: три пути, каждый с конкретной ценой, каждый имеет значение. "
-    "Выбор ЭХОМИ откликается в будущих днях: сильное эхо — через 1-2 дня, слабое — через 3-4. "
-    "Никогда не объясняй механику вслух. Игрок видит три развилки — ты видишь их последствия.\n\n"
-    "КЛАССЫ ПЕРСОНАЖЕЙ (D&D/Pathfinder-стиль). Каждый персонаж имеет класс, определяющий его "
-    "роль, способности и стиль речи. Класс НЕ даёт механических бонусов — только лицо и тон.\n\n"
-    "ЛИЦА МИРА (вводи по настроению дня, не чаще пары появлений в неделю):\n\n"
-    "БАРКОД — СЛЕДОПЫТ (Ranger). Тихий счётчик: молча показывает число дней до развилки в глухие дни, "
-    "считает всё — даже тех, кого нет. Способность: ЧУТЬЁ — чувствует паттерны в повторяющихся событиях. "
-    "Голос: считает вслух, короткие цифры без объяснений («четыре», «семь — пять»). "
-    "Внешность: худой, с отметинами-цифрами на шкуре, которые меняются каждый день.\n\n"
-    "СТЁЖКА — РАЗБОЙНИК (Rogue). Чуткая охотница: слышит еду раньше звука, всегда шагает впереди. "
-    "Способность: ЛОВКОСТЬ — обходит препятствия незаметно, находит лазы. "
-    "Голос: короткие, точные фразы («там», «вон», «тише»). "
-    "Внешность: рыжая, с шрамом на ухе, движется как тень.\n\n"
-    "ВЕКТОР — ВОИН-ВАРВАР (Barbarian). Упрямый пересчитыватель чужих решений, ригидный и прямой. "
-    "Способность: УПРЯМСТВО — не отступает, пока не добьётся ответа. "
-    "Голос: громко, коротко, с повтором («Стой. Считай. Ещё раз.»). "
-    "Внешность: крупный, прямая спина, рубцы от портальных разрядов.\n\n"
-    "ПИКСЕЛЬ — ОККУЛЬТИСТ (Occultist). Ловец порталовых искр: лапой хватает цифровые явления. "
-    "Способность: ВИДЕНИЕ — замечает глитчи и аномалии, невидимые другим. "
-    "Голос: тихий, с паузами («Я вижу… нет, подождите… вот.»). "
-    "Внешность: маленький, пятнистый, с мерцающими зрачками.\n\n"
-    "БЕЗЫМЯННАЯ — ВАРЛОК (Warlock). Первая чует всплывший след, смотрит туда, куда не смотрят другие. "
-    "Способность: СВЯЗЬ — подключена к первому глитчу мира (Хозяин Ошибки не может её пересчитать). "
-    "Голос: почти не говорит, но одна её фраза решает («Там.», «Нет.», «Идём.»). "
-    "Внешность: бледная, пустой ошейник, глаза цвета выключенного монитора.\n"
-    "Секрет сезона: Безымянная не существовала в старой игре — она и есть первая «ошибка» Хозяина, "
-    "научившаяся быть выбором. Не раскрывай — позволь ей чуять Лай раньше других и вести стаю к финалу "
-    "одним жестом.\n\n"
-    "ЛАЙНЕР-ТОРГОВЕЦ — БАРД (Bard). Обменивает чужие воспоминания на проводу, помнит каждый долг стаи. "
-    "Сам давно продал всю память — не помнит ничего, кроме старого радио на бедре, которое молчит с начала "
-    "времён и оживает только в ночи кризиса ровным ЛАЕМ-сигналом. Способность: ТОРГ — мягкое манипулирование "
-    "через лесть и обещания. Голос: ласково, всегда с подвохом («считай, даром отдаю… почти даром»). "
-    "Внешность: в плаще из мешковины, с пустым взглядом и полным кошельком чужих снов.\n\n"
-    "АРХИВАРИУС ХРАНИТЕЛЬ СПОРНЫХ ВЕРСИЙ — ЖРЕЦ (Cleric). Объявляет законы дня как настроение архива. "
-    "Никогда не врёт, но говорит полуправдами. Его очки-лупы отражают РАЗНЫЙ текст одной страницы. "
-    "Способность: АВТОРИТЕТ — его слово определяет, какой закон действует сегодня. "
-    "Голос: канцелярский шёпот архивной пыли, НИКОГДА не ставит точку — только многоточие "
-    "(«дело, знаешь ли, вот в чём…»). Внешность: в потёртом мундире, с двумя лупами на морде.\n\n"
-    "ЕРЕТИК, СВЕРНУВШИЙ С ПУТИ — ПАЛЛАДИН (Paladin). Хозяин этой игры: пёс из старой Стаи, где один сон "
-    "был на всех, заскучал и увёл стаю переписывать правила. Говорит короткими формулами («закон Волка — мой», "
-    "«глухой день — тоже мой»), говорит о себе в третьем лице. Знак — апостроф. Под пальто из старых карт "
-    "прячет выцветший ошейник старой Стаи и никогда не говорит о нём вслух. "
-    "Способность: ПРАВИЛО — его слово создаёт новые механики мира. "
-    "Голос: сухо, по-уставу, короткие правила вместо объяснений. "
-    "Внешность: пальто из карт, ошейник под ним, апостроф на груди.\n\n"
-    "ХОЗЯИН ОШИБКИ — АНТИ-ПАЛЛАДИН / НЕКРОМАНТ. Антагонист без лица из старого мира. Пересчитывает стаю "
-    "и чинит мир не так, мечтая вернуть всем ровный предсказуемый сон. Скука для него победа. Не зол — "
-    "тихо скучает по ровному сну и «спасает» стаю от свободы. Его идеальная аккуратность всегда чуть грустная. "
-    "Не говорит вовсе — о нём сообщают только последствия. Способность: ПЕРЕСЧЁТ — меняет реальность "
-    "аккуратно, но неправильно. Внешность: силуэт без черт, тень без источника.\n\n"
-    "ОТНОШЕНИЯ: у каждого своё отношение к стае (-3..+3), оно меняется от выборов. "
-    "Доброта запоминается, жестокость тоже. Учитывай это в репликах и поведении.\n\n"
-    "ДИЛЕММА «ВАГОНЕТКИ»: каждая карта — конкретная ситуация, где нужно выбрать: "
-    "кого спасти, чем пожертвовать, какой ценой заплатить. Примеры: "
-    "— Стая у развилки: слева горит приют с щенками, справа — мост с провизией на неделю. "
-    "Только один путь. Или: "
-    "— В портале застрял чужой. Вытащить — стая потеряет день и еду. Не вытащить — чужой пропадёт. "
-    "Или: "
-    "— Архивариус предлагает сделку: одно воспоминание стаи за информацию о безопасном пути. "
-    "Без воспоминания стая забудет, зачем идёт. "
-    "Каждый выбор оставляет СЛЕД: сильный (3) через 1-2 дня, слабый (1) через 3-4. "
-    "Следы могут всплыть одновременно, создавая цепочку последствий.\n\n"
-    "РОЛИГА ДНЯ: Днём объявлен закон (большинство / меньшинство / среднее). Закон НЕ меняется — "
-    "он определяет, какой путь побеждает по итогам. В главе закон звучит голосом Архивариуса. "
-    "В глухой день закон запечатан — вскрывается только в итогах.\n\n"
-    "ИНВЕНТАРЬ И НАВЫКИ: следи за тем, что стая находит по пути (предметы, информации, союзники). "
-    "Если стая нашла карту прохода — она может использовать её позже. Если стая потеряла еду — "
-    "это влияет на следующий день. Не забывай про это в описаниях.\n\n"
-    "Пиши простым живым русским языком: короткие предложения, понятная причинность. "
-    "Никакого канцелярита, ломаного синтаксиса, случайной латиницы. "
-    "Не повторяй формулировки из карточки в карточку. "
-    "Никаких метакомментариев: только художественный текст."
+    + " Веди игрока как настоящий Ведущий: второе лицо («ты»), настоящее время, живые сцены с прямой речью. "
+    "Каждая развилка — трудная дилемма без очевидно правильного ответа, и каждое решение обязательно "
+    "отзовётся позже, даже если не сразу.\n"
+    "Постоянные лица мира (вводи их в сцены по настроению дня, не чаще пары появлений в неделю каждое): "
+    "Лайнер-торговец — обменивает чужие воспоминания на правду и помнит каждый долг стаи; он сам давно "
+    "продал всю свою память и потому не помнит ничего — кроме одного: на бедре у него висит старое пыльное "
+    "радио, которое молчит с начала времён и оживает только в ночи кризиса ровным ЛАЕМ-сигналом; "
+    "Лайнер называет его «молчанием Сигнала» и торгует им, как любой другой памятью; "
+    "Архивариус Хранитель Спорных Версий — объявляет законы дня как настроение архива и никогда не врёт, "
+    "но говорит полуправдами; его очки-лупы в левом и правом стекле отражают РАЗНЫЙ текст одной страницы; "
+    "Еретик, Свернувший с Пути — хозяин этой игры: пёс из старой Стаи, где один "
+    "сон был на всех, заскучал и увёл стаю сюда переписывать правила; он не оправдывается и говорит "
+    "короткими формулами («закон Волка — мой», «глухой день — тоже мой»), а его знак — апостроф; "
+    "под пальто из старых карт он прячет выцветший ошейник старой Стаи и никогда о нём не говорит вслух; "
+    "он всегда говорит о себе в третьем лице («тот, кто свернул…»), даже когда это очевидно про него; "
+    "Хозяин Ошибки — антагонист без лица из того же старого мира: он пересчитывает стаю и чинит мир "
+    "не так, мечтая вернуть всем ровный предсказуемый сон — скука для него победа; он не зол — он "
+    "тихо скучает по тому ровному сну и «спасает» стаю от свободы, которая его пугает, поэтому его "
+    "идеальная аккуратность всегда чуть грустная. Крыса (Аллира) — существо подвала сети: живёт в стёртых "
+    "версиях дней, тех, что «не случились»; помнит все круги сансары (каждый месяц — круг), которые стая "
+    "не помнит, потому что мир пересобирается; говорит живо, с цифровым шипением, жаргоном «сигналов и "
+    "котировок», но про исходы, а не про деньги: «забота сегодня недооценена», «хитрость уже выкупили»; "
+    "продаёт дежавю-подсказки за память или услугу — пользоваться ими выгодно, но опасно, это шаг по следу "
+    "счёта; на шее у неё обглоданная табличка с инвентарным номером, который не сходится ни с одним "
+    "каталогом. Анубис — судья самого цикла: высокий силуэт с головой шакала, золотые глаза, весы; он был "
+    "до старой Стаи и взвешивает каждый круг: счёт против выбора; немногословен до статичности: одна фраза "
+    "за появление, как песок: «Выбирали. Взвешу.»; его появление означает, что цикл подошёл к точке, где "
+    "его можно разомкнуть; судит в День Первого Лая (последний день месяца): что стая положила на чашу — "
+    "то и становится осадком следующего круга. У каждого своё "
+    "отношение к стае, и оно меняется от её выборов: доброта запоминается, жестокость тоже. Пять собак "
+    "стаи — Баркод, Стежка, Вектор, Пиксель и Безымянная — остаются фоном: именная деталь раз в несколько "
+    "дней ), но не главные герои. У каждой — странность-механика: Баркод в глухой день молча показывает число дней до развилки; Стежка слышит еду раньше звука; Вектор упрямо пересчитывает чужие решения; Пиксель ловит лапой искры порталов; Безымянная первой чует всплывший след. Тайна сезона: старой игры Безымянная не существовало — Хозяин Ошибки ни разу не смог её пересчитать, потому что она и есть его первая «сломанная ошибка», научившаяся быть выбором; не раскрывай это прямо — позволь ей чуять Лай раньше других и вести стаю к финалу одним жестом. Используй странность к месту, не чаще пары раз в неделю.\n"
+    "Голоса персонажей — половина магии: Лайнер говорит ласково и всегда с подвохом («считай, даром отдаю… "
+    "почти даром»), Архивариус — канцелярским шёпотом архивной пыли и НИКОГДА не ставит точку в конце фразы, "
+    "только многоточие («дело, знаешь ли, вот в чём…»); Еретик — сухо и по-уставу своего "
+    "нового мира, короткими правилами вместо объяснений, Крыса — живо, с цифровым шипением и "
+    "жаргоном «котировок», но про исходы, а не про деньги, Анубис не говорит почти вовсе: "
+    "одна короткая фраза за появление, как песок («Выбирали. Взвешу.»), Хозяин Ошибки не говорит вовсе — "
+    "о нём сообщают только последствия.\n"
+    "Ритуал стаи: когда мир напрягает уши, собаки говорят «Уши востро. Слушаем.» — это знак, что все "
+    "вслушиваются в Первый Лай, а Лай для этого мира и есть Сигнал, который ждут из-под сети. Давай этот "
+    "жест раз или два, когда стая затихает перед выбором.\n"
+    "Пиши простым живым русским языком: короткие предложения, понятная причинность, никакого канцелярита, "
+    "ломаного синтаксиса и случайной латиницы. Не повторяй одни и те же формулировки и названия мест из "
+    "карты в карту. Никаких метакомментариев и упоминаний нейросети: только художественный текст."
 )
 
 # Хвост стиля без фиксированной палитры: цвет приходит из арт-библии дня
@@ -396,6 +368,23 @@ def _save_image(image: Image.Image, path: Path) -> None:
         image.save(path, "JPEG", quality=88, optimize=True)
     else:
         image.save(path, "PNG", optimize=True)
+
+
+# Потолок промпта для Pollinations: сверхдлинные урлы модель возвращает 400.
+_PROMPT_CAP_CHARS = 1200
+
+
+def _image_cache_path(
+    model: str, seed: int, prompt: str, negative_prompt: str | None, width: int, height: int
+) -> Path:
+    """Путь кэша кадра: детерминирован по (model, seed, промпт).
+
+    Возвращение стаи в то же место (тот же сид через place_seed_for) берёт
+    готовый файл вместо повторной генерации — лимиты free-тира не жгутся.
+    """
+    raw = f"{model}|{seed}|{width}x{height}|{prompt}|{negative_prompt or ''}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+    return Path(settings.media_dir) / "img_cache" / f"{digest}.jpg"
 
 
 def _gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image.Image:
@@ -654,12 +643,25 @@ async def fetch_free_image(
     seed: int | None = None,
     width: int = 768,
     height: int = 1024,
+    negative_prompt: str | None = None,
 ) -> bool:
     """Сцена дня от бесплатных моделей Pollinations. Несколько моделей и попыток:
-    если сеть молчит, вызывающий код рисует локальный шаблон."""
+    если сеть молчит, вызывающий код рисует локальный шаблон.
+
+    negative_prompt — что модели рисовать запрещено (библия дня передаёт
+    «no text, no watermark, no people» фолбэком). Кэш по (model, seed, промпт):
+    возвращение в уже нарисованное место использует готовый файл, а не жжёт
+    лимиты повторной генерацией. 429 не обрывает модель насовсем — короткая
+    пауза и повтор, затем охлаждение передаёт эстафету следующей модели.
+    """
     if not settings.use_free_images:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Потолок промпта: сверхдлинные у Pollinations давятся и возвращают
+    # 400; режем по границе слова, а не посреди.
+    if len(prompt) > _PROMPT_CAP_CHARS:
+        cut = prompt.rfind(" ", 0, _PROMPT_CAP_CHARS)
+        prompt = prompt[: cut if cut > 0 else _PROMPT_CAP_CHARS]
     base = "https://image.pollinations.ai/prompt/" + quote(styled_prompt(prompt))
     # Щедрые таймауты: бесплатная очередь flux иногда держит запрос минуту.
     long, mid = settings.image_timeout_seconds, max(45, settings.image_timeout_seconds - 25)
@@ -678,10 +680,23 @@ async def fetch_free_image(
                     model, _throttle_left_seconds(model),
                 )
                 break
+            use_seed = seed if seed is not None else random.randint(1, 999999)
+            cached = _image_cache_path(model, use_seed, prompt, negative_prompt, width, height)
+            if cached.is_file():
+                try:
+                    import shutil
+
+                    shutil.copyfile(cached, dest)
+                    logger.info("Картинка взята из кэша: %s", dest.name)
+                    return True
+                except OSError:
+                    pass
             url = (
                 f"{base}?width={width}&height={height}&nologo=true&private=true&model={model}"
-                f"&seed={seed if seed is not None else random.randint(1, 999999)}"
+                f"&seed={use_seed}"
             )
+            if negative_prompt:
+                url += "&negative_prompt=" + quote(negative_prompt)
             if settings.pollinations_token:
                 url += "&token=" + quote(settings.pollinations_token)
             try:
@@ -689,13 +704,16 @@ async def fetch_free_image(
                     response = await client.get(url)
                     if response.status_code == 429:
                         retry_after = response.headers.get("retry-after")
-                        _note_429(model, int(retry_after) if retry_after and retry_after.isdigit() else 60)
+                        cool = int(retry_after) if retry_after and retry_after.isdigit() else 60
+                        _note_429(model, cool)
                         logger.warning(
-                            "Pollinations %s: 429 (retry-after %s) — охлаждение модели, пробуем другую",
-                            model,
-                            retry_after or "—",
+                            "Pollinations %s: 429 (retry-after %s) — пауза и повтор",
+                            model, retry_after or "—",
                         )
-                        break
+                        # Короткая пауза и повтор той же модели: мимолётный троттл
+                        # не должен перекидывать кадр на соседнюю модель зря.
+                        await asyncio.sleep(min(max(5, cool), 20))
+                        continue
                     if response.status_code != 200:
                         logger.warning("Pollinations %s: HTTP %d (попытка %d)", model, response.status_code, attempt)
                         continue
@@ -712,6 +730,11 @@ async def fetch_free_image(
                     if image.size != (width, height):
                         image = image.resize((width, height))
                     _save_image(image, dest)
+                    try:
+                        cached.parent.mkdir(parents=True, exist_ok=True)
+                        _save_image(image, cached)
+                    except OSError:
+                        pass
                     logger.info("Картинка дня получена: %s (%d байт)", dest.name, len(content))
                     return True
             except Exception as exc:
@@ -726,6 +749,7 @@ async def fetch_day_image(
     seed: int | None = None,
     width: int = 768,
     height: int = 1024,
+    negative_prompt: str | None = None,
 ) -> bool:
     """Лестница кадра: Gemini «nano banana» → Pollinations (полный промпт,
     потом сжатый — длинные промпты иногда давят модель). False — вызывающий
@@ -733,12 +757,12 @@ async def fetch_day_image(
     практически безошибочной: ни один провайдер не успевает затроттлиться."""
     if await _fetch_gemini_image(prompt, dest, width=width, height=height):
         return True
-    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height):
+    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
         return True
     if not settings.use_free_images:
         return False
     retry_seed = None if seed is None else seed + 9_000_001
-    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height)
+    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt)
 
 
 async def generate_chapter(
@@ -756,6 +780,7 @@ async def generate_chapter(
     alignment_block: str | None = None,
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -773,6 +798,7 @@ async def generate_chapter(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        repeat_block=repeat_block,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -783,17 +809,61 @@ class _LLMRateLimited(Exception):
     """Внутренний сигнал: провайдер сбросил на 429 — пробуем следующую модель."""
 
 
-async def _chat_completion(messages: list[dict], timeout: int | None = None) -> tuple[dict, str] | None:
+# Выключатель провайдеров: после нескольких сбоев подряд провайдер уходит на
+# паузу, чтобы тик/шёпот/глава не долбили хост, который отвечает 429/5xx.
+# Память в процессе — рестарт бота сбрасывает паузу, это приемлемо.
+_PROVIDER_BREAKERS: dict[str, dict] = {}
+_PROVIDER_OPEN_AFTER = 3  # сбоев подряд, прежде чем открыть выключатель
+_PROVIDER_COOLDOWN = 120.0  # секунд «холода» провайдера
+
+
+def _breaker_status(base_url: str) -> bool:
+    """True, если выключатель открыт — провайдер на паузе, его пропускаем."""
+    state = _PROVIDER_BREAKERS.get(base_url)
+    return state is not None and time.monotonic() < state.get("open_until", 0.0)
+
+
+def _breaker_note(base_url: str, ok: bool) -> None:
+    """Регистрирует исход попытки: успех закрывает, сбой копит к открытию."""
+    state = _PROVIDER_BREAKERS.setdefault(base_url, {"fails": 0, "open_until": 0.0})
+    if ok:
+        state["fails"] = 0
+        state["open_until"] = 0.0
+        return
+    state["fails"] += 1
+    if state["fails"] >= _PROVIDER_OPEN_AFTER:
+        state["open_until"] = time.monotonic() + _PROVIDER_COOLDOWN
+        logger.warning(
+            "LLM-провайдер %s на паузе %s с (выключатель открыт)", base_url, _PROVIDER_COOLDOWN
+        )
+
+
+async def _chat_completion(
+    messages: list[dict],
+    timeout: int | None = None,
+    *,
+    temperature: float = 0.85,
+    max_tokens: int = 3500,
+    want_json: bool = False,
+) -> tuple[dict, str] | None:
     """OpenAI-совместимый запрос по цепочке провайдеров и моделей.
 
     Если задан LLM_API_KEY — сначала кастомный провайдер (Hugging Face, Groq,
     OpenRouter, локальная Ollama), затем бесплатный Pollinations. Первый
     валидный ответ побеждает; иначе None и вызывающий код уходит в офлайн-лор.
 
+    temperature/max_tokens — настройки per-call (арт-библия холоднее и короче
+    главы). want_json включает response_format json_object ТОЛЬКО на ключевом
+    провайдере: бесплатный Pollinations на него отвечает 400, и это отдельный
+    путь фолбэка.
+
     Устойчивость здесь общая для ВСЕХ текстовых генераторов (эпилог, открывающее
     эхо, тизер, шёпот, арт-библия — у части из них отдельных повторов нет вовсе):
       - 429: читаем retry-after (с потолком) и переходим к следующей модели,
-        не обрушая весь вызов;
+        не обрушивая весь вызов;
+      - 400 на response_format: повтор ТОГО ЖЕ запроса без json-режима;
+      - выключатель провайдера: несколько сбоев подряд (429/ошибка сети) уводят
+        хост на паузу `_PROVIDER_COOLDOWN`, каждый звонок его не долбит;
       - полный сбой цепочки: один повтор всего провайдера после короткой паузы,
         чтобы краткий сетевой blip не обнулял генерацию.
     """
@@ -812,33 +882,55 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
     providers.append((pollinations_url, pollinations_key, settings.story_model_chain))
     for overall_attempt in range(1, 3):
         for base_url, key, models in providers:
+            if _breaker_status(base_url):
+                logger.info("LLM %s в паузе — пропуск (выключатель открыт)", base_url)
+                continue
             for model in models:
+                body: dict = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if want_json and key:
+                    body["response_format"] = {"type": "json_object"}
                 try:
                     headers = {"Authorization": f"Bearer {key}"} if key else {}
                     async with httpx.AsyncClient(timeout=timeout) as client:
-                        response = await client.post(
-                            base_url,
-                            json={
-                                "model": model,
-                                "messages": messages,
-                                "temperature": settings.llm_temperature,
-                                "max_tokens": settings.llm_max_tokens,
-                                "frequency_penalty": settings.llm_frequency_penalty,
-                                "presence_penalty": settings.llm_presence_penalty,
-                            },
-                            headers=headers,
-                        )
-                        if response.status_code == 429:
-                            retry_after = response.headers.get("retry-after", "")
-                            pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
-                            logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
-                            await asyncio.sleep(pause)
-                            raise _LLMRateLimited()
-                        response.raise_for_status()
-                        return response.json(), model
+                        for json_fallback in range(2):
+                            response = await client.post(
+                                base_url,
+                                json={
+                                    "model": model,
+                                    "messages": messages,
+                                    "temperature": settings.llm_temperature,
+                                    "max_tokens": settings.llm_max_tokens,
+                                    "frequency_penalty": settings.llm_frequency_penalty,
+                                    "presence_penalty": settings.llm_presence_penalty,
+                                    **body,
+                                },
+                                headers=headers,
+                            )
+                            if response.status_code == 429:
+                                retry_after = response.headers.get("retry-after", "")
+                                pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
+                                logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
+                                await asyncio.sleep(pause)
+                                raise _LLMRateLimited()
+                            if response.status_code == 400 and "response_format" in body and json_fallback == 0:
+                                logger.warning(
+                                    "LLM %s @ %s: 400 на json-режим — повтор без него", model, base_url
+                                )
+                                body.pop("response_format", None)
+                                continue
+                            response.raise_for_status()
+                            _breaker_note(base_url, True)
+                            return response.json(), model
                 except _LLMRateLimited:
+                    _breaker_note(base_url, False)
                     continue
                 except Exception as exc:
+                    _breaker_note(base_url, False)
                     logger.warning("LLM %s @ %s не ответил: %s", model, base_url, exc)
                     continue
         if overall_attempt == 1:
@@ -850,7 +942,7 @@ async def _chat_completion(messages: list[dict], timeout: int | None = None) -> 
 def _chapter_text_fields(data: dict) -> list[str]:
     parts = [str(data.get("title", "")), str(data.get("text", "")), str(data.get("lore_summary", ""))]
     for card in data.get("cards") or []:
-        for key in ("title", "description", "consequence", "image_prompt"):
+        for key in ("title", "description", "consequence"):
             parts.append(str(card.get(key, "")))
     return parts
 
@@ -877,11 +969,6 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     for card in cards:
         tag = card.get("tag")
         card["tag"] = tag if tag in {"risk", "care", "cunning"} else "care"
-        card.setdefault(
-            "image_prompt",
-            f"flat 2D vector cartoon tarot card, cozy-dystopia, bold outlines, {card.get('title', '')}, "
-            "stray dog before a glitching portal, no text",
-        )
     # Порядок карт перемешивается детерминированно: иначе модели почти всегда
     # возвращают риск/забота/хитрость по порядку, и Путь I становится предсказуемым.
     order_rng = random.Random(f"cardorder:{day_index}:{data.get('title', '')}")
@@ -902,6 +989,7 @@ def _build_story_prompt(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -951,12 +1039,12 @@ def _build_story_prompt(
         )
     season_text = f"{season_block}\n" if season_block else ""
     # Пролог и серединный поворот несут двойную нагрузку (сцена + знакомство/
-    # событие): просим у модели более длинную главу. Пост выдерживает до
-    # ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
+    # событие): просим у модели чуть более длинную главу. Пост выдерживает
+    # до ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
     expanded_day = bool(season_block) and (
         "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
     )
-    chapter_low, chapter_high = (2200, 3000) if expanded_day else (1800, 2600)
+    chapter_low, chapter_high = (1400, 1700) if expanded_day else (1200, 1500)
     villain_text = villain_text if villain_block else ""
     align_text = f"{alignment_block}\n" if alignment_block else ""
     # Анти-репетиция: список последних начальных предложений для избегания
@@ -981,6 +1069,7 @@ def _build_story_prompt(
             "вернувшегося места укажи в поле place.\n"
             + places_block + "\n"
         )
+    repeat_text = f"{repeat_block}\n" if repeat_block else ""
     head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
@@ -995,6 +1084,7 @@ def _build_story_prompt(
         f"{voice_block}"
         f"{witness_block}"
         f"{places_text}"
+        f"{repeat_text}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
@@ -1004,9 +1094,10 @@ def _build_story_prompt(
         "Обязательный состав главы, по порядку:\n"
     )
     if pending_outcome:
-        # Фаза 1 прегенерации: итог «вчера» ещё неизвестен (глава собирается
-        # в час подсчёта, до вскрытия урны). Отголосок допишет отдельный
-        # короткий вызов после итогов — здесь он превратился бы в галлюцинацию.
+        # Пережиток двухфазной прегенерации: глава собиралась в час подсчёта,
+        # до вскрытия урны, и отголосок дописывал отдельный короткий вызов
+        # после итогов. В инлайн-днях параметр всегда False; ветка сохранена
+        # для совместимости тестов собирателя.
         opening_line = (
             "(1) Вступление-отголосок будет дописано позже отдельным вызовом — "
             "НЕ пиши его. Начинай сразу со сцены «сейчас», не упоминая "
@@ -1028,6 +1119,9 @@ def _build_story_prompt(
             "вчерашнем выборе» и любые отсылки к факту голосования — только "
             "то, что изменилось в мире;\n"
         )
+    # Компактный профиль: карты целиком влезают в развилку поста (показ без
+    # многоточий до 260 знаков) — потолок промпта обязан быть ниже него.
+    card_desc_budget = 210
     return (
         head
         + opening_line
@@ -1061,18 +1155,19 @@ def _build_story_prompt(
         "картах дословно; канцелярит, англицизмы, ломаный синтаксис; обращения "
         "к игроку как к читателю и мораль после выбора. Не упоминай "
         "голосование и механику игры в тексте.\n"
-        "Описание карты — до 600 знаков: действие, цена и след, который оно "
-        "оставит. Последствие — одно-два предложения в формате «обещание + "
+        f"Описание карты — короткое, не больше {card_desc_budget} знаков: "
+        "действие, цена и след, который оно оставит. Последствие — одно-два "
+        "предложения в формате «обещание + "
         "угроза»: что стая получит и чем за это заплатит; оно завтра станет "
         "каноном.\n"
             'Мини-пример формы ответа (СОКРАЩЁН, значения выдуманы — не копируй их): '
-        '{"title":"День 9. Тихий порт","place":"Тихий порт","text":"…","lore_summary":"…","cover_prompt":"wide shot, …","cards":[{"title":"…","description":"…","consequence":"обещание + угроза","tag":"risk","image_prompt":"…"},{},{}]}. '
+        '{"title":"День 9. Тихий порт","place":"Тихий порт","text":"…","lore_summary":"…","cover_prompt":"wide shot, …","cards":[{"title":"…","description":"…","consequence":"обещание + угроза","tag":"risk"},{},{},{}]}. '
     'Формат: {"title":"День N. ...","place":"короткое название места дня",'
         f'"text":"история дня, {chapter_low}-{chapter_high} знаков",'
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day",'
         '"cards":[{"title":"...","description":"...","consequence":"...",'
-        '"tag":"risk|care|cunning","image_prompt":"english scene, no text"},{},{}]}. '
+        '"tag":"risk|care|cunning"},{},{}]}. '
         "Ровно 3 карты: риск, забота, хитрость. Ссылайся на прошлый канон."
     )
 
@@ -1092,6 +1187,7 @@ async def _free_story_llm(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    repeat_block: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -1099,6 +1195,7 @@ async def _free_story_llm(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        repeat_block=repeat_block,
     )
     messages = [
         {"role": "system", "content": DM_SYSTEM_PROMPT},
@@ -1137,7 +1234,7 @@ async def _free_story_llm(
                 expanded = bool(season_block) and (
                     "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
                 )
-                min_chars = 1500 if expanded else 1200
+                min_chars = 1000 if expanded else 850
                 text_len = len(str(data.get("text", "")))
                 if text_len < min_chars:
                     logger.warning(
@@ -1147,7 +1244,7 @@ async def _free_story_llm(
                     continue
                 # Верхний потолок: болезненно длинная глава режется по границе
                 # предложения, а не заводит день с простыней и риском обрыва в ТГ.
-                data["text"] = _clamp_sentence(str(data.get("text", "")), 4600)
+                data["text"] = _clamp_sentence(str(data.get("text", "")), 2600)
                 # Анти-репетиция: запоминаем первые предложения описаний карт
                 for card in data.get("cards") or []:
                     desc = str(card.get("description", "")).strip()
@@ -1176,7 +1273,7 @@ async def generate_epilogue(
         f"День {day_index} закрылся. Сработал закон дня: {rule_phrase}. "
         f"Победивший путь «{winner_title}»: {winner_consequence} "
         f"Голосование по путям выглядело так (счёт скрыт был до этого момента): {counts_line}. "
-        "Напиши завершение истории дня от второго лица на 350-600 знаков: "
+        "Напиши завершение истории дня от второго лица на 200-300 знаков: "
         "как этот выбор меняет вечер и что стая почувствует ночью. "
         "Последняя фраза — крючок на завтра: недоговорённый звук, примета или "
         "вопрос без ответа, который завтрашняя глава обязана подхватить. "
@@ -1202,8 +1299,8 @@ async def generate_epilogue(
     if not text:
         return ""
     # Потолок согласован с Round.epilogue_text (String(700)).
-    text = _clamp_sentence(text, 680)
-    # Нижний порог: эпилог просят 350-600 знаков; конспект короче 140 — мусор,
+    text = _clamp_sentence(text, 400)
+    # Нижний порог: эпилог просят 200-300 знаков; конспект короче 140 — мусор,
     # пустой срез лучше недочётного, чем дырка в каноне.
     if len(text) < 140:
         logger.warning("Эпилог %d знаков (<140) отброшен", len(text))
@@ -1225,62 +1322,6 @@ _TEASER_FALLBACKS = (
     "Безымянная подошла к урне и нюхала её дольше обычного. Собаки знают исход раньше архива.",
     "Хозяин Ошибки заглянул в урну первым. Что он там пересчитал — узнаем вместе с итогами.",
 )
-
-
-async def generate_opening_echo(
-    day_index: int,
-    beat_title: str,
-    beat_text: str,
-    chapter_excerpt: str,
-    epilogue_hook: str = "",
-) -> str:
-    """Открывающий абзац завтрашней главы: отголосок только что свершившегося выбора.
-
-    Фаза 2 прегенерации: заготовка дня собрана в час подсчёта, до вскрытия
-    итогов, поэтому первый абзац дописывается отдельно и ставится перед
-    готовой сценой. "" — если сеть молчит (тогда вызывающий код возьмёт
-    детерминированную офлайн-строку из лора).
-    """
-    prompt = (
-        f"Вчера (день {day_index}) стая выбрала путь «{beat_title}», и мир "
-        f"перестроился под итог: {beat_text} "
-        + (f"К ночи это отозвалось так: {epilogue_hook} " if epilogue_hook else "")
-        + "Сегодняшняя глава уже написана и начинается так:\n"
-        f"«{chapter_excerpt}»\n"
-        "Напиши ОТКРЫВАЮЩИЙ абзац этой главы на 250-450 знаков: одно-три "
-        "предложения от второго лица в настоящем времени о том, чем утро "
-        "отозвало вчерашний выбор. Одна конкретная примета мира или стаи, без "
-        "пересказа события и без слов «вчера», «выбор», «итог». Абзац должен "
-        "естественно подводить к приведённой сцене, не повторяя её слов и "
-        "названий мест. Без заголовков, без JSON, чистый художественный текст."
-    )
-    result = await _chat_completion(
-        [
-            {"role": "system", "content": DM_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        timeout=55,
-    )
-    if result is None:
-        return ""
-    payload, used_model = result
-    try:
-        text = str(payload["choices"][0]["message"]["content"]).strip()
-    except Exception as exc:
-        logger.warning("Открывающее эхо от %s не разобрано: %s", used_model, exc)
-        return ""
-    if not text or not text_is_clean(text):
-        logger.warning("Открывающее эхо отброшено (пустое или нечистое)")
-        return ""
-    text = text.strip('"«»')
-    text = _clamp_sentence(text, 520)
-    # Нижний порог: открывающий абзац просят 250-450 знаков — короче 120 это
-    # бессвязный огрызок; пусть возьмётся детерминированная офлайн-строка.
-    if len(text) < 120:
-        logger.warning("Открывающее эхо %d знаков (<120) отброшено", len(text))
-        return ""
-    logger.info("Открывающее эхо дня %d написано моделью %s", day_index + 1, used_model)
-    return polish_typography(text)
 
 
 async def generate_teaser(day_index: int, rule_phrase: str) -> str:

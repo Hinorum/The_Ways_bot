@@ -15,6 +15,11 @@ REVOTE_MEMO_PREFIX = "rv:"
 _ZERO_WIDTH = "\u200b\u200c\u200d"
 _REVOTE_PATTERN = re.compile(rf"rv[{_ZERO_WIDTH}\s]*:[{_ZERO_WIDTH}\s]*(\d+)", re.IGNORECASE)
 
+# Код подтверждения владения кошельком: bv:<код> в комментарии микро-перевода
+# на казначея. Защита от сквата чужих публичных адресов — код выдан владельцу
+# телеграм-аккаунта при привязке, а перевести с адреса может только его хозяин.
+_VERIFY_PATTERN = re.compile(rf"bv[{_ZERO_WIDTH}\s]*:[{_ZERO_WIDTH}\s]*([a-z0-9]+)", re.IGNORECASE)
+
 
 def revote_memo(round_id: int) -> str:
     """Комментарий к TON-переводу за смену выбора."""
@@ -48,3 +53,15 @@ def parse_revote_memo(memo: str | None) -> int | None:
     if match is not None:
         return int(match.group(1))
     return None
+
+
+def parse_verify_memo(memo: str | None) -> str | None:
+    """Проверочный код bv:<код> из комментария подтверждения кошелька.
+
+    Находит токен в любом месте текста (кошелёк часто подмешивает мусор) и
+    возвращает код верхним регистром — так, как он хранится при привязке.
+    """
+    match = _VERIFY_PATTERN.search(str(memo or ""))
+    if match is None:
+        return None
+    return match.group(1).upper()

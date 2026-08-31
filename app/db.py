@@ -38,6 +38,7 @@ _SQLITE_COLUMN_DDL = {
         "place": "ALTER TABLE rounds ADD COLUMN place VARCHAR(80)",
         "sealed": "ALTER TABLE rounds ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT 0",
         "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
+        "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
     },
     "cards": {
         "tag": "ALTER TABLE cards ADD COLUMN tag VARCHAR(16) NOT NULL DEFAULT 'care'",
@@ -47,6 +48,10 @@ _SQLITE_COLUMN_DDL = {
         "wallet_linked_at": "ALTER TABLE players ADD COLUMN wallet_linked_at DATETIME",
         "calling": "ALTER TABLE players ADD COLUMN calling VARCHAR(32)",
         "inspiration": "ALTER TABLE players ADD COLUMN inspiration INTEGER NOT NULL DEFAULT 0",
+        "wallet_verified": "ALTER TABLE players ADD COLUMN wallet_verified BOOLEAN NOT NULL DEFAULT 0",
+        "wallet_verify_code": "ALTER TABLE players ADD COLUMN wallet_verify_code VARCHAR(16)",
+        "wallet_verify_created": "ALTER TABLE players ADD COLUMN wallet_verify_created DATETIME",
+        "dm_subscribed": "ALTER TABLE players ADD COLUMN dm_subscribed BOOLEAN NOT NULL DEFAULT 1",
     },
     "stakes": {
         "network": "ALTER TABLE stakes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
@@ -76,6 +81,13 @@ def _ensure_sqlite_columns(sync_conn) -> None:
 async def init_db() -> None:
     Path("data").mkdir(exist_ok=True)
     async with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            # Render мог подсунуть свежую или чужую Postgres, где в search_path
+            # нет схемы (DROP/RESET базы): без неё create_all падает
+            # «no schema has been selected to create in». Гарантируем, что
+            # public существует и является схемой этого подключения.
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
+            await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "postgresql":
             await conn.execute(text("ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)"))
@@ -113,12 +125,33 @@ async def init_db() -> None:
             await conn.execute(text(
                 "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE"
             ))
+            # «Денежный режим» дня: ставки живут только в помеченных днях
+            # (/panel переключает), снимок дня — Round.money_mode.
+            await conn.execute(text(
+                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
             # Призвание собаки и жетоны «Второго нюха» (Правила Стаи).
             await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)"))
             await conn.execute(text(
                 "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0"
+            ))
+            # Подтверждение владения кошельком (мемо bv:<код>): привязка чужого
+            # адреса перестаёт быть ресурсом для кражи призов.
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ"
+            ))
+            # Личные дубликаты рассылок: подписанные игроки получают итоги и
+            # анонсы в личку (/start тумблером). (Старым игрокам — да.)
+            await conn.execute(text(
+                "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE"
             ))
             await conn.execute(text(
                 "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from random import Random
 
-import pytest
 
 from app.lore import CardDraft, _cards, _day_twist, _narrowed_card
 
