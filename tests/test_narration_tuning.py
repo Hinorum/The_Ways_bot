@@ -30,7 +30,7 @@ def test_expanded_in_prologue_and_midpoint() -> None:
 
 def test_card_description_budget_unchanged() -> None:
     prompt = _prompt(None)
-    assert "не больше 210 знаков" in prompt
+    assert "не больше 280 знаков" in prompt
 
 
 def test_sniff_scene_appends_trail_tint() -> None:

@@ -56,6 +56,34 @@ def bigram_diversity(text: str) -> float:
     return len(set(bigrams)) / len(bigrams)
 
 
+def _check_word_frequency(text: str, max_per_1000: int = 8) -> list[str]:
+    """Check for overused content words. Returns list of (word, count) tuples for words exceeding the limit."""
+    import re
+    from collections import Counter
+    # Skip common Russian particles/prepositions/conjunctions
+    _STOP = {
+        "и", "в", "на", "с", "по", "не", "что", "как", "но", "да", "нет",
+        "это", "он", "она", "оно", "они", "мы", "вы", "я", "ты", "к",
+        "от", "до", "из", "за", "под", "над", "при", "для", "о", "у",
+        "а", "ни", "ли", "бы", "же", "вот", "тут", "там", "где",
+        "его", "её", "их", "мне", "тебе", "нам", "вам", "ей", "ему",
+        "ей", "им", "них", "нем", "ней", "нём", "вас", "меня", "тебя",
+        "себя", "свой", "мой", "твой", "наш", "ваш", "тот", "та", "те",
+        "все", "вся", "всё", "каждый", "каждая", "каждое",
+        "стая", "мир", "день", "дни", "путь", "мост", "кость",
+        "ещё", "еще", "уже", "только", "если", "когда", "после",
+        "один", "одна", "одно", "два", "три", "было", "будет",
+    }
+    words = re.findall(r"[а-яА-ЯёЁ]+", text.lower())
+    length = max(len(words), 1)
+    freq = Counter(w for w in words if w not in _STOP and len(w) > 3)
+    overused = []
+    for word, count in freq.most_common():
+        if count > max_per_1000 * length / 1000:
+            overused.append((word, count))
+    return overused[:10]
+
+
 # Voice cards: конкретные примеры речи для каждого персонажа.
 # Инжектятся ТОЛЬКО когда персонаж появляется в сцене.
 _VOICE_CARDS: dict[str, dict[str, str | list[str]]] = {
@@ -109,9 +137,13 @@ def _voice_cards_for(text: str) -> str:
     for char_key, card in _VOICE_CARDS.items():
         if char_key in low:
             examples = " | ".join(str(e) for e in card["examples"][:3])
+            banned = card.get("banned", [])[:3]
+            suffix = ""
+            if banned:
+                suffix = f" | ЗАПРЕЩЕНО: {', '.join(str(b) for b in banned)}"
             blocks.append(
                 f"[ГОЛОС: {char_key.upper()} — {card['pattern']}. "
-                f"Примеры: {examples}]"
+                f"Примеры: {examples}{suffix}]"
             )
     return "\n".join(blocks) if blocks else ""
 
@@ -282,7 +314,11 @@ BASE_PROMPT = (
     "жест раз или два, когда стая затихает перед выбором.\n"
     "Пиши простым живым русским языком: короткие предложения, понятная причинность, никакого канцелярита, "
     "ломаного синтаксиса и случайной латиницы. Не повторяй одни и те же формулировки и названия мест из "
-    "карты в карту. Никаких метакомментариев и упоминаний нейросети: только художественный текст."
+    "карты в карту. Никаких метакомментариев и упоминаний нейросети: только художественный текст.\n"
+    "Покажи, не назови: вместо «стая была голодна» — «желудок поджался так, что рёбра проступили». "
+    "Каждое качество героя — через действие или деталь, не через прилагательное. "
+    "Чередуй органы чувств: запах пыли, холод металла под лапами, привкус озона, шорох бумаги, "
+    "тепло чужого тела рядом. Не ограничивайся звуком — у этого мира есть вкус и ощущение."
 )
 
 CHARACTER_MICRO_PROMPTS: dict[str, str] = {
@@ -1134,7 +1170,8 @@ def _build_story_prompt(
         )
     # Voice cards: инжектим конкретные примеры речи для персонажей в сцене
     voice_block = _voice_cards_for(
-        f"{history} {season_text} {villain_text} {echo_block}"
+        f"{previous_beats} {season_text} {villain_text} {echo_block} "
+        f"{alignment_block} {focus_line} {repeat_block}"
     )
     # Witness filter: не все NPC знают о прошлых событиях
     witness_block = witness_filter(previous_beats, history)
@@ -1199,7 +1236,7 @@ def _build_story_prompt(
         )
     # Компактный профиль: карты целиком влезают в развилку поста (показ без
     # многоточий до 260 знаков) — потолок промпта обязан быть ниже него.
-    card_desc_budget = 210
+    card_desc_budget = 280
     return (
         head
         + opening_line
@@ -1215,6 +1252,10 @@ def _build_story_prompt(
         "Три пути: каждый с конкретной ценой, каждый оставляет след. "
         "Финальная строка главы — крючок: недоговорённость, звук или вопрос, "
         "обрывающий сцену перед картами. Не резюмируй мораль.\n"
+        "Напряжение нарастает от спокойного начала к моменту обнаружения или опасности — не выдавай выбор сразу. "
+        "Начни тихо, дай почуять мир, потом введи сбой или тревогу, и только потом — дилемму. "
+        "Чередуй короткие рубленые предложения с длинными. Паузу перед выбором можно выразить одним словом на абзац. "
+        "НЕ заканчивай моралью, резюме или прямым обращением к игроку — последнее слово главы должно быть незавершённым.\n"
         "Три карты — дилемма «вагонетки»: конкретная ситуация, где нужно выбрать: "
         "кого спасти, чем пожертвовать, какой ценой заплатить. Без очевидно "
         "правильного ответа. Варьируй тип дилеммы ото дня ко дню: иногда "
@@ -1250,6 +1291,44 @@ def _build_story_prompt(
     )
 
 
+
+
+def _check_violations(text: str) -> list[str]:
+    """Проверяет сгенерированный текст на нарушения голосовых карточек."""
+    violations: list[str] = []
+    low = text.lower()
+    # Архивариус: диалоги не должны заканчиваться точкой (только многоточие)
+    for match in re.finditer(
+        r'[«"]([^»"]*)[»"]', text,
+    ):
+        snippet = match.group(1)
+        if "архивариус" in snippet.lower() and snippet.endswith("."):
+            violations.append(
+                f"Архивариус заканчивает точкой: «{snippet[:60]}…»"
+            )
+    # Безымянная: диалоги длиннее 50 символов
+    for match in re.finditer(
+        r'[«"]([^»"]*)[»"]', text,
+    ):
+        snippet = match.group(1)
+        if "безымянная" in snippet.lower() and len(snippet) > 50:
+            violations.append(
+                f"Безымянная: диалог >50 символов ({len(snippet)}): «{snippet[:40]}…»"
+            )
+    # Еретик: говорит о себе от первого лица (я, мне, мой)
+    for match in re.finditer(
+        r'[«"]([^»"]*)[»"]', text,
+    ):
+        snippet = match.group(1)
+        if "еретик" in snippet.lower():
+            first_person = re.search(
+                r'\b(я|мне|мой|моя|моё|мои)\b', snippet, re.IGNORECASE,
+            )
+            if first_person:
+                violations.append(
+                    f"Еретик от первого лица: «{snippet[:60]}…»"
+                )
+    return violations
 
 
 async def _free_story_llm(
@@ -1347,6 +1426,13 @@ async def _free_story_llm(
                             "Низкий диверситет дня %d: %.2f < 0.55 (попытка %d)",
                             day_index, _div, attempt,
                         )
+                # Word frequency cap: flag overused content words
+                _overused = _check_word_frequency(str(data.get("text", "")))
+                if _overused:
+                    logger.warning(
+                        "Частотные слова дня %d: %s (попытка %d)",
+                        day_index, _overused, attempt,
+                    )
                 # Анти-репетиция: запоминаем первые предложения описаний карт
                 for card in data.get("cards") or []:
                     desc = str(card.get("description", "")).strip()
@@ -1371,6 +1457,10 @@ async def _free_story_llm(
                                         "Карты %d и %d дня %d совпадают на %.0f%% биграмм",
                                         i, j, day_index, _overlap * 100,
                                     )
+                # Проверка голосовых нарушений: предупреждаем, но не отклоняем
+                _violations = _check_violations(str(data.get("text", "")))
+                for v in _violations:
+                    logger.warning("Голосовое нарушение дня %d: %s", day_index, v)
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data
             logger.warning("Модель %s вернула не 3 карты (попытка %d)", used_model, attempt)
