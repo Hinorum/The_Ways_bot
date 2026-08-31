@@ -502,6 +502,11 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
         # из-за нехватки средств на казначее. Fail-fast с понятной причиной:
         # статус остаётся pending, попытки НЕ сгорают — после пополнения
         # очередь уйдёт сама, без ручного retry и без мёртвых писем.
+        #
+        # Если баланс недоступен (оба индексатора молчат) — логируем, но
+        # ПРОБУЕМ отправить: liteclient работает через прямое TCP-соединение
+        # к liteserver, а не через HTTP API. Пусть liteserver отвергнет сам,
+        # если средств мало — это надёжнее, чем висеть в очереди навсегда.
         sendable = [payout for payout in payouts if payout.dest_address]
         if (
             sendable
@@ -514,15 +519,11 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
                 logger.warning("Баланс казначея перед циклом не прочитан: %s", exc)
                 balance = None
             if balance is None:
-                reason = (
-                    "баланс казначея недоступен (оба индексатора молчат) — "
-                    "отправка приостановлена до восстановления связи"
+                logger.warning(
+                    "Баланс казначея недоступен (оба индексатора молчат) — "
+                    "попытка отправки через liteclient напрямую (%d выплат)",
+                    len(sendable),
                 )
-                logger.warning("Диспетчер: %s", reason)
-                for payout in sendable:
-                    payout.last_error = reason[:200]
-                await session.commit()
-                return 0
             if balance is not None:
                 fee_nano = to_nano(settings.payout_fee_gram)
                 needed = sum(p.amount_nanotons for p in sendable) + fee_nano * len(sendable)

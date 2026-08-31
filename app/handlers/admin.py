@@ -673,9 +673,13 @@ async def cmd_refinalize(message: Message) -> None:
 
         # 1) Удаляем ВСЕ старые выплаты (включая sent — это дубли от прошлых
         #    попыток; реальные транзы уже ушли, но записи мешают корректной
-        #    перефинализации).
+        #    перефинализации). Sent НЕ удаляем — это реальные транзы,
+        #    их наличие защищает от двойной отправки через memo anti-duplicate.
         stale_q = await session.execute(
-            select(Payout).where(Payout.round_id == row.id)
+            select(Payout).where(
+                Payout.round_id == row.id,
+                Payout.status.notin_(["sent"]),
+            )
         )
         stale = list(stale_q.scalars().all())
         for p in stale:
