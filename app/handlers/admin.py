@@ -642,12 +642,11 @@ async def cmd_refinalize(message: Message) -> None:
             await message.answer(f"День {target_day}: статус={status}, нужен CLOSED.")
             return
 
-        # 1) Удаляем старые выплаты которые НЕ отправлены (pending/created).
+        # 1) Удаляем ВСЕ старые выплаты (включая sent — это дубли от прошлых
+        #    попыток; реальные транзы уже ушли, но записи мешают корректной
+        #    перефинализации).
         stale_q = await session.execute(
-            select(Payout).where(
-                Payout.round_id == row.id,
-                Payout.status.in_(["created", "pending"]),
-            )
+            select(Payout).where(Payout.round_id == row.id)
         )
         stale = list(stale_q.scalars().all())
         for p in stale:
