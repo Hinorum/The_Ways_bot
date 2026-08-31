@@ -26,7 +26,7 @@ from app.broadcast import (
 )
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Chat, Payout, Round, RoundStatus, Stake
+from app.models import Chat, Payout, Round, RoundStatus, Stake, Vote
 from app.rounds import (
     claim_announcement,
     close_voting,
@@ -555,30 +555,59 @@ async def cmd_finalize(message: Message) -> None:
             status = row.status.value if hasattr(row.status, 'value') else str(row.status)
             fin = row.payouts_finalized
             pot = row.pot_nanotons
-            # Считаем ставки
+            wc = row.winner_card
+
+            # Ставки
             stakes_q = await session.execute(
                 select(Stake).where(Stake.round_id == row.id)
             )
             stakes = list(stakes_q.scalars().all())
-            stake_info = ", ".join(
-                f"P{stake.player_id}:{stake.status}:{stake.amount_nanotons}n"
-                for stake in stakes
-            ) or "нет"
-            # Считаем существующие выплаты
+            stakes_by_player = {s.player_id: s for s in stakes}
+
+            # Голоса
+            votes_q = await session.execute(
+                select(Vote).where(Vote.round_id == row.id)
+            )
+            votes = list(votes_q.scalars().all())
+
+            # Существующие выплаты
             payouts_q = await session.execute(
                 select(Payout).where(Payout.round_id == row.id)
             )
             payouts = list(payouts_q.scalars().all())
-            pay_info = ", ".join(
-                f"id={p.id}:{p.kind}:{p.status}:{p.amount_nanotons}n"
-                for p in payouts
-            ) or "нет"
-            await message.answer(
-                f"День {target_day} (Round#{row.id}):\n"
-                f"  status={status}, finalized={fin}, pot={pot}\n"
-                f"  Ставки: {stake_info}\n"
-                f"  Выплаты: {pay_info}"
-            )
+
+            # Таблица голосов + ставок
+            lines = [f"День {target_day} (Round#{row.id}): status={status}, finalized={fin}"]
+            lines.append(f"Пот: {pot} нанотонов | Победившая карта: {wc}")
+            lines.append("")
+            lines.append("Голоса:")
+            for v in votes:
+                stake = stakes_by_player.get(v.player_id)
+                stake_str = f"{stake.amount_nanotons}n ({stake.status})" if stake else "нет"
+                winner_mark = " ✅ПОБЕДА" if v.card_position == wc else ""
+                lines.append(f"  P{v.player_id}: карта {v.card_position}{winner_mark} | ставка: {stake_str}")
+
+            # Анализ: кто выиграл
+            winner_ids = {v.player_id for v in votes if v.card_position == wc}
+            winning_stakes = [s for s in stakes if s.player_id in winner_ids and s.status == "confirmed"]
+            confirmed = [s for s in stakes if s.status == "confirmed"]
+            lines.append("")
+            if winning_stakes:
+                total_prize = sum(s.amount_nanotons for s in winning_stakes)
+                lines.append(f"Победители со ставкой: {len(winning_stakes)}, сумма ставок: {total_prize}n")
+            else:
+                lines.append("Победителей со ставкой: 0 — все ставки будут возвращены")
+                if winner_ids:
+                    lines.append(f"  (Угадали: {', '.join(f'P{pid}' for pid in winner_ids)}, но ставки не сделали)")
+
+            # Выплаты
+            if payouts:
+                lines.append("")
+                lines.append(f"Выплаты ({len(payouts)}):")
+                for p in payouts:
+                    lines.append(f"  id={p.id}: {p.kind} {p.status} {p.amount_nanotons}n → P{p.player_id}")
+
+            await message.answer("\n".join(lines))
         # Теперь финализация
         q = select(Round).where(
             Round.status == RoundStatus.CLOSED,
