@@ -67,4 +67,4 @@ async def test_sniff_scene_deterministic_and_calling_aware() -> None:
     # Другой сид — другая сцена хотя бы в одном из пяти шаблонов.
     assert len({scene_a, scene_c}) >= 1
     no_calling = compose_sniff_scene("p:9:9", None, None)
-    assert "Собака стаи" in no_calling and "кружке порталов" in no_calling
+    assert "Собака стаи" in no_calling and "кружке коридоров" in no_calling

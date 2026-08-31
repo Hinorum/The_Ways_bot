@@ -62,7 +62,7 @@ _UPDATE_ERROR_ALERT_COOLDOWN = 3600.0
 
 
 _PLAYER_ERROR_TEXT = (
-    "⚠️ Сеть мира дрогнула — шаг не засчитан. Повтори ещё раз; "
+    "⚠️ Лабиринт дрогнул — шаг не засчитан. Повтори ещё раз; "
     "если повторится, напиши хранителю."
 )
 
@@ -82,7 +82,7 @@ async def handle_update_error(bot: Bot | None, event) -> None:
     # Кнопка не должна крутиться до клиентского таймаута.
     if callback is not None:
         try:
-            await callback.answer("Сеть мира дрогнула — попробуй ещё раз.", show_alert=True)
+            await callback.answer("Лабиринт дрогнул — попробуй ещё раз.", show_alert=True)
         except Exception:
             pass
     if chat_id is not None and bot is not None:

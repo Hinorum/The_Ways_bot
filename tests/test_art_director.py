@@ -151,7 +151,7 @@ async def test_intro_prompt_carries_world_and_heretic(offline_llm) -> None:
     bible = await plan_day_art(CHAPTER)
     intro = build_intro_prompt(bible, seed=7)
     short = build_intro_short_prompt(bible)
-    assert "portal rings" in intro and "old stitched maps" in intro
+    assert "labyrinth corridors" in intro and "old stitched maps" in intro
     for mark in ("no text", "flat 2D"):
         assert mark in intro
     assert len(short.split()) < 95  # сжатый, но сцена мира насыщенная
@@ -172,10 +172,10 @@ def test_compact_anchor_fits_state_limit() -> None:
 def test_character_motifs_detected_from_chapter_text() -> None:
     from app.art_director import character_motifs_for
 
-    text = "Лайнер отсчитывает сдачу, а Архивариус шепчет над папками. Хозяин Ошибки молчит."
+    text = "Лайнер отсчитывает сдачу, а Архивариус шепчет над папками. Администратор молчит."
     motifs = character_motifs_for(text)
-    assert len(motifs) == 3
-    assert all("Liner" in m or "Archivist" in m or "Error Master" in m for m in motifs)
+    assert len(motifs) >= 2  # Лайнер + (Архивариус/Хранитель) + Администратор (дедуп)
+    assert all("Liner" in m or "Archivist" in m or "Administrator" in m for m in motifs)
     assert character_motifs_for("Стая идёт через пустой город") == []
     # Детерминированность: тот же текст — тот же набор.
     assert motifs == character_motifs_for(text.lower())

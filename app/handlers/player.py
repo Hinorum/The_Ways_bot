@@ -112,7 +112,7 @@ async def cmd_start(message: Message) -> None:
     lines = [
         f"{day_mark(uid)} <b>{settings.world_name}</b>",
         "",
-        "Потерянные собаки идут сквозь сеть глючных порталов.",
+        "Потерянные собаки идут сквозь лабиринт нестабильных коридоров.",
         "Ты — один из них. Каждое утро Архивариус выносит три тропы",
         "и объявляет Закон дня: большинство, меньшинство или середина.",
         "",
@@ -365,7 +365,7 @@ async def cmd_lore(message: Message) -> None:
         return
     text, truncated = _canon_text(beats)
     if truncated:
-        text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме порталов.\n\n" + text
+        text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме коридоров.\n\n" + text
     await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}")
 
 
@@ -450,7 +450,7 @@ async def _score_text(user) -> str:
     text = (
         f"{choice}\n{result_mark(f'score:{user.id}')} "
         f"Следы: {player.score} · Верных путей: {player.correct_picks}\n"
-        f"🧠 Память сети: {memory_hits} · ✨ Второй нюх: {player.inspiration}\n\n"
+        f"🧠 Память лабиринта: {memory_hits} · ✨ Второй нюх: {player.inspiration}\n\n"
         f"{streak_info}"
     )
     if calling is not None:
@@ -637,7 +637,7 @@ async def on_calling_pick(callback: CallbackQuery) -> None:
 _SNIFF_SCENES = (
     "Ты лежишь у карт в «{place}» и вдруг чуешь тропу, которой ещё нет на столе. "
     "{calling_title} умеет ждать: нюх говорит «не сегодня» — но говорит точно.",
-    "Вечер в «{place}». Ты поднимаешь морду: где-то за порталами кто-то пересчитывает "
+    "Вечер в «{place}». Ты поднимаешь морду: где-то за стенами кто-то пересчитывает "
     "стаю заново. {calling_title} не считает — он слышит, когда счёт сбивается.",
     "Короткий отдых в «{place}»: миски остывают, а твой нюх греется о чужое воспоминание. "
     "{calling_title} знает: память — тоже провизия.",
@@ -657,7 +657,7 @@ def compose_sniff_scene(
     rng = _random.Random(f"sniff:{seed_key}")
     template = _SNIFF_SCENES[rng.randrange(len(_SNIFF_SCENES))]
     scene = template.format(
-        place=place or "кружке порталов",
+        place=place or "кружке коридоров",
         calling_title=f"«{calling.title}»" if calling is not None else "Собака стаи",
     )
     if trail_tint:
@@ -819,7 +819,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
             if callback.message is not None:
                 try:
                     await callback.message.answer(
-                        "📚 «Память сети пополнилась», — шепчет Архивариус и не объясняет, чью."
+                        "📚 «Память лабиринта пополнилась», — шепчет Архивариус и не объясняет, чью."
                     )
                 except Exception:
                     pass

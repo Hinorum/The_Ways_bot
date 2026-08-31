@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 ART_SYSTEM_PROMPT = (
     "Ты — арт-директор визуальной новеллы по мотивам тёмной сказки о стае "
-    "бездомных собак-путешественников у цифровых порталов. Мир: Эхо Стаи. "
+    "бездомных собак-путешественников у стен лабиринта. Мир: Эхо Стаи. "
     "ВИЗУАЛЬНЫЙ СТИЛЬ СЕРИИ — flat 2D vector cartoon, cozy-dystopia: смелые "
     "чистые контуры, приглушённые матовые цвета, никакой фотореалистичности, "
     "3D-рендера или аниме. Кадр читается как иллюстрация к сказке, а не как "
@@ -41,9 +41,9 @@ ART_SYSTEM_PROMPT = (
     "в сцене сегодня. Ты не пишешь текст для игрока и не упоминаешь механику "
     "игры: только изображение.\n"
     "ЦВЕТОВАЯ СЕМАНТИКА СЕРИИ — держи изо дня в день, палитра через сюжет: "
-    "красное свечение — только приметы Хозяина Ошибки и чужого счёта; "
+    "красное свечение — только приметы Администратора и чужого счёта; "
     "мелково-белая отметка в форме апострофа — знак Еретика; "
-    "биолюминесцентная бирюза — порталы и живая сеть; "
+    "биолюминесцентная бирюза — коридоры и стены лабиринта; "
     "тёплое золото — миски, чудо и память стаи; "
     "пыльно-серый — архив и папки Архивариуса; "
     "тёмно-коричневый и грязно-оранжевый — подвал, Крыса и обглоданные таблички; "
@@ -67,7 +67,7 @@ _COVER_COMPOSITIONS = [
     "extreme wide establishing shot with deep perspective",
     "sweeping aerial view of the scene",
     "low horizon panorama under a vast sky",
-    "symmetrical wide shot centered on a glowing portal",
+    "symmetrical wide shot centered on a labyrinth corridor",
 ]
 _CARD_COMPOSITIONS = [
     "low angle hero shot",
@@ -85,7 +85,7 @@ _CAMERA_TEXTURES = [
 # Гамма серии (cozy-dystopia, flat-vector): песочно-бежевый / жжёно-оранжевый /
 # пыльно-бирюзовый / угольный — база; неоново-радиоактивно-красный / монетно-
 # золотой / кислотно-зелёный — акценты. Цветовая семантика (см. ART_SYSTEM_PROMPT)
-# не меняется: красное — Хозяин Ошибки, бирюза — порталы, золото — миски/память.
+# не меняется: красное — Администратор, бирюза — коридоры, золото — миски/память.
 _PALETTE_ROTATION = [
     ("sandy beige and burnt orange with dusty teal shadows, charcoal linework", "soft hazy dusk glow"),
     ("dusty teal and charcoal with coin-gold lantern light", "cold moonlit rim light"),
@@ -117,9 +117,9 @@ _CHARACTER_MOTIFS = {
         "drifting paper dust, loupe spectacles reflecting a different text "
         "in each lens, whispering folders"
     ),
-    "хозяин ошибки": (
-        "faceless Error Master, a tall silhouette of counting hands and "
-        "misplaced numbers hovering over a glitching portal, surrounded by "
+    "администратор": (
+        "faceless Administrator, a tall silhouette of counting hands and "
+        "misplaced numbers hovering over glitching labyrinth walls, surrounded by "
         "perfectly aligned but sad, sterile tableaus"
     ),
     # НейроГримёр Еретика: ветеран носит старый мир на себе — пальто из
@@ -188,7 +188,7 @@ def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
         "cover": {
             "scene": chapter.get(
                 "cover_prompt",
-                "pack of stray dogs before an unstable glowing portal",
+                "pack of stray dogs before labyrinth corridors",
             ),
             "composition": _COVER_COMPOSITIONS[seed % len(_COVER_COMPOSITIONS)],
         }
@@ -199,7 +199,7 @@ def offline_bible(chapter: dict, anchor: dict | None = None) -> dict:
         # Эмоциональное ядро серии — «круг света стаи» (аналог их костра
         # под звёздами): тёплый островок среди глючных миров.
         "motifs": [
-            "glowing portal ring",
+            "glowing corridor walls",
             "drifting digital particles",
             "a small circle of campfire light around the pack under a starry sky",
         ],
@@ -267,7 +267,7 @@ def _parse_bible(payload: dict) -> dict | None:
     lighting = str(data.get("lighting", "")).strip() or _PALETTE_ROTATION[0][1]
     motifs = [str(m).strip()[:80] for m in (data.get("motifs") or []) if str(m).strip()][:3]
     if not motifs:
-        motifs = ["glowing portal ring"]
+        motifs = ["glowing corridor walls"]
     blob = " ".join([palette, lighting, *motifs, scene])
     if not text_is_clean(blob):
         logger.warning("Библия дня отброшена стоп-фильтром")
@@ -363,8 +363,8 @@ def short_image_prompt(bible: dict, slot: str, seed: int = 0) -> str:
 # Стартовый кадр забега: мир целиком, для знакомства игроков. Генерируется
 # один раз на забег (день 1), дальше переиспользуется файлом.
 _INTRO_SCENE = (
-    "sweeping establishing shot of the pack's new world: a valley of glitching "
-    "portal rings under a vast dusk sky, five stray dog silhouettes on a ridge "
+    "sweeping establishing shot of the pack's new world: a valley of labyrinth "
+    "corridors under a vast dusk sky, five stray dog silhouettes on a ridge "
     "looking down, a faint faraway light of the First Bark deep below the "
     "network, a lean scarred dog in a coat of old stitched maps watching from "
     "a near cliff edge"

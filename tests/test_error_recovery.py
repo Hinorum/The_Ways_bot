@@ -50,7 +50,7 @@ async def test_callback_error_answers_spinner_and_notifies_player(monkeypatch) -
     await handle_update_error(event.bot, event)
     # Кнопке сняли спиннер, игроку ушло человеческое «не получилось».
     event.update.callback_query.answer.assert_awaited_once()
-    assert "Сеть мира дрогнула" in event.update.callback_query.answer.call_args.args[0]
+    assert "Лабиринт дрогнул" in event.update.callback_query.answer.call_args.args[0]
     event.bot.send_message.assert_awaited_once()
     assert event.bot.send_message.call_args.args[0] == 555_001
     assert len(sent_admin) == 1
