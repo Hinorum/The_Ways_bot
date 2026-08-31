@@ -611,6 +611,78 @@ async def cmd_finalize(message: Message) -> None:
     await message.answer("\n".join(results))
 
 
+@router.message(Command("refinalize"))
+async def cmd_refinalize(message: Message) -> None:
+    """Принудительная перефинализация: сбрасывает finalized, удаляет старые
+    невыполненные выплаты, пересоздаёт всё заново. /refinalize 1"""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    from sqlalchemy import delete as sa_delete
+
+    from app.stakes import finalize_day_payouts
+    from app.ton_pay import dispatch_pending_payouts
+
+    words = (message.text or "").split()
+    if len(words) < 2 or not words[1].isdigit():
+        await message.answer("Использование: /refinalize <день_номер>")
+        return
+    target_day = int(words[1])
+
+    async with SessionLocal() as session:
+        rnd = await session.execute(
+            select(Round).where(Round.day_index == target_day).order_by(Round.id.desc()).limit(1)
+        )
+        row = rnd.scalar_one_or_none()
+        if row is None:
+            await message.answer(f"День {target_day} не найден.")
+            return
+        if row.status != RoundStatus.CLOSED:
+            status = row.status.value if hasattr(row.status, 'value') else str(row.status)
+            await message.answer(f"День {target_day}: статус={status}, нужен CLOSED.")
+            return
+
+        # 1) Удаляем старые выплаты которые НЕ отправлены (pending/created).
+        stale_q = await session.execute(
+            select(Payout).where(
+                Payout.round_id == row.id,
+                Payout.status.in_(["created", "pending"]),
+            )
+        )
+        stale = list(stale_q.scalars().all())
+        for p in stale:
+            await session.delete(p)
+
+        # 2) Сбрасываем finalized.
+        row.payouts_finalized = False
+        await session.commit()
+        deleted = len(stale)
+        await message.answer(
+            f"Round#{row.id} (день {target_day}): finalized сброшен, "
+            f"удалено {deleted} старых выплат. Запускаю финализацию..."
+        )
+
+    # 3) Финализация в новой сессии.
+    try:
+        async with SessionLocal() as session:
+            row = await session.get(Round, row.id)
+            if row is None:
+                await message.answer("Round не найден после сброса.")
+                return
+            created = await finalize_day_payouts(session, row)
+            await message.answer(f"Создано выплат: {created}")
+    except Exception as exc:
+        await message.answer(f"Ошибка финализации: {exc!r}")
+        return
+
+    # 4) Отправка.
+    try:
+        sent = await dispatch_pending_payouts(bot=message.bot)
+        await message.answer(f"Отправлено выплат: {sent}")
+    except Exception as exc:
+        await message.answer(f"Ошибка отправки: {exc!r}")
+
+
 @router.message(Command("pause"))
 async def cmd_pause(message: Message) -> None:
     """Стоп-кран: дни замирают, входящие переводы автоматически возвращаются."""
