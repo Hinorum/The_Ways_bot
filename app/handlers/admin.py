@@ -26,7 +26,7 @@ from app.broadcast import (
 )
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Chat, Round, Stake
+from app.models import Chat, Payout, Round, RoundStatus, Stake
 from app.rounds import (
     claim_announcement,
     close_voting,
@@ -541,7 +541,45 @@ async def cmd_finalize(message: Message) -> None:
 
     words = (message.text or "").split()
     target_day = int(words[1]) if len(words) > 1 and words[1].isdigit() else None
+
+    # Сначала покажем состояние раунда(ов) для диагностики.
     async with SessionLocal() as session:
+        if target_day is not None:
+            rnd = await session.execute(
+                select(Round).where(Round.day_index == target_day).order_by(Round.id.desc()).limit(1)
+            )
+            row = rnd.scalar_one_or_none()
+            if row is None:
+                await message.answer(f"День {target_day} не найден.")
+                return
+            status = row.status.value if hasattr(row.status, 'value') else str(row.status)
+            fin = row.payouts_finalized
+            pot = row.pot_nanotons
+            # Считаем ставки
+            stakes_q = await session.execute(
+                select(Stake).where(Stake.round_id == row.id)
+            )
+            stakes = list(stakes_q.scalars().all())
+            stake_info = ", ".join(
+                f"P{stake.player_id}:{stake.status}:{stake.amount_nanotons}n"
+                for stake in stakes
+            ) or "нет"
+            # Считаем существующие выплаты
+            payouts_q = await session.execute(
+                select(Payout).where(Payout.round_id == row.id)
+            )
+            payouts = list(payouts_q.scalars().all())
+            pay_info = ", ".join(
+                f"id={p.id}:{p.kind}:{p.status}:{p.amount_nanotons}n"
+                for p in payouts
+            ) or "нет"
+            await message.answer(
+                f"День {target_day} (Round#{row.id}):\n"
+                f"  status={status}, finalized={fin}, pot={pot}\n"
+                f"  Ставки: {stake_info}\n"
+                f"  Выплаты: {pay_info}"
+            )
+        # Теперь финализация
         q = select(Round).where(
             Round.status == RoundStatus.CLOSED,
             Round.payouts_finalized.is_(False),
@@ -550,19 +588,26 @@ async def cmd_finalize(message: Message) -> None:
             q = q.where(Round.day_index == target_day)
         rounds = list((await session.execute(q)).scalars().all())
     if not rounds:
-        await message.answer(f"{ok_mark('ok')} Незавершённых дней нет" + (f" (день {target_day} не найден)" if target_day else ""))
+        await message.answer(f"{ok_mark('ok')} Незавершённых дней нет" + (f" (день {target_day} не найден или уже finalized)" if target_day else ""))
         return
     results = []
     for rnd in rounds:
-        async with SessionLocal() as session:
-            row = await session.get(Round, rnd.id)
-            if row is None:
-                continue
-            created = await finalize_day_payouts(session, row)
-            results.append(f"День {row.day_index}: создано выплат {created}")
+        try:
+            async with SessionLocal() as session:
+                row = await session.get(Round, rnd.id)
+                if row is None:
+                    results.append(f"Round#{rnd.id}: не найден")
+                    continue
+                created = await finalize_day_payouts(session, row)
+                results.append(f"День {row.day_index} (Round#{row.id}): создано выплат {created}")
+        except Exception as exc:
+            results.append(f"День {rnd.day_index} (Round#{rnd.id}): ОШИБКА — {exc!r}")
     # Отправляем
-    sent = await dispatch_pending_payouts(bot=message.bot)
-    results.append(f"Отправлено: {sent}")
+    try:
+        sent = await dispatch_pending_payouts(bot=message.bot)
+        results.append(f"Отправлено: {sent}")
+    except Exception as exc:
+        results.append(f"Ошибка отправки: {exc!r}")
     await message.answer("\n".join(results))
 
 

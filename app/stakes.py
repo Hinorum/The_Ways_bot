@@ -230,7 +230,6 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     if claim.rowcount == 0:
         _logger.info("finalize_day_payouts: round %s уже финализирован или claim не прошёл", round_row.id)
         return 0
-    await session.commit()
     _logger.info("finalize_day_payouts: round %s claim прошёл, ищу ставки (network=%s)", round_row.id, network)
 
     scope = [Stake.round_id == round_row.id, Stake.network == network]
