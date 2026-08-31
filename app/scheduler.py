@@ -680,9 +680,18 @@ async def _ton_maintenance() -> None:
     from app.ops import check_anomalies
     from app.ton_pay import settle_closed_rounds
 
-    await settle_closed_rounds(bot=_bot)
-    await settle_week_if_due(bot=_bot)
-    await settle_month_if_due(bot=_bot)
+    try:
+        await settle_closed_rounds(bot=_bot)
+    except Exception:
+        logger.exception("settle_closed_rounds упал (повторится через 120с)")
+    try:
+        await settle_week_if_due(bot=_bot)
+    except Exception:
+        logger.exception("settle_week_if_due упал")
+    try:
+        await settle_month_if_due(bot=_bot)
+    except Exception:
+        logger.exception("settle_month_if_due упал")
     try:
         problems = await check_anomalies(_bot)
         if problems:

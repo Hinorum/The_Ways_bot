@@ -216,7 +216,10 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     что при параллельном вызове (tick + ton-settle) только один поток пройдёт
     дальше. Идемпотентность — по флагу round.payouts_finalized.
     """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
     if round_row.status != RoundStatus.CLOSED:
+        _logger.debug("finalize_day_payouts: round %s не CLOSED (%s) — пропуск", round_row.id, round_row.status)
         return 0
     network = current_network()
     claim = await session.execute(
@@ -225,8 +228,10 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         .values(payouts_finalized=True)
     )
     if claim.rowcount == 0:
+        _logger.info("finalize_day_payouts: round %s уже финализирован или claim не прошёл", round_row.id)
         return 0
     await session.commit()
+    _logger.info("finalize_day_payouts: round %s claim прошёл, ищу ставки (network=%s)", round_row.id, network)
 
     scope = [Stake.round_id == round_row.id, Stake.network == network]
     confirmed = list(
@@ -241,6 +246,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         .scalars()
         .all()
     )
+    _logger.info("finalize_day_payouts: round %s confirmed=%d stuck=%d", round_row.id, len(confirmed), len(stuck))
 
     # Pre-load кошельков всех игроков одним запросом (eliminate N+1).
     all_player_ids = {s.player_id for s in confirmed + stuck}
@@ -394,6 +400,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         if refund > 0:
             created += add_payout(stake, "refund", refund)
 
+    _logger.info("finalize_day_payouts: round %s создано выплат: %d (pot=%d нанотонов)", round_row.id, created, pot)
     await session.commit()
     return created
 

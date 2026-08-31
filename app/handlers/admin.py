@@ -112,12 +112,16 @@ async def cmd_advance(message: Message) -> None:
             round_row, closed_here = await finish_tally(session, round_row)
             if closed_here:
                 await award_points(session, round_row)
+                from app.stakes import finalize_day_payouts
+                await finalize_day_payouts(session, round_row)
                 await write_epilogue(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         elif round_row.status.value == "tallying":
             round_row, closed_here = await finish_tally(session, round_row)
             if closed_here:
                 await award_points(session, round_row)
+                from app.stakes import finalize_day_payouts
+                await finalize_day_payouts(session, round_row)
                 await write_epilogue(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         else:
@@ -524,6 +528,42 @@ async def on_adjust_action(callback: CallbackQuery) -> None:
     if callback.message is not None:
         await callback.message.answer(result, parse_mode=ParseMode.HTML, reply_markup=None)
     await callback.answer("Записано.")
+
+
+@router.message(Command("finalize"))
+async def cmd_finalize(message: Message) -> None:
+    """Ручная финализация ставок застрявших дней: /finalize или /finalize 40"""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    from app.stakes import finalize_day_payouts
+    from app.ton_pay import dispatch_pending_payouts
+
+    words = (message.text or "").split()
+    target_day = int(words[1]) if len(words) > 1 and words[1].isdigit() else None
+    async with SessionLocal() as session:
+        q = select(Round).where(
+            Round.status == RoundStatus.CLOSED,
+            Round.payouts_finalized.is_(False),
+        )
+        if target_day is not None:
+            q = q.where(Round.day_index == target_day)
+        rounds = list((await session.execute(q)).scalars().all())
+    if not rounds:
+        await message.answer(f"{ok_mark('ok')} Незавершённых дней нет" + (f" (день {target_day} не найден)" if target_day else ""))
+        return
+    results = []
+    for rnd in rounds:
+        async with SessionLocal() as session:
+            row = await session.get(Round, rnd.id)
+            if row is None:
+                continue
+            created = await finalize_day_payouts(session, row)
+            results.append(f"День {row.day_index}: создано выплат {created}")
+    # Отправляем
+    sent = await dispatch_pending_payouts(bot=message.bot)
+    results.append(f"Отправлено: {sent}")
+    await message.answer("\n".join(results))
 
 
 @router.message(Command("pause"))

@@ -1178,12 +1178,20 @@ async def heal_stale_rounds(session: AsyncSession) -> int:
             finished, closed_here = await finish_tally(session, round_row)
             if closed_here:
                 await award_points(session, finished)
+                # Финализация ставок: heal сам дёр finalize_day_payouts, а не
+                # полагается на settle_closed_rounds (который может не работать
+                # если ton_enabled=False при старте).
+                from app.stakes import finalize_day_payouts
+                try:
+                    await finalize_day_payouts(session, finished)
+                except Exception:
+                    logger.warning("Финализация ставок вылеченного дня %s упала", day, exc_info=True)
                 try:
                     await write_epilogue(session, finished)
                 except Exception:
                     logger.warning("Эпилог вылеченного дня %s не удался", day, exc_info=True)
                 healed += 1
-                logger.info("Вылечен застрявший день %s: подсчёт завершён, ставки уйдут в очереди выплат", day)
+                logger.info("Вылечен застрявший день %s: подсчёт завершён, ставки финализированы", day)
         except Exception as exc:
             logger.exception("Лечение застрявшего дня %s не удалось (повторится)", day, exc)
             await session.rollback()
