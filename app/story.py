@@ -19,6 +19,14 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from app.config import settings
 from app.echoes import echo_prompt_lines
 from app.lore import compose_chapter
+from app.narrative_ai import (
+    kolmogorov_ratio,
+    should_retry_entropy,
+    dynamic_temperature,
+    coherence_score,
+    sa_optimize_params,
+    GenerationParams,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1185,6 +1193,15 @@ def _build_story_prompt(
             + places_block + "\n"
         )
     repeat_text = f"{repeat_block}\n" if repeat_block else ""
+    # GEPA: динамический промпт от эволюционного гена
+    _gepa_block = ""
+    try:
+        from app.scheduler import get_active_gepa_gene_sync
+        _gene = get_active_gepa_gene_sync()
+        if _gene is not None:
+            _gepa_block = _gene.to_prompt_block() + "\n"
+    except Exception:
+        pass
     head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
@@ -1200,6 +1217,7 @@ def _build_story_prompt(
         f"{witness_block}"
         f"{places_text}"
         f"{repeat_text}"
+        f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
@@ -1461,6 +1479,35 @@ async def _free_story_llm(
                 _violations = _check_violations(str(data.get("text", "")))
                 for v in _violations:
                     logger.warning("Голосовое нарушение дня %d: %s", day_index, v)
+                # ── Shannon Entropy gate ──
+                _chapter_text = str(data.get("text", ""))
+                if len(_chapter_text.split()) > 20:
+                    _ent = text_entropy(_chapter_text)
+                    if should_retry_entropy(_chapter_text, attempt):
+                        logger.warning(
+                            "Низкая энтропия дня %d: %.2f < %.1f (попытка %d) — повтор",
+                            day_index, _ent, 3.0, attempt,
+                        )
+                        continue
+                    # Динамическая температура для следующей попытки
+                    if _ent > 4.5:
+                        logger.info(
+                            "Высокая энтропия дня %d: %.2f > %.1f — понижаем температуру",
+                            day_index, _ent, 4.5,
+                        )
+                # ── Kolmogorov Complexity gate ──
+                _kol = kolmogorov_ratio(_chapter_text)
+                if _kol > 0.75 and len(_chapter_text) > 500:
+                    logger.warning(
+                        "Текст дня %d бедный (Kolmogorov=%.2f > 0.75, попытка %d) — повтор",
+                        day_index, _kol, attempt,
+                    )
+                    continue
+                if _kol < 0.25 and len(_chapter_text) > 500:
+                    logger.warning(
+                        "Текст дня %d избыточен (Kolmogorov=%.2f < 0.25, попытка %d)",
+                        day_index, _kol, attempt,
+                    )
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data
             logger.warning("Модель %s вернула не 3 карты (попытка %d)", used_model, attempt)
