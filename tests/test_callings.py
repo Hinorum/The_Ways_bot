@@ -65,7 +65,7 @@ async def test_hound_and_bard_unlock_by_counters(session) -> None:
 
     progress = await calling_progress(session, 11)
     keys = {c.key for c in unlocked_callings(progress)}
-    assert {"hound", "bard"} <= keys
+    assert {"ranger", "bard"} <= keys
     assert progress["votes"] == 21
     assert progress["correct_picks"] == 6
 
@@ -87,7 +87,7 @@ async def test_trickster_mutant_guardian_conditions(session) -> None:
     assert progress["sealed_correct"] == 1
     assert progress["care_votes"] == 5 and progress["cunning_votes"] == 0
     keys = {c.key for c in unlocked_callings(progress)}
-    assert {"trickster", "mutant", "guardian"} <= keys
+    assert {"rogue", "occultist", "paladin"} <= keys
 
 
 async def test_memory_hits_unlock_archivist(session) -> None:
@@ -101,18 +101,18 @@ async def test_memory_hits_unlock_archivist(session) -> None:
 
     progress = await calling_progress(session, 13)
     assert progress["memory_hits"] >= 3
-    assert any(c.key == "archivist" for c in unlocked_callings(progress))
+    assert any(c.key == "cleric" for c in unlocked_callings(progress))
 
 
 async def test_prompt_block_lists_only_present(session) -> None:
     session.add_all([
-        Player(id=14, username="a", calling="hound"),
-        Player(id=15, username="b", calling="hound"),
-        Player(id=16, username="c", calling="mutant"),
+        Player(id=14, username="a", calling="ranger"),
+        Player(id=15, username="b", calling="ranger"),
+        Player(id=16, username="c", calling="occultist"),
     ])
     await session.commit()
     block = await callings_prompt_block(session)
-    assert block is not None and "Гончая-следопыт — 2" in block and "Мутант-слепень — 1" in block
+    assert block is not None and "Следопыт — 2" in block and "Оккультист — 1" in block
     # Пустая стая — блок не строится.
     from sqlalchemy import delete
 

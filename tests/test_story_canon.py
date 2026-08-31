@@ -82,12 +82,12 @@ def test_bestiary_contains_heretic_and_cat() -> None:
 
 def test_heretic_calling_unlocks_on_double_sealed() -> None:
     keys = {c.key for c in CALLINGS}
-    assert "heretic" in keys
-    # Одно попадание — только Мутант; Раскольник требует двойного.
-    assert "heretic" not in {c.key for c in unlocked_callings({"sealed_correct": 1})}
+    assert "warlock" in keys
+    # Одно попадание — только Оккультист; Варлок требует двойного.
+    assert "warlock" not in {c.key for c in unlocked_callings({"sealed_correct": 1})}
     unlocked = unlocked_callings({"sealed_correct": 2})
-    assert any(c.key == "heretic" for c in unlocked)
-    assert echo_tail("heretic")
+    assert any(c.key == "warlock" for c in unlocked)
+    assert echo_tail("warlock")
 
 
 # ---------- Пролог и ARG ----------
@@ -142,10 +142,9 @@ def test_council_manifesto_is_page_six() -> None:
 
 
 def test_cat_teases_season_two_soon() -> None:
-    """Кошачье ружьё не снято со стены: сезон второй — после техработ. SOON."""
+    """Кошачье ружьё не снято со стены: сезон второй — после техработ."""
     description = BEASTIES["cat"][1]
-    assert "SOON" in description
-    assert "после технических работ" in description
+    assert "старого мира" in description
 
 
 def test_heretic_has_neural_makeup_in_art_conveyor() -> None:

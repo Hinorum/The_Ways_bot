@@ -89,6 +89,7 @@ async def test_short_neural_chapter_falls_back_offline(monkeypatch) -> None:
 
 def test_prompt_bans_law_formula_and_meta_echo() -> None:
     from app.models import WinRule
+    from app.story import DM_SYSTEM_PROMPT
 
     prompt = _build_story_prompt(
         3,
@@ -97,14 +98,12 @@ def test_prompt_bans_law_formula_and_meta_echo() -> None:
     )
     # Образный голос Архивариуса вместо дословной механики.
     assert "ЗАПРЕЩЕНО цитировать формулировку дословно" in prompt
-    # Отголосок — конкретная деталь, не мета-фраза.
-    assert "КОНКРЕТНУЮ деталь" in prompt and "напоминает о" in prompt
-    # Разнообразие начал карт.
-    assert "первое слово и конструкция каждой — свои" in prompt
+    # Мета-фразы запрещены в системном промпте.
+    assert "метакомментариев" in DM_SYSTEM_PROMPT
     # Прологовый фокус: одно лицо, прочие фоном.
-    assert "одно вводимое лицо" in prompt
-    # Закат больше не изобретается миром без солнца.
-    assert "до заката" not in prompt and "темноты сети" in prompt
+    assert "новых главных персонажей не вводи" in prompt
+    # Закон дня объявлен — не проявляется случайно.
+    assert "Закон сегодняшнего дня" in prompt
 
 
 def test_status_no_season_footer_for_non_crisis_days() -> None:

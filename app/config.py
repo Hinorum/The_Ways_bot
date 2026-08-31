@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 75
     image_timeout_seconds: int = 90
     story_models: str = "openai-fast,openai,mistral"
+    # Параметры генерации: температура, лимит токенов, штрафы за повтор.
+    # temperature 0.85 — баланс между креативностью и связностью.
+    # frequency_penalty 0.3 — штраф за повтор одних и тех же токенов.
+    # presence_penalty 0.2 — штраф за повтор тем/концепций.
+    llm_temperature: float = 0.85
+    llm_max_tokens: int = 3500
+    llm_frequency_penalty: float = 0.3
+    llm_presence_penalty: float = 0.2
     llm_api_key: str = ""
     llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"
     llm_models: str = "meta-llama/Llama-3.3-70B-Instruct"

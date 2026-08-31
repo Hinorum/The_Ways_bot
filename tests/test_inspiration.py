@@ -57,12 +57,12 @@ async def test_memory_hit_grants_once_per_round(session) -> None:
 
 
 async def test_sniff_scene_deterministic_and_calling_aware() -> None:
-    guardian = calling_by_key("guardian")
-    scene_a = compose_sniff_scene("p:1:100", guardian, "Старый приют")
-    scene_b = compose_sniff_scene("p:1:100", guardian, "Старый приют")
-    scene_c = compose_sniff_scene("p:1:200", guardian, "Старый приют")
+    paladin = calling_by_key("paladin")
+    scene_a = compose_sniff_scene("p:1:100", paladin, "Старый приют")
+    scene_b = compose_sniff_scene("p:1:100", paladin, "Старый приют")
+    scene_c = compose_sniff_scene("p:1:200", paladin, "Старый приют")
     assert scene_a == scene_b
-    assert "Овчарка-страж" in scene_a
+    assert "Палладин" in scene_a
     assert "Старый приют" in scene_a
     # Другой сид — другая сцена хотя бы в одном из пяти шаблонов.
     assert len({scene_a, scene_c}) >= 1
