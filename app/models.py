@@ -558,3 +558,25 @@ class WorldScar(Base):
     strength: Mapped[int] = mapped_column(Integer, default=1)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmotionalState(Base):
+    """Эмоциональный профиль стаи — накапливается от выборов.
+
+    Три параметра (0-10):
+    - fatigue: усталость (от risk)
+    - hope: надежда (от care)
+    - paranoia: паранойя (от cunning)
+
+    Влияют на тон атмосферных пэдов, доступность NPC-взаимодействий,
+    варианты финала и распределение карточек.
+    """
+
+    __tablename__ = "emotional_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fatigue: Mapped[int] = mapped_column(Integer, default=0)
+    hope: Mapped[int] = mapped_column(Integer, default=0)
+    paranoia: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated_day: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
