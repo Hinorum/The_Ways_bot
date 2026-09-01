@@ -943,6 +943,7 @@ async def generate_chapter(
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
     emotion_block: str | None = None,
+    branches_block: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -964,6 +965,7 @@ async def generate_chapter(
         is_expanded=is_expanded,
         active_scar_keys=active_scar_keys,
         emotion_block=emotion_block,
+        branches_block=branches_block,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1151,6 +1153,7 @@ def _build_story_prompt(
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
     emotion_block: str | None = None,
+    branches_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -1281,6 +1284,7 @@ def _build_story_prompt(
         f"{repeat_text}"
         f"{scar_text}"
         f"{emotion_block + chr(10) if emotion_block else ''}"
+        f"{branches_block + chr(10) if branches_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
@@ -1430,6 +1434,7 @@ async def _free_story_llm(
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
     emotion_block: str | None = None,
+    branches_block: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -1441,6 +1446,7 @@ async def _free_story_llm(
         is_expanded=is_expanded,
         active_scar_keys=active_scar_keys,
         emotion_block=emotion_block,
+        branches_block=branches_block,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (

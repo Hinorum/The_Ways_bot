@@ -580,3 +580,21 @@ class EmotionalState(Base):
     paranoia: Mapped[int] = mapped_column(Integer, default=0)
     last_updated_day: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConsequenceBranch(Base):
+    """Ветвь последствий — цепочка из выборов и их следов.
+
+    Каждое значимое действие стаи может создать ветвь, которая
+    развивается через несколько дней с вариантами выбора.
+    """
+
+    __tablename__ = "consequence_branches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    branch_key: Mapped[str] = mapped_column(String(64), index=True)
+    current_stage: Mapped[int] = mapped_column(Integer, default=0)
+    history_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_day: Mapped[int] = mapped_column(Integer)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

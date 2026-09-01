@@ -630,6 +630,29 @@ async def _plan_and_render(
     emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
     emotion_block = emotion_block_for_prompt(emotion_profile)
 
+    # Деревья последствий: загрузка активных ветвей
+    from app.consequence_trees import (
+        load_active_branches, format_active_branches,
+        check_tree_trigger, create_branch, advance_branch,
+        CONSEQUENCE_TREES,
+    )
+
+    active_branches = await load_active_branches(session, day_index)
+    branches_block = format_active_branches(active_branches)
+
+    # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
+    if beats:
+        last_beat = beats[-1] if beats else ""
+        for tree in CONSEQUENCE_TREES.values():
+            if tree.trigger_card in last_beat:
+                # Проверяем, нет ли уже такой ветви
+                existing_keys = {b.branch_key for b in active_branches}
+                if tree.key not in existing_keys:
+                    new_branch = await create_branch(session, tree, day_index)
+                    active_branches.append(new_branch)
+                    branches_block = format_active_branches(active_branches)
+                break
+
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
     # Первого Лая на длине месяца старта забега.
     open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
@@ -804,6 +827,7 @@ async def _plan_and_render(
         repeat_block=repeat_block,
         active_scar_keys=active_scar_keys,
         emotion_block=emotion_block,
+        branches_block=branches_block,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
