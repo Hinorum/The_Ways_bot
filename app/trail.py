@@ -124,3 +124,18 @@ def trail_line(stats: dict) -> str:
         f"🐾 Твой След: «{name}» — со стаей {hor}%, забота {heart}% "
         f"(по {stats['total']} голосам)."
     )
+
+
+def trail_prompt_block(stats: dict) -> str | None:
+    """Блок для промпта главы. None — мало данных."""
+    if stats is None:
+        return None
+    name = trail_name(stats["order"], stats["moral"])
+    if name is None:
+        return None
+    return (
+        f"ХАРАКТЕР СТАИ: «{name}». "
+        f"Со стаей {round(stats['conformity'] * 100)}%, "
+        f"забота {round((stats['heart_share'] + 1 - stats['fang_share']) * 50)}%. "
+        f"Это определяет тон повествования."
+    )

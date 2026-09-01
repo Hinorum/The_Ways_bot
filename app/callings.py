@@ -205,10 +205,28 @@ async def callings_prompt_block(session: AsyncSession) -> str | None:
             parts.append(f"{calling.title} — {count}")
     if not parts:
         return None
+
+    # Стили призваний для промпта
+    CALLING_STYLES = {
+        "ranger": "Следопыт считает дни и тропы, помнит каждый поворот",
+        "paladin": "Паладин защищает слабых, даже если это невыгодно",
+        "rogue": "Разбойник чует обман раньше, чем тот произнесёт имя",
+        "cleric": "Жрец помнит каждый долг стаи и считает его святым",
+        "bard": "Бард торгует воспоминаниями и знает цену каждой тайны",
+        "occultist": "Оккультист видит искры в тумане и читает цифры в стенах",
+        "warlock": "Варлок молчит — но его молчание весомее чужих криков",
+    }
+
+    style_lines = []
+    for key, count in rows:
+        if key in CALLING_STYLES:
+            style_lines.append(f"- {CALLING_STYLES[key]}")
+
     return (
         "ПРИЗВАНИЯ СТАИ (фон, одним касанием за главу, если уместно): "
         + ", ".join(parts)
-        + "."
+        + ".\n"
+        + "Стили: " + "; ".join(style_lines) + "."
     )
 
 

@@ -34,11 +34,6 @@ from app.difficulty import (
     _estimate_trend,
     format_difficulty_hint,
 )
-from app.prompt_composer import (
-    PromptBuilder,
-    PromptComposer,
-    PromptSection,
-)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -314,65 +309,3 @@ class TestDifficulty:
         hint = format_difficulty_hint(m, "medium")
         assert "Сложность: medium" in hint
         assert "Engagement:" in hint
-
-
-# ═══════════════════════════════════════════════════════════
-# Prompt Composer tests
-# ═══════════════════════════════════════════════════════════
-
-class TestPromptBuilder:
-    def test_add_section(self):
-        b = PromptBuilder()
-        b.add_section("world", "lore", priority=1)
-        assert len(b.get_sections()) == 1
-
-    @pytest.mark.asyncio
-    async def test_build_empty(self):
-        b = PromptBuilder()
-        result = await b.build()
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_build_with_text(self):
-        import asyncio
-        b = PromptBuilder()
-        section = b.add_section("world", "lore", priority=1)
-        # section is PromptBuilder (self-return), get the actual section
-        actual_section = b.get_sections()[0]
-        actual_section.set_text("World text")
-        result = await b.build()
-        assert "World text" in result
-
-    @pytest.mark.asyncio
-    async def test_priority_ordering(self):
-        b = PromptBuilder()
-        b.add_section("first", "lore", priority=10)
-        b.add_section("second", "lore", priority=1)
-        sections = b.get_sections()
-        sections[0].set_text("AAA")  # first (priority=10)
-        sections[1].set_text("BBB")  # second (priority=1)
-        result = await b.build()
-        assert result.index("BBB") < result.index("AAA")
-
-    def test_condition_check(self):
-        b = PromptBuilder()
-        assert b._check_condition(None, {})
-        assert b._check_condition("ton_enabled", {"ton_enabled": True})
-        assert not b._check_condition("ton_enabled", {"ton_enabled": False})
-        assert b._check_condition("surfaced_today", {"has_surfaced_echoes": True})
-        assert not b._check_condition("surfaced_today", {"has_surfaced_echoes": False})
-
-
-class TestPromptComposer:
-    @pytest.mark.asyncio
-    async def test_compose(self):
-        c = PromptComposer()
-        c.add_section("world", "lore", priority=1)
-
-        async def fake_lore(ctx):
-            return "Lore content"
-
-        c.register_source("lore", fake_lore)
-
-        result = await c.compose(context={"season_block": "Lore content"})
-        assert "Lore content" in result

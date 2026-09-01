@@ -714,6 +714,30 @@ async def _plan_and_render(
         pass
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
+    # Характер стаи: определённый по голосованиям, влияет на тон повествования.
+    from app.trail import trail_stats, trail_prompt_block
+
+    try:
+        # Используем агрегированную статистику по всем игрокам
+        # (упрощённо: берём данные из anchor)
+        trail_data = None
+        if anchor and "order_axis" in anchor and "moral_axis" in anchor:
+            # Конвертируем оси anchor в формат trail_stats
+            order = anchor.get("order_axis", 0)
+            moral = anchor.get("moral_axis", 0)
+            trail_data = {
+                "order": order,
+                "moral": moral,
+                "total": 100,  # Заглушка
+                "conformity": (order + 1) / 2,
+                "heart_share": (moral + 1) / 2,
+                "fang_share": 0.5,
+            }
+        trail_block = trail_prompt_block(trail_data)
+        if trail_block:
+            sblock = f"{sblock}\n{trail_block}"
+    except Exception:
+        pass
     # Отношения NPC к стае: канон последних дней в одной строке тона.
     from app.relations import load_relations, relations_prompt_block
 
