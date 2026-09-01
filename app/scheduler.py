@@ -632,6 +632,27 @@ async def _finalize_new_day_job(finished_id: int) -> None:
             # читать его day_index из отвязанного объекта было бы ошибкой.
             finished_day_index = finished.day_index
             await write_epilogue(session, finished)
+            # Если последний день месяца — ставим флаг готовности лидерборда.
+            from app.leaderboard import (
+                is_last_day_of_month, mark_month_leaderboard_ready,
+                is_last_day_of_week, mark_week_leaderboard_ready,
+            )
+
+            if finished.opens_at is not None and is_last_day_of_month(finished.opens_at):
+                month_key = finished.opens_at.strftime("%Y-%m")
+                await mark_month_leaderboard_ready(session, month_key)
+                logger.info(
+                    "Эпилог дня %d — последний день месяца %s: лидерборд готов к выплате",
+                    finished_day_index, month_key,
+                )
+            if finished.opens_at is not None and is_last_day_of_week(finished.opens_at):
+                from app.weeks import iso_week_key
+                week_key = iso_week_key(finished.opens_at)
+                await mark_week_leaderboard_ready(session, week_key)
+                logger.info(
+                    "Эпилог дня %d — последний день недели %s: недельный лидерборд готов к выплате",
+                    finished_day_index, week_key,
+                )
         # 2. Дописываем эпилог отдельным корочким постом (итоги уже ушли без него).
         async with SessionLocal() as session:
             finished = await session.get(Round, finished_id)

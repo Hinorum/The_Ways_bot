@@ -255,6 +255,30 @@ def format_results(round_row: Round) -> str:
     return "\n".join(lines)
 
 
+async def format_plugin_results(
+    round_row: Round, session: AsyncSession | None = None
+) -> str:
+    """Собирает дополнительные строки итогов от плагинов с RESULTS_FORMAT."""
+    from app.plugins import PluginContext, registry as _plugin_registry
+    from app.builtin_plugins import register_builtin_plugins
+
+    register_builtin_plugins()
+
+    # Пытаемся загрузить проекцию дня, если есть
+    projection = None
+    try:
+        from app.projection import build_projection
+
+        if session is not None:
+            projection = await build_projection(session, round_row)
+    except Exception:
+        pass
+
+    ctx = PluginContext(projection=projection, session=session)
+    lines = await _plugin_registry.collect_results_format(ctx)
+    return "\n".join(lines) if lines else ""
+
+
 async def day_economics(session: AsyncSession, round_row: Round) -> dict:
     """Цифры дня для поста итогов: банк, проценты, коэффициент, копилка.
 

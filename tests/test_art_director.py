@@ -172,10 +172,10 @@ def test_compact_anchor_fits_state_limit() -> None:
 def test_character_motifs_detected_from_chapter_text() -> None:
     from app.art_director import character_motifs_for
 
-    text = "Лайнер отсчитывает сдачу, а Архивариус шепчет над папками. Администратор молчит."
+    text = "Лайнер отсчитывает сдачу, а Смотритель Троп шепчет над папками. Администратор молчит."
     motifs = character_motifs_for(text)
-    assert len(motifs) >= 2  # Лайнер + (Архивариус/Хранитель) + Администратор (дедуп)
-    assert all("Liner" in m or "Archivist" in m or "Administrator" in m for m in motifs)
+    assert len(motifs) >= 2  # Лайнер + (Смотритель/Хранитель) + Администратор (дедуп)
+    assert all("Liner" in m or "Caretaker" in m or "Administrator" in m for m in motifs)
     assert character_motifs_for("Стая идёт через пустой город") == []
     # Детерминированность: тот же текст — тот же набор.
     assert motifs == character_motifs_for(text.lower())

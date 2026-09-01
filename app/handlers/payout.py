@@ -188,7 +188,7 @@ async def cmd_return(message: Message) -> None:
         from app.ton_pay import dispatch_pending_payouts
 
         try:
-            await dispatch_pending_payouts()
+            await dispatch_pending_payouts(bot=message.bot)
         except Exception:
             logger.exception("Кик диспетчера после ручного возврата не удался")
         await message.answer(f"{ok_mark(parts[1])} {result}.")

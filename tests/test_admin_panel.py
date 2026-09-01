@@ -200,13 +200,19 @@ async def test_panel_advance_go_runs_command(monkeypatch) -> None:
         await shim_message.answer("День 98001 открыт.")
 
     monkeypatch.setattr(panel_mod, "cmd_advance", fake_advance)
+
+    async def fake_text(session=None):
+        return "🎛 ПУЛЬТ ХРАНИТЕЛЯ"
+
+    monkeypatch.setattr(panel_mod, "_admin_panel_text", fake_text)
     callback = make_callback(4242)
     callback.data = "panel:advance:go"
     callback.bot = AsyncMock()
     await on_panel_action(callback)
     assert len(calls) == 1
-    sent = [c.args[0] for c in callback.message.answer.await_args_list if c.args]
-    assert any("День 98001 открыт." in t for t in sent)
+    edited = callback.message.edit_text.call_args
+    assert edited is not None
+    assert "День 98001 открыт." in edited.args[0]
     callback.answer.assert_awaited_with("День переключён.")
 
 

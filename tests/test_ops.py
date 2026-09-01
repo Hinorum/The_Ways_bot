@@ -434,6 +434,10 @@ async def test_monthly_pot_paid_to_leader(monkeypatch: pytest.MonkeyPatch) -> No
         total, ids = await _seed_leaderboard_month(session)
         pots = (await session.execute(select(LeaderboardPot))).scalars().all()
         months = [p.month for p in pots]
+        # Ставим флаг готовности: эпилог последнего дня месяца записан.
+        from app.leaderboard import MONTH_READY_KEY
+        session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
+        await session.commit()
         try:
             assert await settle_month_if_due(bot=bot) is True
             payout = (
@@ -456,6 +460,7 @@ async def test_monthly_pot_paid_to_leader(monkeypatch: pytest.MonkeyPatch) -> No
             await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
             await session.execute(LeaderboardPot.__table__.delete().where(LeaderboardPot.month.in_(months)))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MARKER_KEY))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key == MONTH_READY_KEY))
             await session.execute(Vote.__table__.delete().where(Vote.player_id.in_([ids["p1"], ids["p2"]])))
             await session.execute(Stake.__table__.delete().where(Stake.player_id.in_([ids["p1"], ids["p2"]])))
             rounds = (

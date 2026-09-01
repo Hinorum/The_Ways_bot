@@ -45,7 +45,7 @@ ART_SYSTEM_PROMPT = (
     "мелково-белая отметка в форме апострофа — знак Еретика; "
     "биолюминесцентная бирюза — коридоры и стены лабиринта; "
     "тёплое золото — миски, чудо и память стаи; "
-    "пыльно-серый — архив и папки Архивариуса; "
+    "пыльно-серый — архив и папки Смотрителя Троп; "
     "тёмно-коричневый и грязно-оранжевый — подвал, Крыса и обглоданные таблички; "
     "зеленовато-золотой и тени длиннее обычного — предвестия Анубиса и чаши весов."
 )
@@ -108,15 +108,22 @@ _CHARACTER_MOTIFS = {
         "slung on a strap at his hip"
     ),
     "архивариус": (
-        "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
-        "drifting paper dust, loupe spectacles reflecting a different text "
-        "in each lens, whispering folders, trader of discrepancies between "
-        "written records and living memory"
+        "Caretaker of Paths, the labyrinth master, a gaunt dog in a cloak adorned with "
+        "labyrinth symbols, a glowing lantern instead of spectacles, a ring of "
+        "ancient keys on his belt, every key opens a different corridor, he does "
+        "not show the path — he chooses which path to open today"
+    ),
+    "смотритель троп": (
+        "Caretaker of Paths, the labyrinth master, a gaunt dog in a cloak adorned with "
+        "labyrinth symbols, a glowing lantern instead of spectacles, a ring of "
+        "ancient keys on his belt, every key opens a different corridor, he does "
+        "not show the path — he chooses which path to open today"
     ),
     "хранитель спорных версий": (
-        "Archivist Keeper of Contested Versions, gaunt dog shrouded in "
-        "drifting paper dust, loupe spectacles reflecting a different text "
-        "in each lens, whispering folders, trader of discrepancies between "
+        "Caretaker of Paths, the labyrinth master, a gaunt dog in a cloak adorned with "
+        "labyrinth symbols, a glowing lantern instead of spectacles, a ring of "
+        "ancient keys on his belt, every key opens a different corridor, he does "
+        "not show the path — he chooses which path to open today"
         "written records and living memory"
     ),
     "администратор": (

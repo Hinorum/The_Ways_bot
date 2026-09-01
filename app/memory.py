@@ -1,19 +1,22 @@
 """Дальняя память мира: старые дни возвращаются, когда похожи на настоящее.
 
-Последние дни и так видны модели (окно канона), а всё, что старше окна,
-растворялось в шуме навсегда. Теперь каждый день превращается в лёгкий
-хэш-вектор (без нейросетей и внешних API — чистая математика на crc32),
-и перед генерацией нового дня мы достаём из глубокого past самые
-сюжетно-родственные дни. Они уходят в промпт как «давний канон», и мир
-начинает помнить собственную историю неделями позже, чем раньше.
-"""
+Улучшенная архитектура: опциональный embedding-слой с API (OpenAI/DeepSeek)
+поверх существующего hashing-trick. Если API недоступен — используется crc32.
 
+Алгоритм:
+1. Если настроен API-ключ → семантические эмбеддинги (качество выше)
+2. Иначе → hashing trick (крч32, работает без API)
+3. Кэш API-эмбеддингов в памяти (避免重复调用)
+"""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import zlib
 from collections import Counter
+from typing import Any
 
 _DIM = 1024
 
@@ -36,6 +39,9 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
+# ── Кэш API-эмбеддингов ──
+_embedding_cache: dict[str, list[float]] = {}
+
 
 def _tokens(text: str) -> list[str]:
     return [
@@ -48,7 +54,7 @@ def _tokens(text: str) -> list[str]:
 def _grams(word: str) -> list[str]:
     """Триграммы слова с граничными метками.
 
-    Символьный уровень делает память слепой к падежам и числам:
+    Символьный уровень делает память слабой к падежам и числам:
     «перевале» и «перевал» почти целиком состоят из одних триграмм,
     «волчья» и «волк» делят начало слова — этого достаточно, чтобы
     сюжетно близкие дни узнавали друг друга.
@@ -84,12 +90,122 @@ def embed(text: str) -> list[float]:
     return [component / norm for component in vector]
 
 
+async def _api_embed(text: str) -> list[float] | None:
+    """Семантический эмбеддинг через API (OpenAI-compatible).
+
+    Возвращает None если API недоступен или текст пустой.
+    Кэширует результаты по хэшу текста.
+    """
+    if not text.strip():
+        return None
+
+    cache_key = hashlib.sha256(text.encode()).hexdigest()[:32]
+    if cache_key in _embedding_cache:
+        return _embedding_cache[cache_key]
+
+    try:
+        from app.config import settings
+
+        api_key = getattr(settings, "openai_api_key", None)
+        base_url = getattr(settings, "openai_base_url", None)
+        embed_model = getattr(settings, "embed_model", None)
+
+        if not api_key or not embed_model:
+            return None
+
+        import httpx
+
+        url = f"{base_url or 'https://api.openai.com/v1'}/embeddings"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        payload = {"model": embed_model, "input": text[:8000]}  # truncate for safety
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            vector = data["data"][0]["embedding"]
+
+            # Нормализуем до _DIM если размер отличается
+            if len(vector) != _DIM:
+                vector = _normalize_to_dim(vector, _DIM)
+
+            _embedding_cache[cache_key] = vector
+            return vector
+    except Exception:
+        return None
+
+
+def _normalize_to_dim(vector: list[float], dim: int) -> list[float]:
+    """Проецирует вектор в нужную размерность (усреднение/разбиение)."""
+    if len(vector) == dim:
+        return vector
+    if len(vector) > dim:
+        # Усредняем группы
+        chunk_size = len(vector) // dim
+        result = []
+        for i in range(dim):
+            chunk = vector[i * chunk_size : (i + 1) * chunk_size]
+            result.append(sum(chunk) / len(chunk))
+        return result
+    # Дополняем нулями
+    return vector + [0.0] * (dim - len(vector))
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
 def similarity(query: str, text: str) -> float:
     return cosine(embed(query), embed(text))
+
+
+async def semantic_recall(
+    beats: list[str],
+    query: str,
+    k: int = 3,
+    exclude_recent: int = 12,
+    min_score: float = 0.08,
+) -> list[str]:
+    """Семантический поиск по истории: API эмбеддинги + fallback на hashing trick.
+
+    Если API доступен и вернул эмбеддинги — использует их.
+    Иначе — fallback на существующий hashing trick.
+    """
+    if len(beats) <= exclude_recent or not query.strip():
+        return []
+
+    ancient = beats[:-exclude_recent]
+
+    # Пробуем API-эмбеддинги
+    query_vec = await _api_embed(query)
+    if query_vec is not None:
+        # Запоминаем индексы ancient beats, для которых есть API-эмбеддинги
+        api_vectors: list[tuple[int, list[float]]] = []
+        for i, beat in enumerate(ancient):
+            vec = await _api_embed(beat)
+            if vec is not None:
+                api_vectors.append((i, vec))
+
+        if len(api_vectors) >= 3:  # Достаточно данных для сравнения
+            scored = sorted(
+                ((cosine(query_vec, vec), idx) for idx, vec in api_vectors),
+                key=lambda pair: pair[0],
+                reverse=True,
+            )
+            return [
+                ancient[idx]
+                for score, idx in scored[:k]
+                if score >= min_score
+            ]
+
+    # Fallback: hashing trick (существующий алгоритм)
+    query_vector = embed(query)
+    scored = sorted(
+        ((cosine(query_vector, embed(beat)), beat) for beat in ancient),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    return [beat for score, beat in scored[:k] if score >= min_score]
 
 
 def recall_beats(
@@ -99,11 +215,10 @@ def recall_beats(
     exclude_recent: int = 12,
     min_score: float = 0.08,
 ) -> list[str]:
-    """Самые сюжетно близкие дни из давнего канона.
+    """Синхронная версия: hashing trick (без API).
 
-    beats — строки канона по порядку («Заголовок: текст»). Последние
-    exclude_recent строк исключаются: они и так видны модели в окне.
-    Возвращается не больше k строк с похожестью выше порога шума.
+    Оставлен для обратной совместимости. Новые модули должны
+    использовать semantic_recall().
     """
     if len(beats) <= exclude_recent or not query.strip():
         return []

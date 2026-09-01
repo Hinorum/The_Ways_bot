@@ -48,8 +48,14 @@ _PANEL_FOOTER = (
     "/incoming — журнал входящих переводов казначея\n"
     "/stakes — ставки дня · /payouts — очередь выплат (причина у каждой строки)\n"
     "/payout &lt;id&gt; retry|spam — ручной разбор долга\n"
+    "/return &lt;id&gt; — ручной возврат ставки\n"
     "/treasury — казначей: баланс и пара ключей\n"
     "/adjust — сверка казны: ручной вывод или пропажа средств ⚖️\n"
+    "/fundout &lt;Gram&gt; &lt;причина&gt; — раздача Фонда Стаи\n"
+    "/disputes — список открытых споров\n"
+    "/dispute — жалоба на итог / разбор спора\n"
+    "/finalize — ручная финализация застрявших дней\n"
+    "/refinalize — принудительная перефинализация\n"
     "/pause … /resume — стоп-кран игры (техработы) ⏸\n"
     "/revenue — касса (Stars/Gram)\n"
     "/resetgame confirm [keepstory] — полный сброс ⚠️\n"
@@ -64,22 +70,38 @@ async def _admin_panel_text(session=None) -> str:
     from app.ops import paused_reason as _pause_reason
     from app.season import act_line_short, get_cached_anchor, run_position
 
+    _own_session = session is None
+    if _own_session:
+        session = SessionLocal()
+        await session.__aenter__()
+    try:
+        return await _build_panel_text(session)
+    finally:
+        if _own_session:
+            await session.__aexit__(None, None, None)
+
+
+async def _build_panel_text(session) -> str:
+    """Внутренняя логика сборки текста пульта."""
+    from app.ops import snapshot
+    from app.ops import is_game_paused as _paused_flag
+    from app.ops import paused_reason as _pause_reason
+    from app.season import act_line_short, get_cached_anchor, run_position
+
     snap = await snapshot()
     lines = ["🎛 <b>ПУЛЬТ ХРАНИТЕЛЯ</b>"]
     try:
-        async with SessionLocal() as pause_session:
-            if await _paused_flag(pause_session):
-                lines.append(
-                    f"⏸ ИГРА НА ПАУЗЕ ({await _pause_reason(pause_session) or 'техработы'}) "
-                    "— снять: /resume. Входящие переводы возвращаются автоматически."
-                )
+        if await _paused_flag(session):
+            lines.append(
+                f"⏸ ИГРА НА ПАУЗЕ ({await _pause_reason(session) or 'техработы'}) "
+                "— снять: /resume. Входящие переводы возвращаются автоматически."
+            )
     except Exception:
         pass
     try:
         from app.ops import money_mode_enabled
 
-        async with SessionLocal() as _mm_session:
-            money_on = await money_mode_enabled(_mm_session)
+        money_on = await money_mode_enabled(session)
         lines.append(
             "💰 Версия: <b>со ставками</b> и платной сменой выбора."
             if money_on
@@ -249,19 +271,16 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
     Кнопка стоп-крана живёт здесь же: подпись зависит от текущего
     состояния (пауза/работа), поэтому клавиатура пересобирается на каждый показ.
     """
-    from app.ops import is_game_paused
+    from app.ops import is_game_paused, money_mode_enabled
 
     async with SessionLocal() as session:
         paused = await is_game_paused(session)
+        money_on = await money_mode_enabled(session)
     pause_button = (
         InlineKeyboardButton(text="▶️ Возобновить игру", callback_data="panel:resume")
         if paused
         else InlineKeyboardButton(text="⏸ Пауза игры", callback_data="panel:pause")
     )
-    from app.ops import money_mode_enabled
-
-    async with SessionLocal() as session:
-        money_on = await money_mode_enabled(session)
     version_button = InlineKeyboardButton(
         text="🔰 Версия без ставок" if money_on else "💰 Версия со ставками",
         callback_data="panel:now" if money_on else "panel:money",
@@ -381,12 +400,23 @@ async def on_panel_action(callback: CallbackQuery) -> None:
                 )
                 return
             state_name = "со ставками и платной сменой выбора" if want_money else "без ставок"
-            await callback.message.answer(
-                f"💰 Версия «{state_name}» включена со СЛЕДУЮЩЕГО дня.\n"
-                "Текущий день живёт по своему режиму.",
-                reply_markup=await _panel_keyboard(),
-            )
-            await callback.answer()
+            if callback.message is not None:
+                async with SessionLocal() as session:
+                    text = await _admin_panel_text(session)
+                try:
+                    await callback.message.edit_text(
+                        f"💰 Версия «{state_name}» включена со СЛЕДУЮЩЕГО дня.\n"
+                        "Текущий день живёт по своему режиму.\n\n"
+                        + text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=await _panel_keyboard(),
+                    )
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        pass
+                    else:
+                        raise
+            await callback.answer("Готово.")
             return
         if action in {"pause", "resume"}:
             # Стоп-кран с последствиями: первый тап предупреждает,
@@ -417,12 +447,21 @@ async def on_panel_action(callback: CallbackQuery) -> None:
                 )
                 return
             chats = f" Анонс в {delivered} чат(ах)." if delivered else ""
+            status_msg = "⏸ Игра остановлена." if want_paused else "▶️ Игра возобновляется."
             if callback.message is not None:
-                await callback.message.answer(
-                    ("⏸ Игра остановлена." if want_paused else "▶️ Игра возобновляется.")
-                    + chats
-                    + (" Снять паузу: /resume" if want_paused else "")
-                )
+                async with SessionLocal() as session:
+                    text = await _admin_panel_text(session)
+                try:
+                    await callback.message.edit_text(
+                        status_msg + chats + "\n\n" + text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=await _panel_keyboard(),
+                    )
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        pass
+                    else:
+                        raise
             await callback.answer("Готово.")
             return
         if action == "treasury":
@@ -472,7 +511,19 @@ async def on_panel_action(callback: CallbackQuery) -> None:
             await cmd_advance(_ShimMessage())
             summary = "\n".join(_answers)[:3500] or "Готово."
             if callback.message is not None:
-                await callback.message.answer(f"⏩ {summary}")
+                async with SessionLocal() as session:
+                    text = await _admin_panel_text(session)
+                try:
+                    await callback.message.edit_text(
+                        f"⏩ {summary}\n\n" + text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=await _panel_keyboard(),
+                    )
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        pass
+                    else:
+                        raise
             await callback.answer("День переключён.")
             return
         await callback.answer("Неизвестное действие.", show_alert=True)

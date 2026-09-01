@@ -18,6 +18,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.leaderboard import (
     WEEKLY_MARKER_KEY,
+    WEEK_READY_KEY,
     _rank_window,
     _week_prize_amounts,
     settle_week_if_due,
@@ -36,6 +37,12 @@ from app.models import (
 )
 from app.ton_utils import to_nano
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
+
+
+async def _set_week_ready(session: AsyncSession, week_key: str) -> None:
+    """Ставит флаг готовности недельного лидерборда (эпилог последнего дня недели записан)."""
+    session.add(WatcherState(key=WEEK_READY_KEY, value=week_key))
+    await session.commit()
 
 
 def test_iso_week_key_and_bounds() -> None:
@@ -152,6 +159,7 @@ async def test_settle_week_pays_top3_by_places(monkeypatch: pytest.MonkeyPatch) 
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
         await session.commit()
         try:
+            await _set_week_ready(session, week_key)
             assert await settle_week_if_due(bot=None) is True
             rows = (
                 (
@@ -242,6 +250,7 @@ async def test_settle_week_pays_top_three_individuals_not_tiers(monkeypatch: pyt
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
         await session.commit()
         try:
+            await _set_week_ready(session, week_key)
             assert await settle_week_if_due(bot=None) is True
             rows = (
                 (
@@ -314,6 +323,7 @@ async def test_settle_week_two_tied_roll_third_place(monkeypatch: pytest.MonkeyP
         session.add(WeeklyPot(week=week_key, nanotons=pot_total))
         await session.commit()
         try:
+            await _set_week_ready(session, week_key)
             assert await settle_week_if_due(bot=None) is True
             rows = (
                 (await session.execute(select(Payout).where(Payout.kind == "weekly")))
@@ -359,6 +369,7 @@ async def test_settle_week_waits_without_eligible_players(monkeypatch: pytest.Mo
         session.add(WeeklyPot(week=week_key, nanotons=to_nano(3)))
         await session.commit()
         try:
+            await _set_week_ready(session, week_key)
             assert await settle_week_if_due(bot=None) is False
             pot_left = await session.scalar(select(WeeklyPot.nanotons).where(WeeklyPot.week == week_key))
             assert pot_left == to_nano(3)

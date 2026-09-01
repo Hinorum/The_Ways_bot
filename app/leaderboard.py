@@ -3,23 +3,26 @@
 **Неделя.** Каждый день 2% фонда капает в копилку недели (WeeklyPot). В
 понедельник приз уходит трём сильнейшим игрокам прошедшей недели — доли по
 WEEKLY_PRIZE_PCTS (по умолчанию 50/30/20%: первое место забирает половину).
-Претендент обязан иметь привязанный кошелёк, минимум WEEKLY_MIN_DAYS дней
-голосования за неделю и хотя бы одну ставку в этой неделе — иначе фермы
-мультиаккаунтов собирают приз дешёвыми голосами. Ставка-требование считается
-заново каждую неделю: приз не уйдёт тому, кто в прошедшей неделе не поставил
-ни грамма. Ничья по верным путям решается большим вкладом Gram за период,
-при равенстве ставок — кто раньше нажал Claim в /start, далее — меньший
-player_id. Месту, которому не нашлось достойного игрока, ждать нечего: его
-доля переносится в копилку новой недели.
+Выплата возможна ТОЛЬКО после записи эпилога последнего дня недели (флаг
+week_leaderboard_ready в watcher_state). Претендент обязан иметь привязанный
+кошелёк, минимум WEEKLY_MIN_DAYS дней голосования за неделю и хотя бы одну
+ставку в этой неделе — иначе фермы мультиаккаунтов собирают приз дешёвыми
+голосами. Ставка-требование считается заново каждую неделю: приз не уйдёт
+тому, кто в прошедшей неделе не поставил ни грамма. Ничья по верным путям
+решается большим вкладом Gram за период, при равенстве ставок — кто раньше
+нажал Claim в /start, далее — меньший player_id. Месту, которому не нашлось
+достойного игрока, ждать нечего: его доля переносится в копилку новой недели.
 
-**Месяц.** 1-го числа сумма всех накопленных месяцев до текущего уходит
-топ-K игрокам периода (обязательна хотя бы одна ставка в этом месяце) по
-весам MONTHLY_PRIZE_WEIGHTS (по умолчанию top-3, 50/30/20). Ничьи решаются
-в точности как в неделю: больший вклад Gram, затем первый Claim, затем
-меньший player_id. Лидер без привязанного кошелька или без ставки в периоде
-не блокирует остальных: горш делится между оплачиваемыми, а месяц остаётся
-«незакрытым», пока хоть кому-то нельзя заплатить и никого оплатить нельзя
-вовсе.
+**Месяц.** Выплата происходит ТОЛЬКО после записи эпилога последнего дня
+месяца (флаг month_leaderboard_ready в watcher_state). Это гарантирует,
+что лидерборд не сработает до завершения нарративной части дня. Сумма всех
+накопленных месяцев до текущего уходит топ-K игрокам периода (обязательна
+хотя бы одна ставка в этом месяце) по весам MONTHLY_PRIZE_WEIGHTS (по
+умолчанию top-3, 50/30/20). Ничьи решаются в точности как в неделю: больший
+вклад Gram, затем первый Claim, затем меньший player_id. Лидер без
+привязанного кошелька или без ставки в периоде не блокирует остальных: горш
+делится между оплачиваемыми, а месяц остаётся «незакрытым», пока хоть
+кому-то нельзя заплатить и никого оплатить нельзя вовсе.
 
 Метки «выплачено до X» живут в watcher_state и переживают рестарт.
 """
@@ -54,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 MARKER_KEY = "leaderboard_settled_through"
 WEEKLY_MARKER_KEY = "weekly_settled_through"
+MONTH_READY_KEY = "month_leaderboard_ready"
+WEEK_READY_KEY = "week_leaderboard_ready"
 
 # Приложение живёт в одном процессе, но закрытие дня (tick) и плановый
 # сброс копилок могут вызывать settle-функции параллельно из разных задач
@@ -282,6 +287,36 @@ async def _players_with_stake(
     return {int(pid) for pid in rows.scalars().all()}
 
 
+def is_last_day_of_month(moment: datetime) -> bool:
+    """Проверяет, является ли момент последним днём календарного месяца."""
+    next_day = moment + timedelta(days=1)
+    return next_day.month != moment.month
+
+
+def is_last_day_of_week(moment: datetime) -> bool:
+    """Проверяет, является ли момент последним днём ISO-недели (воскресенье)."""
+    next_day = moment + timedelta(days=1)
+    return next_day.isocalendar()[1] != moment.isocalendar()[1]
+
+
+async def mark_month_leaderboard_ready(session, month_key: str) -> None:
+    """Отмечает, что эпилог последнего дня месяца написан — лидерборд может выплачиваться."""
+    marker = await session.get(WatcherState, MONTH_READY_KEY)
+    if marker is None:
+        session.add(WatcherState(key=MONTH_READY_KEY, value=month_key))
+    else:
+        marker.value = month_key
+
+
+async def mark_week_leaderboard_ready(session, week_key: str) -> None:
+    """Отмечает, что эпилог последнего дня недели написан — лидерборд может выплачиваться."""
+    marker = await session.get(WatcherState, WEEK_READY_KEY)
+    if marker is None:
+        session.add(WatcherState(key=WEEK_READY_KEY, value=week_key))
+    else:
+        marker.value = week_key
+
+
 async def settle_month_if_due(bot: Bot | None = None) -> bool:
     """Выплачивает копилку прошедших месяцев (безопасно при параллельных вызовах)."""
     async with _month_settle():
@@ -289,10 +324,15 @@ async def settle_month_if_due(bot: Bot | None = None) -> bool:
 
 
 async def _settle_month_locked(bot: Bot | None = None) -> bool:
-    """Выплачивает копилку прошедших месяцев, если наступил новый месяц.
+    """Выплачивает копилку прошедших месяцев, если эпилог последнего дня записан.
 
     Возвращает True, если выплата создана. Идемпотентно по метке в watcher_state:
     повторные вызовы в том же месяце ничего не делают.
+
+    Выплата возможна ТОЛЬКО после установки флага month_leaderboard_ready,
+    который ставится в _finalize_new_day_job() при записи эпилога последнего дня
+    месяца. Это гарантирует, что лидерборд не сработает раньше завершения
+    нарративной части дня.
     """
     now = datetime.now(timezone.utc)
     prev_key = previous_month_key(now)
@@ -303,6 +343,13 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         settled_through = marker.value if marker is not None else ""
         if settled_through >= prev_key:
             return False  # этот месяц уже закрыт (или вообще ещё не наступил)
+
+        # Флаг готовности: эпилог последнего дня месяца записан.
+        ready_marker = await session.get(WatcherState, MONTH_READY_KEY)
+        ready_month = ready_marker.value if ready_marker is not None else ""
+        if ready_month < prev_key:
+            # Эпилог ещё не записан — лидерборд ждёт.
+            return False
 
         pots = (
             await session.execute(
@@ -561,10 +608,14 @@ async def settle_week_if_due(bot: Bot | None = None) -> bool:
 
 
 async def _settle_week_locked(bot: Bot | None = None) -> bool:
-    """Выплачивает копилку прошедших недель топ-3, если началась новая неделя.
+    """Выплачивает копилку прошедших недель топ-3, если эпилог последнего дня записи.
 
     Возвращает True, если выплата создана. Идемпотентно по метке в
     watcher_state; платить некому — метка не двигается, копилка ждёт.
+
+    Выплата возможна ТОЛЬКО после установки флага week_leaderboard_ready,
+    который ставится в _finalize_new_day_job() при записи эпилога последнего дня
+    недели (воскресенья).
     """
     now = datetime.now(timezone.utc)
     prev_key = previous_week_key(now)
@@ -573,6 +624,13 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
         marker = await session.get(WatcherState, WEEKLY_MARKER_KEY)
         settled_through = marker.value if marker is not None else ""
         if settled_through >= prev_key:
+            return False
+
+        # Флаг готовности: эпилог последнего дня недели записан.
+        ready_marker = await session.get(WatcherState, WEEK_READY_KEY)
+        ready_week = ready_marker.value if ready_marker is not None else ""
+        if ready_week < prev_key:
+            # Эпилог ещё не записан — лидерборд ждёт.
             return False
 
         pots = (

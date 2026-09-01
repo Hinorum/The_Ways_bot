@@ -355,6 +355,59 @@ async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     return [f"{beat.winning_title}: {beat.winning_text}" for beat in rows]
 
 
+async def _previous_round_stats(
+    session: AsyncSession,
+) -> tuple[dict[int, int], int, int]:
+    """Голоса, ставки и численность предыдущего закрытого дня для DDA.
+
+    Возвращает (vote_counts, total_stakes_nanotons, player_count).
+    Если предыдущего дня нет — дефолты (3, 0, 10).
+    """
+    from app.models import Stake, Vote
+
+    beat_row = (
+        await session.execute(
+            select(StoryBeat).order_by(StoryBeat.day_index.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if beat_row is None:
+        return {0: 1, 1: 1, 2: 1}, 0, 10
+
+    import json
+
+    try:
+        counts = json.loads(beat_row.vote_counts)
+        counts = {int(k): v for k, v in counts.items()}
+    except Exception:
+        counts = {0: 1, 1: 1, 2: 1}
+
+    round_row = (
+        await session.execute(
+            select(Round).where(Round.day_index == beat_row.day_index).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    total_stakes = 0
+    voter_count = 10
+    if round_row is not None:
+        stakes_result = await session.execute(
+            select(func.coalesce(func.sum(Stake.amount_nanotons), 0)).where(
+                Stake.round_id == round_row.id,
+                Stake.status.in_(["confirmed", "settled"]),
+            )
+        )
+        total_stakes = int(stakes_result.scalar() or 0)
+
+        voters_result = await session.execute(
+            select(func.count(func.distinct(Vote.player_id))).where(
+                Vote.round_id == round_row.id
+            )
+        )
+        voter_count = int(voters_result.scalar() or 10)
+
+    return counts, total_stakes, max(voter_count, 1)
+
+
 async def season_tag_balance(session: AsyncSession, key: str) -> dict[str, int]:
     """Характер стаи за сезон: теги победивших путей закрытых дней."""
     result = await session.execute(
@@ -601,6 +654,34 @@ async def _plan_and_render(
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
+    # ── NPC chain-of-thought ──
+    # Внутренний монолог NPC перед действием: по sentinent-ам дня.
+    try:
+        from app.npc_cog import generate_all_npc_cogs, npc_cogs_block
+        from app.relations import load_relations
+
+        npc_sentiments = await load_relations(session)
+        npc_cogs = await generate_all_npc_cogs(npc_sentiments, day_index)
+        cog_block = npc_cogs_block(npc_cogs)
+        if cog_block:
+            sblock = f"{sblock}\n{cog_block}"
+    except Exception:
+        logger.debug("NPC CoG не собран", exc_info=True)
+    # ── Plugin prompt blocks ──
+    # Плагины декларируют prompt_block capability и инжектируют данные
+    # в季节ный блок. Это позволяет добавлять механики без изменения
+    # основного pipeline сборки промпта.
+    try:
+        from app.plugins import PluginContext, registry as _plugin_registry
+        from app.builtin_plugins import register_builtin_plugins
+
+        register_builtin_plugins()
+        plugin_ctx = PluginContext(session=session)
+        plugin_blocks = await _plugin_registry.collect_prompt_blocks(plugin_ctx)
+        for block in plugin_blocks:
+            sblock = f"{sblock}\n{block}"
+    except Exception:
+        logger.debug("Plugin prompt blocks не собраны", exc_info=True)
     # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
     from app.season import midpoint_day as season_midpoint
     from app.season import run_position as season_run_position
@@ -635,7 +716,28 @@ async def _plan_and_render(
 
     # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
     twist = season_midpoint(run_day_now, total_now)
-    rule = WinRule.MEDIAN if twist else secrets.choice(list(WinRule))
+
+    # DDA: сложность зависит от engagement прошлого дня.
+    prev_counts, prev_stakes, prev_voters = await _previous_round_stats(session)
+    from app.difficulty import compute_difficulty_metrics, select_win_rule
+
+    prev_metrics = compute_difficulty_metrics(
+        counts=prev_counts,
+        total_stakes=prev_stakes,
+        player_count=prev_voters,
+    )
+    if twist:
+        rule = WinRule.MEDIAN
+    else:
+        rule = WinRule(
+            select_win_rule(
+                prev_metrics,
+                day_index,
+                is_sealed=sealed_day(day_index) or False,
+                is_midpoint=twist,
+                seed=day_index,
+            ).lower()
+        )
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
@@ -1501,6 +1603,38 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         await session.rollback()
         loaded = await get_round(session, round_row.id)
         return (loaded or round_row), False
+    # ── DayProjection + Plugin hooks ──
+    # Собираем единый объект-факт и передаём его всем плагинам.
+    # Проекция используется broadcast, prompt assembly и другими
+    # downstream-системами вместо повторных запросов к БД.
+    try:
+        from app.projection import build_projection
+        from app.plugins import PluginContext
+        from app.builtin_plugins import register_builtin_plugins
+
+        # Инициализация реестра (идемпотентна — повторный вызов не дублирует)
+        register_builtin_plugins()
+        loaded = await get_round(session, round_row.id)
+        projection = await build_projection(session, loaded or round_row)
+        ctx = PluginContext(projection=projection, session=session)
+        from app.plugins import registry
+
+        await registry.run_post_day_hooks(ctx)
+        # Кэшируем проекцию в WatcherState для доступа из broadcast/prompt
+        try:
+            from app.models import WatcherState as WS
+
+            ws_key = f"day_projection:{round_row.day_index}"
+            ws_row = (await session.execute(select(WS).where(WS.key == ws_key))).scalar_one_or_none()
+            if ws_row is None:
+                session.add(WS(key=ws_key, value=json.dumps(projection.to_dict(), ensure_ascii=False)))
+            else:
+                ws_row.value = json.dumps(projection.to_dict(), ensure_ascii=False)
+            await session.commit()
+        except Exception:
+            logger.debug("Кэш DayProjection не записан", exc_info=True)
+    except Exception:
+        logger.warning("DayProjection/plugin hooks не выполнены", exc_info=True)
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
 
 

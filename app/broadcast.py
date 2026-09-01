@@ -331,12 +331,12 @@ async def _dm_send_all(bot: Bot, deliver, label: str) -> int:
 
 
 async def results_body(finished: Round, session=None) -> str:
-    """Сухие итоги + экономика дня (БЕЗ нейро-эпилога).
+    """Сухие итоги + экономика дня + плагины (БЕЗ нейро-эпилога).
 
     Быстрая, только БД — это то, что уходит пользователям СРАЗУ после вскрытия
     итогов, пока эпилог ещё пишется нейросетью. session можно передать готовую.
     """
-    from app.tally import day_economics, format_economics
+    from app.tally import day_economics, format_economics, format_plugin_results
 
     text = format_results(finished)
     round_id = getattr(finished, "id", None)
@@ -351,6 +351,13 @@ async def results_body(finished: Round, session=None) -> str:
                 text += f"\n\n{economics}"
         except Exception:
             logger.exception("Экономика дня %s не посчитана", getattr(finished, "day_index", "?"))
+    # Плагиновые строки итогов (echoes, relations, bestiary и т.д.)
+    try:
+        plugin_text = await format_plugin_results(finished, session)
+        if plugin_text:
+            text += f"\n\n{plugin_text}"
+    except Exception:
+        logger.debug("Plugin results format не собран", exc_info=True)
     return text
 
 
