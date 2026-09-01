@@ -13,10 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Player
+from app.models import WeeklyVote, MonthlyOath
 
 
 class ChoiceType(Enum):
@@ -34,6 +34,7 @@ class NPCPartner:
     description: str
     passive_bonus: str  # Бонус за выбор этого NPC
     active_ability: str  # Активная способность (раз в неделю)
+    tag_bonus: dict[str, int] = field(default_factory=dict)  # tag → modifier
 
 
 @dataclass
@@ -45,6 +46,7 @@ class Oath:
     requirement: str  # Требование для выполнения
     reward: str  # Награда за выполнение
     penalty: str  # Штраф за невыполнение
+    check_stats: dict[str, int] = field(default_factory=dict)  # stat → required
 
 
 # NPC-партнёры для недельного голосования
@@ -55,6 +57,7 @@ NPC_PARTNERS: dict[str, NPCPartner] = {
         description="Тот, кто ходит между стаями и знает дороги",
         passive_bonus="+1 к cunning-картам каждый день",
         active_ability="Разведка: показать 1 скрытую карту",
+        tag_bonus={"cunning": 1},
     ),
     "guardian": NPCPartner(
         key="guardian",
@@ -62,6 +65,7 @@ NPC_PARTNERS: dict[str, NPCPartner] = {
         description="Тот, кто защищает и оберегает",
         passive_bonus="+1 к care-картам каждый день",
         active_ability="Щит: отменить 1 негативное последствие",
+        tag_bonus={"care": 1},
     ),
     "trickster": NPCPartner(
         key="trickster",
@@ -69,13 +73,15 @@ NPC_PARTNERS: dict[str, NPCPartner] = {
         description="Тот, кто меняет правила игры",
         passive_bonus="+1 к risk-картам каждый день",
         active_ability="Иллюзия: изменить 1 карту перед голосованием",
+        tag_bonus={"risk": 1},
     ),
     "healer": NPCPartner(
         key="healer",
         name="Целитель",
         description="Тот, кто лечит раны и души",
-        passive_bonus="-1 к fatigue каждый день",
+        passive_bonus="Восстановление 1 HP каждый день",
         active_ability="Восстановление: снять 1 шрам мира",
+        tag_bonus={"health": 1},
     ),
     "sage": NPCPartner(
         key="sage",
@@ -83,6 +89,7 @@ NPC_PARTNERS: dict[str, NPCPartner] = {
         description="Тот, кто помнит прошлое и видит будущее",
         passive_bonus="+1 к hope каждый день",
         active_ability="Видение: показать 1 будущий шрам",
+        tag_bonus={"hope": 1},
     ),
 }
 
@@ -96,6 +103,7 @@ MONTHLY_OATHS: dict[str, Oath] = {
         requirement="7 дней подряд выбирать care-карты",
         reward="+5 hope, разблокировка святилища",
         penalty="-3 hope, fatigue +2",
+        check_stats={"care_streak": 7},
     ),
     "seek_truth": Oath(
         key="seek_truth",
@@ -104,6 +112,7 @@ MONTHLY_OATHS: dict[str, Oath] = {
         requirement="5 дней подряд выбирать cunning-карты",
         reward="+3 cunning, разблокировка архива",
         penalty="-2 cunning, paranoia +2",
+        check_stats={"cunning_streak": 5},
     ),
     "face_danger": Oath(
         key="face_danger",
@@ -112,6 +121,7 @@ MONTHLY_OATHS: dict[str, Oath] = {
         requirement="6 дней подряд выбирать risk-карты",
         reward="+3 risk, разблокировка тайников",
         penalty="-2 risk, fatigue +3",
+        check_stats={"risk_streak": 6},
     ),
     "balance_all": Oath(
         key="balance_all",
@@ -120,42 +130,36 @@ MONTHLY_OATHS: dict[str, Oath] = {
         requirement="Не более 3 побед одного типа за месяц",
         reward="+2 ко всем характеристикам",
         penalty="-1 ко всем характеристикам",
+        check_stats={"max_tag_count": 3},
     ),
     "endure_all": Oath(
         key="endure_all",
         name="Клятва стойкости",
         description="Преодолеть любые трудности",
         requirement="Пережить 3 шрама мира за месяц",
-        reward="+5 fatigue resistance,免疫 к exhaustion",
+        reward="+5 fatigue resistance, иммунитет к exhaustion",
         penalty="fatigue +5, полное истощение",
+        check_stats={"scars_endured": 3},
     ),
 }
 
 
-@dataclass
-class WeeklyVote:
-    """Недельное голосование."""
-    week_number: int
-    partner_key: str
-    votes: dict[int, str] = field(default_factory=dict)  # player_id → partner_key
+async def get_week_number(session: AsyncSession) -> int:
+    """Возвращает номер текущей недели (начиная с 1)."""
+    result = await session.execute(
+        select(func.max(WeeklyVote.week_number))
+    )
+    max_week = result.scalar() or 0
+    return max_week + 1
 
 
-@dataclass
-class MonthlyVote:
-    """Месячное голосование."""
-    month_number: int
-    oath_key: str
-    votes: dict[int, str] = field(default_factory=dict)  # player_id → oath_key
-
-
-async def get_available_partners(session: AsyncSession) -> list[NPCPartner]:
-    """Возвращает доступных NPC-партнёров."""
-    return list(NPC_PARTNERS.values())
-
-
-async def get_available_oaths(session: AsyncSession) -> list[Oath]:
-    """Возвращает доступные клятвы."""
-    return list(MONTHLY_OATHS.values())
+async def get_month_number(session: AsyncSession) -> int:
+    """Возвращает номер текущего месяца (начиная с 1)."""
+    result = await session.execute(
+        select(func.max(MonthlyOath.month_number))
+    )
+    max_month = result.scalar() or 0
+    return max_month + 1
 
 
 async def cast_weekly_vote(
@@ -168,8 +172,23 @@ async def cast_weekly_vote(
     if partner_key not in NPC_PARTNERS:
         return "Неизвестный NPC-партнёр"
 
-    # Здесь будет логика сохранения голоса в БД
-    # Пока просто подтверждаем
+    # Проверяем, не голосовал ли уже игрок на этой неделе
+    existing = await session.execute(
+        select(WeeklyVote).where(
+            WeeklyVote.week_number == week_number,
+            WeeklyVote.player_id == player_id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return "Вы уже проголосовали на этой неделе"
+
+    vote = WeeklyVote(
+        week_number=week_number,
+        player_id=player_id,
+        partner_key=partner_key,
+    )
+    session.add(vote)
+    await session.flush()
     return f"Голос за {NPC_PARTNERS[partner_key].name} принят"
 
 
@@ -183,9 +202,55 @@ async def cast_monthly_vote(
     if oath_key not in MONTHLY_OATHS:
         return "Неизвестная клятва"
 
-    # Здесь будет логика сохранения голоса в БД
-    # Пока просто подтверждаем
+    existing = await session.execute(
+        select(MonthlyOath).where(
+            MonthlyOath.month_number == month_number,
+            MonthlyOath.player_id == player_id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return "Вы уже проголосовали за клятву в этом месяце"
+
+    vote = MonthlyOath(
+        month_number=month_number,
+        player_id=player_id,
+        oath_key=oath_key,
+    )
+    session.add(vote)
+    await session.flush()
     return f"Голос за {MONTHLY_OATHS[oath_key].name} принят"
+
+
+async def get_weekly_winner(
+    session: AsyncSession,
+    week_number: int,
+) -> str | None:
+    """Определяет победителя недели по числу голосов."""
+    result = await session.execute(
+        select(WeeklyVote.partner_key, func.count(WeeklyVote.id))
+        .where(WeeklyVote.week_number == week_number)
+        .group_by(WeeklyVote.partner_key)
+        .order_by(func.count(WeeklyVote.id).desc())
+        .limit(1)
+    )
+    row = result.first()
+    return row[0] if row else None
+
+
+async def get_monthly_winner(
+    session: AsyncSession,
+    month_number: int,
+) -> str | None:
+    """Определяет победителя месяца по числу голосов."""
+    result = await session.execute(
+        select(MonthlyOath.oath_key, func.count(MonthlyOath.id))
+        .where(MonthlyOath.month_number == month_number)
+        .group_by(MonthlyOath.oath_key)
+        .order_by(func.count(MonthlyOath.id).desc())
+        .limit(1)
+    )
+    row = result.first()
+    return row[0] if row else None
 
 
 def get_weekly_choice_text() -> str:
@@ -223,41 +288,33 @@ def get_active_partner_bonuses(partner_key: str) -> dict[str, int]:
     """Возвращает пассивные бонусы от выбранного NPC-партнёра."""
     if partner_key not in NPC_PARTNERS:
         return {}
+    return NPC_PARTNERS[partner_key].tag_bonus.copy()
+
+
+def format_partner_block(partner_key: str | None) -> str:
+    """Форматирует блок активного NPC-партнёра для промпта."""
+    if partner_key is None or partner_key not in NPC_PARTNERS:
+        return ""
 
     partner = NPC_PARTNERS[partner_key]
-    bonuses = {}
-
-    if "+1 к cunning" in partner.passive_bonus:
-        bonuses["cunning"] = 1
-    elif "+1 к care" in partner.passive_bonus:
-        bonuses["care"] = 1
-    elif "+1 к risk" in partner.passive_bonus:
-        bonuses["risk"] = 1
-    elif "-1 к fatigue" in partner.passive_bonus:
-        bonuses["fatigue"] = -1
-    elif "+1 к hope" in partner.passive_bonus:
-        bonuses["hope"] = 1
-
-    return bonuses
+    return (
+        f"NPC-ПАРТНЁР НА ЭТУ НЕДЕЛЮ: {partner.name}\n"
+        f"{partner.description}\n"
+        f"Бонус: {partner.passive_bonus}\n"
+        f"Способность: {partner.active_ability}"
+    )
 
 
-def check_oath_completion(oath_key: str, stats: dict[str, int]) -> bool:
-    """Проверяет, выполнена ли клятва."""
-    if oath_key not in MONTHLY_OATHS:
-        return False
+def format_oath_block(oath_key: str | None) -> str:
+    """Форматирует блок активной клятвы для промпта."""
+    if oath_key is None or oath_key not in MONTHLY_OATHS:
+        return ""
 
     oath = MONTHLY_OATHS[oath_key]
-
-    if oath_key == "protect_weak":
-        return stats.get("care_streak", 0) >= 7
-    elif oath_key == "seek_truth":
-        return stats.get("cunning_streak", 0) >= 5
-    elif oath_key == "face_danger":
-        return stats.get("risk_streak", 0) >= 6
-    elif oath_key == "balance_all":
-        max_count = max(stats.get("risk_count", 0), stats.get("care_count", 0), stats.get("cunning_count", 0))
-        return max_count <= 3
-    elif oath_key == "endure_all":
-        return stats.get("scars_endured", 0) >= 3
-
-    return False
+    return (
+        f"КЛЯТВА НА ЭТОТ МЕСЯЦ: {oath.name}\n"
+        f"{oath.description}\n"
+        f"Требование: {oath.requirement}\n"
+        f"Награда: {oath.reward}\n"
+        f"Штраф: {oath.penalty}"
+    )

@@ -945,6 +945,7 @@ async def generate_chapter(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
+    needs_block: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -968,6 +969,7 @@ async def generate_chapter(
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
+        needs_block=needs_block,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1157,6 +1159,7 @@ def _build_story_prompt(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
+    needs_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -1289,6 +1292,7 @@ def _build_story_prompt(
         f"{emotion_block + chr(10) if emotion_block else ''}"
         f"{branches_block + chr(10) if branches_block else ''}"
         f"{dynamic_rules_block + chr(10) if dynamic_rules_block else ''}"
+        f"{needs_block + chr(10) if needs_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
@@ -1440,6 +1444,7 @@ async def _free_story_llm(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
+    needs_block: str | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -1453,6 +1458,7 @@ async def _free_story_llm(
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
+        needs_block=needs_block,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (

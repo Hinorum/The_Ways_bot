@@ -598,3 +598,53 @@ class ConsequenceBranch(Base):
     created_day: Mapped[int] = mapped_column(Integer)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WeeklyVote(Base):
+    """Недельное голосование за NPC-партнёра.
+
+    Каждую неделю стaya голосует за одного из 5 NPC-партнёров.
+    Победивший NPC даёт пассивный бонус на неделю.
+    """
+
+    __tablename__ = "weekly_votes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    week_number: Mapped[int] = mapped_column(Integer, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, index=True)
+    partner_key: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MonthlyOath(Base):
+    """Месячная клятва стаи.
+
+    Раз в месяц стая голосует за клятву. Выполнение даёт награду,
+    невыполнение — штраф. Клятва отслеживается через статистику месяца.
+    """
+
+    __tablename__ = "monthly_oaths"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    month_number: Mapped[int] = mapped_column(Integer, index=True)
+    player_id: Mapped[int] = mapped_column(Integer, index=True)
+    oath_key: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PackState(Base):
+    """Состояние стаи: потребности и статус.
+
+    Хранит hunger, thirst, health на уровне стаи.
+    Обновляется каждый день автоматически.
+    """
+
+    __tablename__ = "pack_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hunger: Mapped[int] = mapped_column(Integer, default=5)
+    thirst: Mapped[int] = mapped_column(Integer, default=5)
+    health: Mapped[int] = mapped_column(Integer, default=10)
+    alive_count: Mapped[int] = mapped_column(Integer, default=5)
+    last_updated_day: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

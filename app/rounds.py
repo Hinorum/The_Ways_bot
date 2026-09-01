@@ -630,6 +630,23 @@ async def _plan_and_render(
     emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
     emotion_block = emotion_block_for_prompt(emotion_profile)
 
+    # Потребности стаи: голод, жажда, здоровье
+    from app.pack_state import process_round_needs, get_needs_block, check_death
+
+    pack_needs = await process_round_needs(session, yesterday_winner_tag, day_index)
+    needs_block = get_needs_block(pack_needs)
+
+    # Проверяем смерть стаи
+    if check_death(pack_needs):
+        from app.multi_layered_choices import format_partner_block, format_oath_block
+        return {
+            "title": "Конец",
+            "text": "Стая погибла. Мир стих.",
+            "cards": [],
+            "image_prompt": "dark empty maze, no dogs, silence",
+            "game_over": True,
+        }
+
     # Деревья последствий: загрузка активных ветвей
     from app.consequence_trees import (
         load_active_branches, format_active_branches,
@@ -835,6 +852,7 @@ async def _plan_and_render(
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
+        needs_block=needs_block,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
