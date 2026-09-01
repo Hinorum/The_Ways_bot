@@ -653,6 +653,14 @@ async def _plan_and_render(
                     branches_block = format_active_branches(active_branches)
                 break
 
+    # Динамические правила: определяем активные переопределения
+    from app.dynamic_rules import (
+        get_active_overrides, apply_overrides, get_dynamic_rule_text,
+    )
+
+    dynamic_overrides = get_active_overrides(active_scars, emotion_profile, active_branches, day_index)
+    dynamic_rules_block = get_dynamic_rule_text(dynamic_overrides)
+
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
     # Первого Лая на длине месяца старта забега.
     open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
@@ -828,6 +836,7 @@ async def _plan_and_render(
         active_scar_keys=active_scar_keys,
         emotion_block=emotion_block,
         branches_block=branches_block,
+        dynamic_rules_block=dynamic_rules_block,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
