@@ -334,13 +334,13 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
 
     npc_deltas = []
     try:
-        old_rels = await load_relations(session)
+        current_rels = await load_relations(session)
         tag = winning.tag if winning else "care"
         shift_map = _SHIFTS.get(tag, {})
         for npc_name in ("liner", "archivist", "master", "heretic"):
-            old_val = old_rels.get(npc_name, 0)
+            new_val = current_rels.get(npc_name, 0)
             shift = shift_map.get(npc_name, 0)
-            new_val = max(-3, min(3, old_val + shift))
+            old_val = max(-3, min(3, new_val - shift))
             npc_deltas.append(
                 NPCDelta(
                     name=npc_name,
@@ -358,23 +358,35 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     alignment = None
     try:
         from app.models import WatcherState as WS
-        from app.season import RUN_START_KEY, get_run_anchor, apply_alignment_drift
+        from app.season import RUN_START_KEY, get_run_anchor, anchor_axes, _ALIGNMENT_DRIFT, _clamp_axis, _rng
 
         anchor = await get_run_anchor(session)
-        old_order = anchor.get("order", 0)
-        old_moral = anchor.get("moral", 0)
         tag = winning.tag if winning else "care"
-        new_order, new_moral, changed = apply_alignment_drift(
-            anchor, tag, seed=round_row.day_index
-        )
-        if changed:
-            alignment = AlignmentDrift(
-                order_before=old_order,
-                order_after=new_order,
-                moral_before=old_moral,
-                moral_after=new_moral,
-                tag=tag,
-            )
+        # Вычисляем дельту (та же логика, что и в apply_alignment_drift),
+        # но НЕ мутируем якорь — он уже сдвинут finish_tally.
+        moved = _ALIGNMENT_DRIFT.get(tag)
+        if moved:
+            new_order, new_moral = anchor_axes(anchor)
+            # Реверс: вычисляем pre-drift значения
+            old_order, old_moral = new_order, new_moral
+            rng = _rng(f"drift:{tag}:{round_row.day_index}")
+            for key, delta in moved.items():
+                if callable(delta):
+                    delta = delta(rng)
+                current = _clamp_axis(anchor.get(key, 0))
+                old_val = _clamp_axis(current - delta)
+                if key == "order":
+                    old_order = old_val
+                elif key == "moral":
+                    old_moral = old_val
+            if old_order != new_order or old_moral != new_moral:
+                alignment = AlignmentDrift(
+                    order_before=old_order,
+                    order_after=new_order,
+                    moral_before=old_moral,
+                    moral_after=new_moral,
+                    tag=tag,
+                )
     except Exception:
         logger.debug("Alignment drift не собран для дня %s", round_row.day_index)
 

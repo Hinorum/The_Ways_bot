@@ -14,6 +14,24 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+
+from app.relations import _TONES
+
+
+# ── Маппинг русских тонов → английские mood-ключи ──
+# _TONES[sentiment] → ("предан стае", "..."), а _INNER_THOUGHTS используют
+# "devoted"/"cautious"/"wary"/"hostile". Мост между ними:
+_TONE_TO_MOOD: dict[str, str] = {
+    "предан стае": "devoted",
+    "расположен": "devoted",
+    "приветлив": "cautious",
+    "ничей": "cautious",
+    "насторожен": "wary",
+    "враждебен": "hostile",
+    "охотится на стаю": "hostile",
+}
+
+_DEFAULT_MOOD = "cautious"
 from typing import Any
 
 from app.relations import _TONES
@@ -203,22 +221,23 @@ def generate_npc_cog(
     Детерминированно: одинаковые входы → одинаковые выходы.
     """
     tone_data = _TONES.get(sentiment, ("neutral", "безразличен"))
-    tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
+    raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
+    mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
 
-    inner_thought = _pick_thought(name, tone, day_index)
-    motivation = _MOTIVATIONS.get(tone, "Наблюдать за стаей")
-    action_hint = _pick_action(name, tone, day_index)
+    inner_thought = _pick_thought(name, mood, day_index)
+    motivation = _MOTIVATIONS.get(mood, "Наблюдать за стаей")
+    action_hint = _pick_action(name, mood, day_index)
 
     # Формируем focus line — готовую реплику для DM
     focus_line = (
-        f"{name.capitalize()} {tone}: «{inner_thought}» "
-        f"—行动: {action_hint}"
+        f"{name.capitalize()} [{mood}]: «{inner_thought}» "
+        f"— действие: {action_hint}"
     )
 
     return NPCCogResult(
         name=name,
         sentiment=sentiment,
-        tone=tone,
+        tone=mood,
         inner_thought=inner_thought,
         motivation=motivation,
         action_hint=action_hint,

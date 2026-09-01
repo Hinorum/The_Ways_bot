@@ -159,9 +159,9 @@ def select_difficulty(
 
 # Маппинг уровня сложности на WinRule
 _DIFFICULTY_TO_RULE = {
-    "easy": "MAJORITY",
-    "medium": "MINORITY",
-    "hard": "MEDIAN",
+    "easy": "majority",
+    "medium": "minority",
+    "hard": "median",
     "adaptive": None,  # определяется ниже
 }
 
@@ -175,7 +175,7 @@ def select_win_rule(
 ) -> str:
     """Выбирает WinRule на основе DDA.
 
-    Возвращает значение WinRule ("MAJORITY" / "MINORITY" / "MEDIAN").
+    Возвращает значение WinRule ("majority" / "minority" / "median").
     """
     from app.models import WinRule
 

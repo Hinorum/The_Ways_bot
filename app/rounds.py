@@ -646,11 +646,13 @@ async def _plan_and_render(
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
     # Отношения NPC к стае: канон последних дней в одной строке тона.
-    from app.relations import relations_block_for_session
+    from app.relations import load_relations, relations_prompt_block
 
     try:
-        relations_block = await relations_block_for_session(session)
+        npc_sentiments = await load_relations(session)
+        relations_block = relations_prompt_block(npc_sentiments)
     except Exception:
+        npc_sentiments = {}
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
@@ -658,9 +660,7 @@ async def _plan_and_render(
     # Внутренний монолог NPC перед действием: по sentinent-ам дня.
     try:
         from app.npc_cog import generate_all_npc_cogs, npc_cogs_block
-        from app.relations import load_relations
 
-        npc_sentiments = await load_relations(session)
         npc_cogs = await generate_all_npc_cogs(npc_sentiments, day_index)
         cog_block = npc_cogs_block(npc_cogs)
         if cog_block:
@@ -711,8 +711,9 @@ async def _plan_and_render(
         if heretic_block:
             sblock = f"{sblock}\n{heretic_block}"
     # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
-    villain_full = await _villain_block(session, open_moment, anchor)
-    villain = villain_full if "villain" in guests else None
+    villain = None
+    if "villain" in guests:
+        villain = await _villain_block(session, open_moment, anchor)
 
     # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
     twist = season_midpoint(run_day_now, total_now)
@@ -736,7 +737,7 @@ async def _plan_and_render(
                 is_sealed=sealed_day(day_index) or False,
                 is_midpoint=twist,
                 seed=day_index,
-            ).lower()
+            )
         )
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,

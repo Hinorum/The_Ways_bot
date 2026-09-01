@@ -206,21 +206,6 @@ class PluginRegistry:
                         "Pre-day hook плагина %s не удался", plugin.meta.name
                     )
 
-    async def collect_results(self, ctx: PluginContext) -> list[str]:
-        """Собирает форматированные результаты от всех плагинов."""
-        results = []
-        for plugin in self._by_capability(Capability.RESULTS_FORMAT):
-            if plugin.results_format is not None:
-                try:
-                    text = await plugin.results_format(ctx)
-                    if text:
-                        results.append(text)
-                except Exception:
-                    logger.exception(
-                        "Results formatter плагина %s не удался", plugin.meta.name
-                    )
-        return results
-
     async def run_validators(self, ctx: PluginContext) -> list[str]:
         """Запускает все валидаторы, собирает ошибки."""
         errors = []

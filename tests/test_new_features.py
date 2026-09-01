@@ -207,15 +207,15 @@ class TestNPCCog:
         cog = generate_npc_cog("liner", 3, day_index=1)
         assert cog.name == "liner"
         assert cog.sentiment == 3
-        # _TONES[3] = ("предан стае", "ходит за стаей хвостом")
-        assert "предан" in cog.tone
+        # _TONES[3] = ("предан стае", ...) → mood "devoted"
+        assert cog.tone == "devoted"
         assert len(cog.inner_thought) > 0
         assert len(cog.action_hint) > 0
 
     def test_generate_heretic_hostile(self):
         cog = generate_npc_cog("heretic", -3, day_index=1)
-        # _TONES[-3] = ("охотится на стаю", ...)
-        assert "охотится" in cog.tone or "враждеб" in cog.tone
+        # _TONES[-3] = ("охотится на стаю", ...) → mood "hostile"
+        assert cog.tone == "hostile"
         assert len(cog.inner_thought) > 0
 
     def test_deterministic(self):
@@ -307,7 +307,7 @@ class TestDifficulty:
     def test_select_win_rule(self):
         m = compute_difficulty_metrics(counts={0: 5, 1: 5}, total_stakes=100, player_count=10)
         rule = select_win_rule(m, day_index=42)
-        assert rule in ("MAJORITY", "MINORITY", "MEDIAN")
+        assert rule in ("majority", "minority", "median")
 
     def test_format_hint(self):
         m = compute_difficulty_metrics(counts={0: 5, 1: 3, 2: 2}, total_stakes=100, player_count=10)

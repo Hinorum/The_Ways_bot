@@ -1198,14 +1198,18 @@ def _build_story_prompt(
         )
     season_text = f"{season_block}\n" if season_block else ""
     # Пролог и серединный поворот несут двойную нагрузку (сцена + знакомство/
-    # событие): просим у модели чуть более длинную главу. Пост выдерживает
+    # событие): просим у модель более длинную главу. Пост выдерживает
     # до ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
     expanded_day = bool(season_block) and (
         "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
     )
     chapter_low, chapter_high = (1400, 1700) if expanded_day else (1200, 1500)
     villain_text = villain_text if villain_block else ""
-    align_text = f"{alignment_block}\n" if alignment_block else ""
+    # alignment_block уже внутри season_text (через season.py:527),
+    # но если season_block передан без него — добавляем отдельно.
+    align_text = ""
+    if alignment_block and alignment_block not in (season_block or ""):
+        align_text = f"{alignment_block}\n"
     # Анти-репетиция: список последних начальных предложений для избегания
     avoid_block = ""
     if _RECENT_OPENINGS:

@@ -228,8 +228,14 @@ class FlipMarginPlugin(BasePlugin):
 
 # ── Registration ──
 
+_registered = False
+
+
 def register_builtin_plugins() -> None:
-    """Регистрирует все встроенные плагины в глобальный реестр."""
+    """Регистрирует все встроенные плагины в глобальный реестр (один раз)."""
+    global _registered
+    if _registered:
+        return
     for plugin_cls in (
         EchoesPlugin,
         RelationsPlugin,
@@ -240,6 +246,7 @@ def register_builtin_plugins() -> None:
     ):
         plugin = plugin_cls()
         plugin.register_self()
+    _registered = True
     logger.info(
         "Зарегистрированы встроенные плагины: %s",
         ", ".join(p.name for p in [
