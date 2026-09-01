@@ -607,6 +607,22 @@ async def _plan_and_render(
     echoes = await collect_due_echoes(session, day_index)
     salt = secrets.token_hex(16)
 
+    # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
+    from app.scar_rules import load_active_scars, process_round_scars
+    from app.lore import tags_from_beats
+
+    active_scars = await load_active_scars(session, day_index)
+    active_scar_keys = {s.scar_key for s in active_scars}
+
+    # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
+    history_tags = tags_from_beats(beats)
+    if history_tags:
+        # Вчерашний тег = тег победившей карты за вчерашний день
+        yesterday_winner_tag = history_tags[-1] if history_tags else None
+        new_scars = await process_round_scars(session, yesterday_winner_tag, history_tags, day_index)
+        for scar in new_scars:
+            active_scar_keys.add(scar.scar_key)
+
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
     # Первого Лая на длине месяца старта забега.
     open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
@@ -779,6 +795,7 @@ async def _plan_and_render(
         tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
         focus_line=focus_line,
         repeat_block=repeat_block,
+        active_scar_keys=active_scar_keys,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.

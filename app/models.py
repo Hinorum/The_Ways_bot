@@ -539,3 +539,22 @@ class BestiarySighting(Base):
     __table_args__ = (
         UniqueConstraint("season", "beast_key", name="uq_bestiary_season_beast"),
     )
+
+
+class WorldScar(Base):
+    """Шрам мира — след от выбора стаи, меняющий лабиринт.
+
+    Шрамы создаются, когда стая делает значимые выборы (сжигает мосты,
+    обманывает датчики, помогает чужим). Каждый шрам может блокировать
+    локации, разблокировать новые, менять тон атмосферы.
+    """
+
+    __tablename__ = "world_scars"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scar_key: Mapped[str] = mapped_column(String(64), index=True)
+    created_day: Mapped[int] = mapped_column(Integer)
+    expires_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strength: Mapped[int] = mapped_column(Integer, default=1)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

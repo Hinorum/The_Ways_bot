@@ -140,60 +140,90 @@ _PLACES = [
     {
         "to": "к двери на окраине — она гудит и лает изнутри",
         "scene": "pack of stray dogs facing a humming door on a foggy city outskirts",
+        "scar_key": None,
     },
     {
         "to": "в заброшенный приют, где миски ещё тёплые",
         "scene": "abandoned dog shelter with glowing warm bowls and flickering light",
+        "scar_key": None,
     },
     {
         "to": "на станцию Архива, где папки шепчут чужие имена",
         "scene": "endless archive hall with whispering folders and paper dust in light beams",
+        "scar_key": None,
     },
     {
         "to": "в город без теней — солнце светит, но тени не ложатся",
         "scene": "sunny empty city where dogs cast no shadows, uncanny calm streets",
+        "scar_key": None,
     },
     {
         "to": "на мост из светящихся костей между двумя мирами",
         "scene": "bridge built of glowing bones spanning two different skies",
+        "scar_key": "burned_path",  # блокируется шрамом сожжённого пути
     },
     {
         "to": "в пустой вольер Нулевого Блока с погасшими лампами",
         "scene": "empty concrete kennel block with dead lamps and a red standby dot",
+        "scar_key": None,
     },
     {
         "to": "на рынок Лайнеров, где торгуют чужими снами",
         "scene": "night market stalls selling bottled dreams, hooded traders, lanterns",
+        "scar_key": None,
     },
     {
         "to": "к реке, которая течёт вспять по памяти",
         "scene": "river flowing backwards through a misty meadow with floating photos",
+        "scar_key": None,
     },
     {
         "to": "в переулок, где стены написаны чужими ошибками",
         "scene": "narrow alley with walls covered in glitching text and flickering neon symbols",
+        "scar_key": None,
     },
     {
         "to": "к вышке связи, которая транслирует чужие сны",
         "scene": "tall radio tower emitting ghostly dream projections into overcast sky",
+        "scar_key": None,
     },
     {
         "to": "на пустырь, где растут провода вместо травы",
         "scene": "abandoned lot with cables sprouting from soil like dark grass, sparks at tips",
+        "scar_key": None,
     },
     {
         "to": "в тоннель, где эхо отвечает на несказанные вопросы",
         "scene": "dark tunnel with visible sound waves bouncing between damp concrete walls",
+        "scar_key": None,
     },
     {
         "to": "на крышу здания, которое помнит каждый дождь",
         "scene": "rain-soaked rooftop with puddles reflecting different skies simultaneously",
+        "scar_key": None,
     },
     {
         "to": "к автомату с едой, который выдаёт не то, что выбрано",
         "scene": "old vending machine glowing warm, dispensing something that wasn't pressed",
+        "scar_key": None,
     },
 ]
+
+# Разблокированные шрамами локации
+_UNLOCKED_PLACES = {
+    "warm_hearth": {
+        "to": "в тёплый очаг, который стая построила своими руками",
+        "scene": "warm shelter built by dogs, soft firelight, safe haven",
+    },
+    "sanctuary": {
+        "to": "в святилище, куда стекаются все, кто потерял путь",
+        "scene": "sanctuary for lost dogs, many paths leading here, warm light",
+    },
+    "false_trails": {
+        "to": "в коридор, которого не было на карте вчера",
+        "scene": "glitching corridor that appears and disappears, impossible geometry",
+    },
+}
 
 
 # Короткие имена мест маршрута — по индексу совпадают с _PLACES. Память о
@@ -214,6 +244,38 @@ _PLACE_NAMES = [
     "Крыша тысячи дождей",
     "Автомат на краю",
 ]
+
+
+def _get_dynamic_places(
+    active_scars: list | None = None,
+    scar_keys: set[str] | None = None,
+) -> list[dict]:
+    """Возвращает динамический пул локаций с учётом шрамов мира.
+
+    - Исключает локации, заблокированные активными шрамами
+    - Добавляет локации, разблокированные шрамами
+    """
+    blocked = set()
+    unlocked = set()
+    if scar_keys:
+        for key in scar_keys:
+            if key in ("burned_path", "scorched_earth"):
+                blocked.add(key)
+            elif key in ("warm_hearth", "sanctuary", "false_trails"):
+                unlocked.add(key)
+
+    places = []
+    for p in _PLACES:
+        scar_key = p.get("scar_key")
+        if scar_key and scar_key in blocked:
+            continue
+        places.append(p)
+
+    for scar_key in unlocked:
+        if scar_key in _UNLOCKED_PLACES:
+            places.append(_UNLOCKED_PLACES[scar_key])
+
+    return places if places else _PLACES  # fallback к оригиналу
 
 # Заголовок, описание и последствие связаны намертво: карта называет то,
 # что делает, и последствие вытекает именно из этого действия. Никаких
@@ -705,6 +767,7 @@ def compose_chapter(
     salt: str = "",
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
+    active_scar_keys: set[str] | None = None,
 ) -> dict:
     # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
     # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
@@ -716,9 +779,20 @@ def compose_chapter(
     # отдельный вызов после итогов. В инлайн-днях не используется (всегда
     # False), параметр оставлен для тестов собирателя.
     echo = "" if pending_outcome else _echo(last, history_tags)
-    place_idx = (day_index + len(history_tags)) % len(_PLACES)
-    place = _PLACES[place_idx]
-    place_name = _PLACE_NAMES[place_idx]
+    # Динамический пул локаций с учётом шрамов мира
+    dynamic_places = _get_dynamic_places(scar_keys=active_scar_keys)
+    place_idx = (day_index + len(history_tags)) % len(dynamic_places)
+    place = dynamic_places[place_idx]
+    # Определяем имя места (для разблокированных — ключ шрама)
+    if place.get("to", "").startswith("в тёплый очаг"):
+        place_name = "Тёплый очаг"
+    elif place.get("to", "").startswith("в святилище"):
+        place_name = "Святилище"
+    elif place.get("to", "").startswith("в коридор, которого"):
+        place_name = "Скрытый коридор"
+    else:
+        place_name_idx = place_idx % len(_PLACE_NAMES) if place_idx < len(_PLACE_NAMES) else 0
+        place_name = _PLACE_NAMES[place_name_idx]
     is_finale = bool(season_block and "ДЕНЬ ПЕРВОГО ЛАЯ" in season_block)
     cover_prompt = "wide cinematic establishing shot, " + place["scene"]
     if not is_finale and season_block:

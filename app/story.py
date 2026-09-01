@@ -941,11 +941,12 @@ async def generate_chapter(
     focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
+    active_scar_keys: set[str] | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
         villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
-        tint_lines=tint_lines, focus_line=focus_line,
+        tint_lines=tint_lines, focus_line=focus_line, active_scar_keys=active_scar_keys,
     )
     if not settings.use_free_story_llm:
         # Офлайн-глава тоже проходит полировку типографики (кавычки-ёлочки,
@@ -960,6 +961,7 @@ async def generate_chapter(
         focus_line=focus_line,
         repeat_block=repeat_block,
         is_expanded=is_expanded,
+        active_scar_keys=active_scar_keys,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1145,6 +1147,7 @@ def _build_story_prompt(
     focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
+    active_scar_keys: set[str] | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -1227,6 +1230,28 @@ def _build_story_prompt(
             + places_block + "\n"
         )
     repeat_text = f"{repeat_block}\n" if repeat_block else ""
+    # Шрамы мира: активные шрамы влияют на локации и тон
+    scar_text = ""
+    if active_scar_keys:
+        scar_descriptions = {
+            "burned_path": "стая сожгла мост — мир помнит дым",
+            "scorched_earth": "слишком много мостов сожжено — земля выжжена",
+            "fresh_wound": "свежая рана — мир помнит боль",
+            "warm_hearth": "стая создала тёплый очаг — место, куда хочется возвращаться",
+            "sanctuary": "стая стала домом для других — святилище",
+            "gentle_breath": "мягкое дыхание — мир стал теплее",
+            "labyrinth_doubt": "сомнение лабиринта — коридоры дублируются",
+            "false_trails": "ложные тропы — хитрость открыла новые коридоры",
+            "whisper_of_trick": "шёпот обмана — кто-то считает дни иначе",
+        }
+        scar_lines = [f"- {scar_descriptions.get(k, k)}" for k in active_scar_keys if k in scar_descriptions]
+        if scar_lines:
+            scar_text = (
+                "Шрамы мира (вплети в текст главы и локации): "
+                "выборы стаи оставили следы в лабиринте. "
+                "Не называй слово «шрам» — покажи последствия образами:\n"
+                + "\n".join(scar_lines) + "\n"
+            )
     # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
     try:
@@ -1251,6 +1276,7 @@ def _build_story_prompt(
         f"{witness_block}"
         f"{places_text}"
         f"{repeat_text}"
+        f"{scar_text}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
@@ -1398,6 +1424,7 @@ async def _free_story_llm(
     focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
+    active_scar_keys: set[str] | None = None,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -1407,6 +1434,7 @@ async def _free_story_llm(
         focus_line=focus_line,
         repeat_block=repeat_block,
         is_expanded=is_expanded,
+        active_scar_keys=active_scar_keys,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (
