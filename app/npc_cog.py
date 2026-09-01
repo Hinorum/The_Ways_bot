@@ -34,8 +34,6 @@ _TONE_TO_MOOD: dict[str, str] = {
 _DEFAULT_MOOD = "cautious"
 from typing import Any
 
-from app.relations import _TONES
-
 logger = logging.getLogger(__name__)
 
 

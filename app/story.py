@@ -1060,27 +1060,26 @@ async def _chat_completion(
                 try:
                     headers = {"Authorization": f"Bearer {key}"} if key else {}
                     async with httpx.AsyncClient(timeout=timeout) as client:
-                        for json_fallback in range(2):
-                            response = await client.post(
-                                base_url,
-                                json=body,
-                                headers=headers,
+                        response = await client.post(
+                            base_url, json=body, headers=headers,
+                        )
+                        if response.status_code == 429:
+                            retry_after = response.headers.get("retry-after", "")
+                            pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
+                            logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
+                            await asyncio.sleep(pause)
+                            raise _LLMRateLimited()
+                        if response.status_code == 400 and "response_format" in body:
+                            logger.warning(
+                                "LLM %s @ %s: 400 на json-режим — повтор без него", model, base_url
                             )
-                            if response.status_code == 429:
-                                retry_after = response.headers.get("retry-after", "")
-                                pause = min(int(retry_after), 10) if retry_after.isdigit() else 4
-                                logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
-                                await asyncio.sleep(pause)
-                                raise _LLMRateLimited()
-                            if response.status_code == 400 and "response_format" in body and json_fallback == 0:
-                                logger.warning(
-                                    "LLM %s @ %s: 400 на json-режим — повтор без него", model, base_url
-                                )
-                                body.pop("response_format", None)
-                                continue
-                            response.raise_for_status()
-                            _breaker_note(base_url, True)
-                            return response.json(), model
+                            fallback_body = {k: v for k, v in body.items() if k != "response_format"}
+                            response = await client.post(
+                                base_url, json=fallback_body, headers=headers,
+                            )
+                        response.raise_for_status()
+                        _breaker_note(base_url, True)
+                        return response.json(), model
                 except _LLMRateLimited:
                     _breaker_note(base_url, False)
                     continue
