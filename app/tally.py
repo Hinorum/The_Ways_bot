@@ -26,9 +26,21 @@ from app.weeks import iso_week_key
 _CHUNK = 500  # лимит параметров IN(...): большие дни чанкуются
 
 
+def _tg_escape(text: str) -> str:
+    """Экранирование спецсимволов HTML для Telegram."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _clip(text: str, limit: int) -> str:
-    """Обрезка с многоточием — последствия в итогах не растягивают пост."""
-    return text if len(text) <= limit else text[: limit - 1].rstrip(" ,.;:") + "…"
+    """Обрезка по словам с многоточием — не режет слово пополам."""
+    if len(text) <= limit:
+        return text
+    truncated = text[: limit - 1]
+    # Обрезаем по последнему пробелу, чтобы не резать слово
+    last_space = truncated.rfind(" ")
+    if last_space > limit // 2:
+        truncated = truncated[:last_space]
+    return truncated.rstrip(" ,.;:") + "…"
 
 
 def _chunks(ids: list[int], size: int = _CHUNK):
@@ -215,7 +227,7 @@ def format_results(round_row: Round) -> str:
 
     raw = json.loads(round_row.vote_counts_json or "{}")
     counts = {int(key): int(value) for key, value in raw.items()}
-    names = {card.position: card.title for card in round_row.cards}
+    names = {card.position: _tg_escape(card.title) for card in round_row.cards}
     mark_key = str(getattr(round_row, "id", round_row.day_index))
     reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     lines = [
@@ -248,9 +260,9 @@ def format_results(round_row: Round) -> str:
     if getattr(round_row, "tie_note", None):
         lines.append(f"🤝 {round_row.tie_note}")
     winner = names[round_row.winner_card or 0]
-    consequence = next(
+    consequence = _tg_escape(next(
         card.consequence for card in round_row.cards if card.position == round_row.winner_card
-    )
+    ))
     lines += ["", f"📜 Канон: {winner}", _clip(consequence, 240)]
     return "\n".join(lines)
 

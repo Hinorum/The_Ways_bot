@@ -4,13 +4,14 @@
 from app import story
 
 
-def _prompt(season_block: str | None) -> str:
+def _prompt(season_block: str | None, *, is_expanded: bool = False) -> str:
     return story._build_story_prompt(
         1,
         ["День 1. Прошлое: что-то было."],
         None,
         [],
         season_block=season_block,
+        is_expanded=is_expanded,
     )
 
 
@@ -22,9 +23,9 @@ def test_base_chapter_length() -> None:
 
 
 def test_expanded_in_prologue_and_midpoint() -> None:
-    prologue = _prompt("Сезон: акт 1.\nПРОЛОГ, день 2 — «Архивариус».")
+    prologue = _prompt("Сезон: акт 1.\nПРОЛОГ, день 2 — «Архивариус».", is_expanded=True)
     assert "1400-1700 знаков" in prologue and prologue.count("1400-1700") == 2
-    midpoint = _prompt("Сезон: акт 2.\nПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки.")
+    midpoint = _prompt("Сезон: акт 2.\nПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки.", is_expanded=True)
     assert "1400-1700 знаков" in midpoint
 
 

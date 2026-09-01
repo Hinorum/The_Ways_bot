@@ -39,8 +39,35 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
-# ── Кэш API-эмбеддингов ──
-_embedding_cache: dict[str, list[float]] = {}
+# ── Кэш API-эмбеддингов с TTL ──
+_embedding_cache: dict[str, tuple[list[float], float]] = {}
+_EMBED_CACHE_TTL = 3600  # 1 час
+
+
+def _cache_get(key: str) -> list[float] | None:
+    """Читает кэш с проверкой TTL."""
+    import time
+
+    entry = _embedding_cache.get(key)
+    if entry is not None:
+        vec, ts = entry
+        if time.monotonic() - ts < _EMBED_CACHE_TTL:
+            return vec
+        del _embedding_cache[key]
+    return None
+
+
+def _cache_put(key: str, vec: list[float]) -> None:
+    """Записывает в кэш с текущим timestamp."""
+    import time
+
+    _embedding_cache[key] = (vec, time.monotonic())
+    # Простая eviction: если кэш > 10000, чистим старые
+    if len(_embedding_cache) > 10_000:
+        now = time.monotonic()
+        stale = [k for k, (_, ts) in _embedding_cache.items() if now - ts > _EMBED_CACHE_TTL]
+        for k in stale:
+            del _embedding_cache[k]
 
 
 def _tokens(text: str) -> list[str]:
@@ -94,14 +121,15 @@ async def _api_embed(text: str) -> list[float] | None:
     """Семантический эмбеддинг через API (OpenAI-compatible).
 
     Возвращает None если API недоступен или текст пустой.
-    Кэширует результаты по хэшу текста.
+    Кэширует результаты по хэшу текста с TTL 1 час.
     """
     if not text.strip():
         return None
 
     cache_key = hashlib.sha256(text.encode()).hexdigest()[:32]
-    if cache_key in _embedding_cache:
-        return _embedding_cache[cache_key]
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from app.config import settings
@@ -129,7 +157,7 @@ async def _api_embed(text: str) -> list[float] | None:
             if len(vector) != _DIM:
                 vector = _normalize_to_dim(vector, _DIM)
 
-            _embedding_cache[cache_key] = vector
+            _cache_put(cache_key, vector)
             return vector
     except Exception:
         return None

@@ -248,9 +248,5 @@ def register_builtin_plugins() -> None:
         plugin.register_self()
     _registered = True
     logger.info(
-        "Зарегистрированы встроенные плагины: %s",
-        ", ".join(p.name for p in [
-            EchoesPlugin(), RelationsPlugin(), TrailPlugin(),
-            EconomicsPlugin(), BestiaryPlugin(), FlipMarginPlugin(),
-        ]),
+        "Зарегистрированы встроенные плагины: echoes, relations, trail, economics, bestiary, flip_margin"
     )

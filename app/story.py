@@ -940,6 +940,7 @@ async def generate_chapter(
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
     repeat_block: str | None = None,
+    is_expanded: bool = False,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -958,6 +959,7 @@ async def generate_chapter(
         alignment_block=alignment_block,
         focus_line=focus_line,
         repeat_block=repeat_block,
+        is_expanded=is_expanded,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1050,6 +1052,8 @@ async def _chat_completion(
                     "messages": messages,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
+                    "frequency_penalty": settings.llm_frequency_penalty,
+                    "presence_penalty": settings.llm_presence_penalty,
                 }
                 if want_json and key:
                     body["response_format"] = {"type": "json_object"}
@@ -1059,15 +1063,7 @@ async def _chat_completion(
                         for json_fallback in range(2):
                             response = await client.post(
                                 base_url,
-                                json={
-                                    "model": model,
-                                    "messages": messages,
-                                    "temperature": settings.llm_temperature,
-                                    "max_tokens": settings.llm_max_tokens,
-                                    "frequency_penalty": settings.llm_frequency_penalty,
-                                    "presence_penalty": settings.llm_presence_penalty,
-                                    **body,
-                                },
+                                json=body,
                                 headers=headers,
                             )
                             if response.status_code == 429:
@@ -1149,6 +1145,7 @@ def _build_story_prompt(
     alignment_block: str | None = None,
     focus_line: str | None = None,
     repeat_block: str | None = None,
+    is_expanded: bool = False,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
@@ -1200,10 +1197,7 @@ def _build_story_prompt(
     # Пролог и серединный поворот несут двойную нагрузку (сцена + знакомство/
     # событие): просим у модель более длинную главу. Пост выдерживает
     # до ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
-    expanded_day = bool(season_block) and (
-        "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
-    )
-    chapter_low, chapter_high = (1400, 1700) if expanded_day else (1200, 1500)
+    chapter_low, chapter_high = (1400, 1700) if is_expanded else (1200, 1500)
     villain_text = villain_text if villain_block else ""
     # alignment_block уже внутри season_text (через season.py:527),
     # но если season_block передан без него — добавляем отдельно.
@@ -1404,6 +1398,7 @@ async def _free_story_llm(
     alignment_block: str | None = None,
     focus_line: str | None = None,
     repeat_block: str | None = None,
+    is_expanded: bool = False,
 ) -> dict | None:
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
@@ -1412,6 +1407,7 @@ async def _free_story_llm(
         alignment_block=alignment_block,
         focus_line=focus_line,
         repeat_block=repeat_block,
+        is_expanded=is_expanded,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (
@@ -1438,7 +1434,7 @@ async def _free_story_llm(
         logger.warning(
             "Промпт дня %d: ~%d токенов (system %d + user %d) — близко к лимиту модели",
             day_index, total_tokens,
-            _estimate_tokens(DM_SYSTEM_PROMPT), _estimate_tokens(prompt),
+            _new_tokens, _estimate_tokens(prompt),
         )
     # Одна повторная попытка всей цепочки: битый JSON у бесплатных моделей —
     # обычное дело, лимит это позволяет.
