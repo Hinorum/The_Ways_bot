@@ -643,15 +643,13 @@ async def _plan_and_render(
     # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
     if beats:
         last_beat = beats[-1] if beats else ""
+        existing_keys = {b.branch_key for b in active_branches}
         for tree in CONSEQUENCE_TREES.values():
-            if tree.trigger_card in last_beat:
-                # Проверяем, нет ли уже такой ветви
-                existing_keys = {b.branch_key for b in active_branches}
-                if tree.key not in existing_keys:
-                    new_branch = await create_branch(session, tree, day_index)
-                    active_branches.append(new_branch)
-                    branches_block = format_active_branches(active_branches)
-                break
+            if tree.trigger_card in last_beat and tree.key not in existing_keys:
+                new_branch = await create_branch(session, tree, day_index)
+                active_branches.append(new_branch)
+                existing_keys.add(tree.key)
+        branches_block = format_active_branches(active_branches)
 
     # Динамические правила: определяем активные переопределения
     from app.dynamic_rules import (

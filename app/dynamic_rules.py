@@ -91,12 +91,9 @@ def get_active_overrides(
     """Определяет активные переопределения правил."""
     overrides = []
 
-    # Шрамы мира: снижают вес связанных карт
-    for scar in scars:
-        # Шрамы с effect_type "block_place" или "modify_tone" снижают вес
-        if scar.metadata_json:
-            overrides.append(RULE_OVERRIDES["scar_reduce_weight"])
-            break  # Достаточно одного шрама для дебаффа
+    # Шрамы мира: любой активный шрам снижает вес risk-карт
+    if scars:
+        overrides.append(RULE_OVERRIDES["scar_reduce_weight"])
 
     # Эмоции: fatigue >= 7
     if emotions.fatigue >= 7:
@@ -126,7 +123,7 @@ def get_active_overrides(
                 overrides.append(override)
 
     # Комбинации: fatigue + любой шрам
-    if emotions.fatigue >= 5 and any(s.metadata_json for s in scars):
+    if emotions.fatigue >= 5 and scars:
         overrides.append(RULE_OVERRIDES["exhaustion_combined"])
 
     # Сортируем по приоритету
@@ -156,11 +153,15 @@ def apply_overrides(
         if "risk_weight_bonus" in effects:
             modified["risk"] = modified.get("risk", 0.33) + effects["risk_weight_bonus"]
         if "risk_weight_penalty" in effects:
-            modified["risk"] = modified.get("risk", 0.33) - effects["risk_weight_penalty"]
+            modified["risk"] = max(0.05, modified.get("risk", 0.33) - effects["risk_weight_penalty"])
         if "care_weight_bonus" in effects:
             modified["care"] = modified.get("care", 0.33) + effects["care_weight_bonus"]
+        if "care_weight_penalty" in effects:
+            modified["care"] = max(0.05, modified.get("care", 0.33) - effects["care_weight_penalty"])
         if "cunning_weight_bonus" in effects:
             modified["cunning"] = modified.get("cunning", 0.34) + effects["cunning_weight_bonus"]
+        if "cunning_weight_penalty" in effects:
+            modified["cunning"] = max(0.05, modified.get("cunning", 0.34) - effects["cunning_weight_penalty"])
 
     # Нормализация
     total = sum(modified.values())
