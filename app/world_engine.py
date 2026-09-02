@@ -737,3 +737,266 @@ async def update_location_visit(
         loc.last_visited_day = day_index
         loc.times_visited += 1
         await session.flush()
+
+
+# ── AI Character Generation ────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AICharacter:
+    """AI-генерируемый персонаж."""
+
+    name: str
+    role: str  # "pack" | "npc" | "neutral" | "hostile"
+    personality: str
+    flaw: str
+    virtue: str
+    moral_alignment: str  # good | neutral | evil | complex
+    mood: str  # neutral | hostile | friendly | fearful | curious
+    speech_style: str  # как говорит (кратко)
+
+
+def _build_character_prompt(ctx: WorldContext) -> str:
+    """Строит промпт для AI-генерации нового персонажа."""
+
+    parts = [
+        "Сгенерируй НОВОГО персонажа для мира лабиринта, где бродят бездомные собаки.",
+        "",
+        "ТРЕБОВАНИЯ:",
+        "- Имя на русском (1-2 слова), уникальное",
+        "- Чёткий характер с сильными и слабыми сторонами",
+        "- Моральный компас не однозначный (нет абсолютного зла/добра)",
+        "- Стиль речи: как говорит, жесты, привычки",
+        "- Персонаж должен иметь мотивацию и конфликт",
+        "",
+    ]
+
+    if ctx.active_characters:
+        parts.append("СУЩЕСТВУЮЩИЕ ПЕРСОНАЖИ (не повторять):")
+        for char in ctx.active_characters[:8]:
+            parts.append(f"- {char['name']} ({char['role']}): {char['personality'][:60]}")
+        parts.append("")
+
+    if ctx.world_mood:
+        mood_desc = {
+            "tense": "напряжённая атмосфера",
+            "peaceful": "спокойная атмосфера",
+            "chaotic": "хаотичная атмосфера",
+            "hopeful": "надежда в воздухе",
+            "grim": "мрачная атмосфера",
+        }.get(ctx.world_mood, "")
+        if mood_desc:
+            parts.append(f"ТЕКУЩЕЕ НАСТРОЕНИЕ МИРА: {mood_desc}")
+            parts.append("")
+
+    parts.extend([
+        "СОЗДАЙ ПЕРСОНАЖА. Формат JSON:",
+        '{',
+        '  "name": "Имя (1-2 слова на русском)",',
+        '  "role": "pack|npc|neutral|hostile",',
+        '  "personality": "Характер (2-3 предложения)",',
+        '  "flaw": "Слабость (1 предложение)",',
+        '  "virtue": "Сила (1 предложение)",',
+        '  "moral_alignment": "good|neutral|evil|complex",',
+        '  "mood": "neutral|hostile|friendly|fearful|curious",',
+        '  "speech_style": "Как говорит (1 предложение)"',
+        '}',
+    ])
+
+    return "\n".join(parts)
+
+
+def _parse_ai_character(response_text: str) -> AICharacter | None:
+    """Парсит ответ AI и возвращает персонажа."""
+
+    json_match = re.search(r'\{[\s\S]*"name"[\s\S]*\}', response_text)
+    if not json_match:
+        return None
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return None
+
+    if not all(k in data for k in ("name", "personality")):
+        return None
+
+    return AICharacter(
+        name=data["name"][:80],
+        role=data.get("role", "npc"),
+        personality=data["personality"][:300],
+        flaw=data.get("flaw", "")[:150],
+        virtue=data.get("virtue", "")[:150],
+        moral_alignment=data.get("moral_alignment", "neutral"),
+        mood=data.get("mood", "neutral"),
+        speech_style=data.get("speech_style", "")[:150],
+    )
+
+
+async def generate_ai_character(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+) -> AICharacter | None:
+    """Генерирует нового AI-персонажа на основе контекста мира."""
+
+    prompt = _build_character_prompt(ctx)
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True)
+    except Exception as e:
+        logger.warning("AIWorldEngine: LLM не ответил для персонажа: %s", e)
+        return None
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict):
+        if all(k in response for k in ("name", "personality")):
+            return AICharacter(
+                name=response["name"][:80],
+                role=response.get("role", "npc"),
+                personality=response["personality"][:300],
+                flaw=response.get("flaw", "")[:150],
+                virtue=response.get("virtue", "")[:150],
+                moral_alignment=response.get("moral_alignment", "neutral"),
+                mood=response.get("mood", "neutral"),
+                speech_style=response.get("speech_style", "")[:150],
+            )
+    elif isinstance(response, str):
+        return _parse_ai_character(response)
+
+    return None
+
+
+async def get_or_create_character(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+    role: str = "npc",
+) -> AICharacter:
+    """Получает существующего персонажа или создаёт нового.
+
+    Логика:
+    1. Если есть активные персонажи нужной роли — выбираем случайного
+    2. Если нет — генерируем нового через AI
+    """
+
+    # Фильтруем по роли
+    same_role = [c for c in ctx.active_characters if c.get("role") == role]
+
+    if same_role:
+        # Выбираем случайного из существующих
+        import random
+        chosen = random.choice(same_role)
+        return AICharacter(
+            name=chosen["name"],
+            role=chosen["role"],
+            personality=chosen["personality"],
+            flaw=chosen.get("flaw", ""),
+            virtue=chosen.get("virtue", ""),
+            moral_alignment=chosen.get("moral_alignment", "neutral"),
+            mood=chosen.get("mood", "neutral"),
+            speech_style=chosen.get("speech_style", ""),
+        )
+
+    # Генерируем нового
+    new_char = await generate_ai_character(session, ctx, llm_caller)
+    if new_char:
+        # Сохраняем в БД
+        db_char = WorldCharacter(
+            name=new_char.name,
+            role=new_char.role,
+            personality=new_char.personality,
+            flaw=new_char.flaw,
+            virtue=new_char.virtue,
+            moral_alignment=new_char.moral_alignment,
+            mood=new_char.mood,
+            created_day=ctx.day_index,
+        )
+        session.add(db_char)
+        await session.flush()
+        return new_char
+
+    # Фолбэк
+    return AICharacter(
+        name="Странник",
+        role=role,
+        personality="Молчаливый путник, прячущий лицо в тени капюшона.",
+        flaw="Не доверяет никому",
+        virtue="Всегда помогает тем, кто в беде",
+        moral_alignment="complex",
+        mood="neutral",
+        speech_style="Говорит коротко, часто молчит",
+    )
+
+
+async def update_character_state(
+    session: AsyncSession,
+    character_name: str,
+    mood: str | None = None,
+    trust_delta: int = 0,
+    day_index: int | None = None,
+) -> None:
+    """Обновляет состояние персонажа: настроение, доверие."""
+
+    q = select(WorldCharacter).where(WorldCharacter.name == character_name)
+    result = await session.execute(q)
+    char = result.scalar_one_or_none()
+
+    if char:
+        if mood is not None:
+            char.mood = mood
+        char.trust_stay = max(0, min(10, char.trust_stay + trust_delta))
+        if day_index is not None:
+            char.last_seen_day = day_index
+        await session.flush()
+
+
+async def generate_character_interaction(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+    character_name: str,
+    player_action: str,
+) -> str:
+    """Генерирует реакцию персонажа на действие игрока."""
+
+    # Находим персонажа в БД
+    q = select(WorldCharacter).where(WorldCharacter.name == character_name)
+    result = await session.execute(q)
+    char = result.scalar_one_or_none()
+
+    if not char:
+        return f"{character_name} молча наблюдает за стаей."
+
+    prompt_parts = [
+        f"Персонаж: {char.name}",
+        f"Характер: {char.personality}",
+        f"Слабость: {char.flaw}" if char.flaw else "",
+        f"Сила: {char.virtue}" if char.virtue else "",
+        f"Настроение: {char.mood}",
+        f"Доверие к стае: {char.trust_stay}/10",
+        f"Действие игрока: {player_action}",
+        "",
+        "Сгенерируй краткую реакцию персонажа (1-2 предложения). Формат: реплика или действие.",
+    ]
+
+    prompt = "\n".join([p for p in prompt_parts if p])
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.8, max_tokens=200, want_json=False)
+    except Exception:
+        return f"{char.name} молча наблюдает за стаей."
+
+    if result:
+        response = result[0] if isinstance(result, tuple) else result
+        if isinstance(response, str):
+            return response[:300]
+        elif isinstance(response, dict):
+            return response.get("text", response.get("response", ""))[:300]
+
+    return f"{char.name} молча наблюдает за стаей."

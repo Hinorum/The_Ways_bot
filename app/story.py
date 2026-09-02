@@ -433,7 +433,7 @@ async def _build_dynamic_character_block(session) -> str:
         if not characters:
             return ""
 
-        parts = ["ПЕРСОНАЖИ МИРА:"]
+        parts = ["ПЕРСОНАЖИ МИРА (AI-сгенерированные):"]
         for char in characters:
             mood_desc = {
                 "neutral": "спокоен",
@@ -455,6 +455,67 @@ async def _build_dynamic_character_block(session) -> str:
         return "\n".join(parts)
     except Exception:
         return ""
+
+
+async def _generate_session_characters(session, day_index: int) -> str:
+    """Генерирует персонажей для текущей сессии через AI World Engine.
+
+    Вызывается при подготовке нового дня для создания уникальных NPC.
+    """
+    from app.world_engine import generate_ai_character, WorldContext, AICharacter
+
+    try:
+        # Собираем контекст
+        q = select(WorldCharacter).where(WorldCharacter.is_alive == True)
+        result = await session.execute(q)
+        existing_chars = result.scalars().all()
+
+        ctx = WorldContext(
+            day_index=day_index,
+            recent_choices=[],
+            active_locations=[],
+            active_characters=[
+                {
+                    "name": c.name,
+                    "role": c.role,
+                    "personality": c.personality[:80],
+                    "mood": c.mood,
+                    "trust_stay": c.trust_stay,
+                }
+                for c in existing_chars
+            ],
+            world_mood="tense",
+            open_threads=[],
+            pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+            season="unknown",
+        )
+
+        # Генерируем нового персонажа
+        from app.story import _chat_completion
+        new_char = await generate_ai_character(session, ctx, _chat_completion)
+
+        if new_char:
+            # Сохраняем в БД
+            from app.models import WorldCharacter as WC
+            db_char = WC(
+                name=new_char.name,
+                role=new_char.role,
+                personality=new_char.personality,
+                flaw=new_char.flaw,
+                virtue=new_char.virtue,
+                moral_alignment=new_char.moral_alignment,
+                mood=new_char.mood,
+                created_day=day_index,
+            )
+            session.add(db_char)
+            await session.flush()
+            return f"Новый персонаж: {new_char.name} — {new_char.personality[:60]}"
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Генерация персонажей не удалась: %s", e)
+
+    return ""
 
 
 def _build_dynamic_prompt(text_blocks: tuple[str, ...] = ()) -> str:

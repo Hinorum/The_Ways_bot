@@ -19,20 +19,26 @@ from app.models import (
 )
 from app.world_engine import (
     AIChoice,
+    AICharacter,
     AILocation,
     WorldContext,
+    _build_character_prompt,
     _build_location_prompt,
     _build_world_prompt,
     _fallback_choices,
+    _parse_ai_character,
     _parse_ai_choices,
     _parse_ai_location,
     create_world_snapshot,
+    generate_ai_character,
     generate_ai_choices,
     generate_ai_location,
+    get_or_create_character,
     get_or_create_location,
     get_world_context,
     record_choice,
     record_world_event,
+    update_character_state,
     update_location_visit,
 )
 
@@ -897,5 +903,312 @@ async def test_update_location_visit():
         updated_loc = result.scalar_one_or_none()
         assert updated_loc.times_visited == 1
         assert updated_loc.last_visited_day == 5
+
+    await engine.dispose()
+
+
+# ── Tests: AI Character Generation ─────────────────────────────────────────
+
+
+def test_ai_character_creation():
+    """AICharacter создаётся с правильными полями."""
+    char = AICharacter(
+        name="ТестовыйNPC",
+        role="npc",
+        personality="Характер персонажа",
+        flaw="Слабость",
+        virtue="Сила",
+        moral_alignment="complex",
+        mood="friendly",
+        speech_style="Говорит коротко",
+    )
+    assert char.name == "ТестовыйNPC"
+    assert char.role == "npc"
+    assert char.moral_alignment == "complex"
+    assert char.speech_style == "Говорит коротко"
+
+
+def test_parse_ai_character_valid():
+    """Парсинг валидного ответа AI с персонажем."""
+    response = json.dumps({
+        "name": "Странник",
+        "role": "npc",
+        "personality": "Молчаливый путник",
+        "flaw": "Не доверяет",
+        "virtue": "Помогает",
+        "moral_alignment": "complex",
+        "mood": "neutral",
+        "speech_style": "Говорит мало",
+    })
+    char = _parse_ai_character(response)
+    assert char is not None
+    assert char.name == "Странник"
+    assert char.moral_alignment == "complex"
+
+
+def test_parse_ai_character_no_json():
+    """Парсинг ответа без JSON."""
+    char = _parse_ai_character("Просто текст")
+    assert char is None
+
+
+def test_parse_ai_character_missing_fields():
+    """Парсинг ответа с неполными данными."""
+    response = json.dumps({"name": "Тест"})  # Нет personality
+    char = _parse_ai_character(response)
+    assert char is None
+
+
+def test_parse_ai_character_truncation():
+    """Парсинг ответа с длинными строками."""
+    response = json.dumps({
+        "name": "A" * 100,
+        "personality": "B" * 400,
+        "flaw": "C" * 200,
+        "virtue": "D" * 200,
+        "moral_alignment": "neutral",
+        "mood": "friendly",
+        "speech_style": "E" * 200,
+    })
+    char = _parse_ai_character(response)
+    assert char is not None
+    assert len(char.name) <= 80
+    assert len(char.personality) <= 300
+    assert len(char.flaw) <= 150
+    assert len(char.speech_style) <= 150
+
+
+def test_build_character_prompt_basic():
+    """Базовый промпт для генерации персонажа."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_character_prompt(ctx)
+    assert "НОВОГО персонажа" in prompt
+    assert "JSON" in prompt
+    assert "name" in prompt
+    assert "personality" in prompt
+
+
+def test_build_character_prompt_with_existing():
+    """Промпт содержит существующих персонажей (не повторять)."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[
+            {"name": "Лайнер", "role": "npc", "personality": "Торговец", "mood": "neutral", "trust_stay": 5},
+        ],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_character_prompt(ctx)
+    assert "СУЩЕСТВУЮЩИЕ ПЕРСОНАЖИ" in prompt
+    assert "Лайнер" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_character_with_llm():
+    """Генерация AI-персонажа с mock LLM."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        return {
+            "name": "НовыйNPC",
+            "role": "npc",
+            "personality": "Интересный персонаж",
+            "flaw": "Слабость",
+            "virtue": "Сила",
+            "moral_alignment": "complex",
+            "mood": "curious",
+            "speech_style": "Говорит загадками",
+        }
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="hopeful",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        char = await generate_ai_character(session, ctx, mock_llm_caller)
+        assert char is not None
+        assert char.name == "НовыйNPC"
+        assert char.moral_alignment == "complex"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_character_fallback():
+    """Генерация AI-персонажа возвращает None при ошибке LLM."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def failing_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        raise Exception("LLM недоступен")
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        char = await generate_ai_character(session, ctx, failing_llm_caller)
+        assert char is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_character_existing():
+    """Получение существующего персонажа."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with maker() as session:
+        # Добавляем персонажа
+        char = WorldCharacter(
+            name="ТестовыйNPC",
+            role="npc",
+            personality="Характер",
+            created_day=1,
+        )
+        session.add(char)
+        await session.commit()
+
+        ctx = WorldContext(
+            day_index=2,
+            recent_choices=[],
+            active_locations=[],
+            active_characters=[
+                {"name": "ТестовыйNPC", "role": "npc", "personality": "Характер", "mood": "neutral", "trust_stay": 5},
+            ],
+            world_mood="tense",
+            open_threads=[],
+            pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+            season="unknown",
+        )
+
+        async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+            raise Exception("LLM не должен вызываться")
+
+        result = await get_or_create_character(session, ctx, mock_llm_caller, role="npc")
+        assert result.name == "ТестовыйNPC"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_character_new():
+    """Создание нового персонажа когда нет существующих."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        return {
+            "name": "НовыйNPC",
+            "role": "npc",
+            "personality": "Интересный персонаж",
+            "flaw": "Слабость",
+            "virtue": "Сила",
+            "moral_alignment": "complex",
+            "mood": "curious",
+            "speech_style": "Говорит загадками",
+        }
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        result = await get_or_create_character(session, ctx, mock_llm_caller, role="npc")
+        assert result.name == "НовыйNPC"
+
+        # Проверяем что персонаж сохранился в БД
+        from sqlalchemy import select
+        q = select(WorldCharacter).where(WorldCharacter.name == "НовыйNPC")
+        db_result = await session.execute(q)
+        db_char = db_result.scalar_one_or_none()
+        assert db_char is not None
+        assert db_char.personality == "Интересный персонаж"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_character_state():
+    """Обновление состояния персонажа."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with maker() as session:
+        # Добавляем персонажа
+        char = WorldCharacter(
+            name="ТестовыйNPC",
+            role="npc",
+            personality="Характер",
+            trust_stay=5,
+            created_day=1,
+        )
+        session.add(char)
+        await session.commit()
+
+        # Обновляем состояние
+        await update_character_state(
+            session,
+            character_name="ТестовыйNPC",
+            mood="friendly",
+            trust_delta=2,
+            day_index=5,
+        )
+        await session.commit()
+
+        # Проверяем
+        from sqlalchemy import select
+        q = select(WorldCharacter).where(WorldCharacter.name == "ТестовыйNPC")
+        result = await session.execute(q)
+        updated_char = result.scalar_one_or_none()
+        assert updated_char.mood == "friendly"
+        assert updated_char.trust_stay == 7
+        assert updated_char.last_seen_day == 5
 
     await engine.dispose()
