@@ -1774,6 +1774,33 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             )
     except Exception:
         logger.warning("Дрейф нрава стаи не удался", exc_info=True)
+    # AI World Engine: каскад последствий от выбора стаи
+    try:
+        from app.world_engine import process_choice_consequences, get_world_context
+        from app.story import _chat_completion
+
+        needs_dict = {
+            "hunger": pack_needs.hunger,
+            "thirst": pack_needs.thirst,
+            "health": pack_needs.health,
+        }
+        ctx = await get_world_context(session, round_row.day_index, needs_dict)
+        chain = await process_choice_consequences(
+            session,
+            ctx,
+            _chat_completion,
+            choice_text=winning_card.consequence,
+            choice_tag=getattr(winning_card, "tag", "custom") or "custom",
+            day_index=round_row.day_index,
+        )
+        if chain:
+            logger.info(
+                "AIWorldEngine: цепочка из %d последствий применена для дня %d",
+                len(chain.chain),
+                round_row.day_index,
+            )
+    except Exception:
+        logger.warning("AIWorldEngine: каскад последствий не удался", exc_info=True)
     try:
         await session.commit()
     except IntegrityError:

@@ -992,6 +992,245 @@ async def generate_character_interaction(
     except Exception:
         return f"{char.name} молча наблюдает за стаей."
 
+
+# ── AI Consequence Cascading ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AIConsequence:
+    """AI-генерируемое последствие выбора."""
+
+    cause: str  # что вызвало
+    effect: str  # что произойдёт
+    affected_characters: list[str]  # кто затронут
+    affected_locations: list[str]  # какие локации изменятся
+    world_impact: str  # как изменится мир
+    mood_shift: str  # как изменится настроение мира
+    trust_changes: dict[str, int]  # {имя персонажа: изменение доверия}
+
+
+@dataclass(frozen=True)
+class AIConsequenceChain:
+    """Цепочка последствий: одно действие → серия эффектов."""
+
+    root_choice: str  # исходный выбор
+    chain: list[AIConsequence]  # цепочка эффектов
+    resolution: str  # как цепочка завершается
+
+
+def _build_consequence_prompt(ctx: WorldContext, choice_text: str, choice_tag: str) -> str:
+    """Строит промпт для AI-генерации последствий выбора."""
+
+    parts = [
+        "Проанализируй выбор стаи и сгенерируй цепочку последствий.",
+        "",
+        f"ВЫБОР: {choice_text}",
+        f"ТИП: {choice_tag}",
+        "",
+    ]
+
+    if ctx.active_characters:
+        parts.append("ПЕРСОНАЖИ МИРА:")
+        for char in ctx.active_characters[:5]:
+            parts.append(f"- {char['name']} ({char['role']}): доверие {char['trust_stay']}/10")
+        parts.append("")
+
+    if ctx.active_locations:
+        parts.append("ЛОКАЦИИ:")
+        for loc in ctx.active_locations[:5]:
+            parts.append(f"- {loc['name']}")
+        parts.append("")
+
+    if ctx.recent_choices:
+        parts.append("ПОСЛЕДНИЕ ВЫБОРЫ:")
+        for c in ctx.recent_choices[:3]:
+            parts.append(f"- {c['text'][:60]}")
+        parts.append("")
+
+    parts.extend([
+        "СГЕНЕРИРУЙ ЦЕПОЧКУ ПОСЛЕДСТВИЙ. Формат JSON:",
+        '{',
+        '  "chain": [',
+        '    {',
+        '      "cause": "описание причины",',
+        '      "effect": "что произойдёт (1-2 предложения)",',
+        '      "affected_characters": ["имя"],',
+        '      "affected_locations": ["локация"],',
+        '      "world_impact": "как изменится мир (1 предложение)",',
+        '      "mood_shift": "tense|peaceful|chaotic|hopeful|grim",',
+        '      "trust_changes": {"имя": число}',
+        '    }',
+        '  ],',
+        '  "resolution": "как цепочка завершается (1-2 предложения)"',
+        '}',
+        "",
+        "ТРЕБОВАНИЯ:",
+        "- 1-3 последствия в цепочке",
+        "- Каждое последствие реально влияет на мир",
+        "- Последствия каскадны: одно порождает следующее",
+        "- Персонажи могут реагировать и менять отношение",
+    ])
+
+    return "\n".join(parts)
+
+
+def _parse_ai_consequence_chain(response_text: str) -> AIConsequenceChain | None:
+    """Парсит ответ AI и возвращает цепочку последствий."""
+
+    json_match = re.search(r'\{[\s\S]*"chain"[\s\S]*\}', response_text)
+    if not json_match:
+        return None
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return None
+
+    if "chain" not in data or not isinstance(data["chain"], list):
+        return None
+
+    chain = []
+    for item in data["chain"]:
+        if not all(k in item for k in ("cause", "effect")):
+            continue
+        chain.append(
+            AIConsequence(
+                cause=item["cause"][:200],
+                effect=item["effect"][:500],
+                affected_characters=item.get("affected_characters", []),
+                affected_locations=item.get("affected_locations", []),
+                world_impact=item.get("world_impact", "")[:200],
+                mood_shift=item.get("mood_shift", "tense"),
+                trust_changes=item.get("trust_changes", {}),
+            )
+        )
+
+    if not chain:
+        return None
+
+    return AIConsequenceChain(
+        root_choice=chain[0].cause if chain else "",
+        chain=chain,
+        resolution=data.get("resolution", "Цепочка последствий завершилась.")[:300],
+    )
+
+
+async def generate_consequence_chain(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+    choice_text: str,
+    choice_tag: str,
+) -> AIConsequenceChain | None:
+    """Генерирует цепочку последствий для выбора стаи."""
+
+    prompt = _build_consequence_prompt(ctx, choice_text, choice_tag)
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.8, max_tokens=1000, want_json=True)
+    except Exception as e:
+        logger.warning("AIWorldEngine: LLM не ответил для последствий: %s", e)
+        return None
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict):
+        # Уже dict — напрямую
+        if "chain" in response and isinstance(response["chain"], list):
+            chain = []
+            for item in response["chain"]:
+                if all(k in item for k in ("cause", "effect")):
+                    chain.append(
+                        AIConsequence(
+                            cause=item["cause"][:200],
+                            effect=item["effect"][:500],
+                            affected_characters=item.get("affected_characters", []),
+                            affected_locations=item.get("affected_locations", []),
+                            world_impact=item.get("world_impact", "")[:200],
+                            mood_shift=item.get("mood_shift", "tense"),
+                            trust_changes=item.get("trust_changes", {}),
+                        )
+                    )
+            if chain:
+                return AIConsequenceChain(
+                    root_choice=chain[0].cause,
+                    chain=chain,
+                    resolution=response.get("resolution", "")[:300],
+                )
+    elif isinstance(response, str):
+        return _parse_ai_consequence_chain(response)
+
+    return None
+
+
+async def apply_consequence_chain(
+    session: AsyncSession,
+    chain: AIConsequenceChain,
+    day_index: int,
+) -> None:
+    """Применяет цепочку последствий к миру.
+
+    Обновляет:
+    - Настроение мира (WorldSnapshot)
+    - Доверие персонажей (WorldCharacter)
+    - Записывает события (WorldEvent)
+    """
+
+    for consequence in chain.chain:
+        # Обновляем доверие персонажей
+        for char_name, trust_delta in consequence.trust_changes.items():
+            await update_character_state(
+                session,
+                character_name=char_name,
+                trust_delta=trust_delta,
+                day_index=day_index,
+            )
+
+        # Записываем событие мира
+        await record_world_event(
+            session,
+            day_index=day_index,
+            event_type="consequence",
+            description=f"{consequence.cause} → {consequence.effect}",
+            characters_involved=consequence.affected_characters,
+            locations_involved=consequence.affected_locations,
+            impact=consequence.world_impact,
+        )
+
+    logger.info(
+        "AIWorldEngine: применена цепочка из %d последствий для дня %d",
+        len(chain.chain),
+        day_index,
+    )
+
+
+async def process_choice_consequences(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+    choice_text: str,
+    choice_tag: str,
+    day_index: int,
+) -> AIConsequenceChain | None:
+    """Полный цикл: генерация + применение последствий выбора.
+
+    Вызывается после победы выбора в голосовании.
+    """
+
+    # 1. Генерируем цепочку
+    chain = await generate_consequence_chain(session, ctx, llm_caller, choice_text, choice_tag)
+
+    if not chain:
+        return None
+
+    # 2. Применяем к миру
+    await apply_consequence_chain(session, chain, day_index)
+
+    return chain
+
     if result:
         response = result[0] if isinstance(result, tuple) else result
         if isinstance(response, str):

@@ -20,22 +20,29 @@ from app.models import (
 from app.world_engine import (
     AIChoice,
     AICharacter,
+    AIConsequence,
+    AIConsequenceChain,
     AILocation,
     WorldContext,
     _build_character_prompt,
+    _build_consequence_prompt,
     _build_location_prompt,
     _build_world_prompt,
     _fallback_choices,
     _parse_ai_character,
     _parse_ai_choices,
+    _parse_ai_consequence_chain,
     _parse_ai_location,
+    apply_consequence_chain,
     create_world_snapshot,
     generate_ai_character,
     generate_ai_choices,
     generate_ai_location,
+    generate_consequence_chain,
     get_or_create_character,
     get_or_create_location,
     get_world_context,
+    process_choice_consequences,
     record_choice,
     record_world_event,
     update_character_state,
@@ -1210,5 +1217,267 @@ async def test_update_character_state():
         assert updated_char.mood == "friendly"
         assert updated_char.trust_stay == 7
         assert updated_char.last_seen_day == 5
+
+    await engine.dispose()
+
+
+# ── Tests: AI Consequence Cascading ────────────────────────────────────────
+
+
+def test_ai_consequence_creation():
+    """AIConsequence создаётся с правильными полями."""
+    cons = AIConsequence(
+        cause="Выбор стаи",
+        effect="Мир изменился",
+        affected_characters=["Лайнер"],
+        affected_locations=["Старый приют"],
+        world_impact="Отношения изменились",
+        mood_shift="hopeful",
+        trust_changes={"Лайнер": 2},
+    )
+    assert cons.cause == "Выбор стаи"
+    assert cons.mood_shift == "hopeful"
+    assert cons.trust_changes == {"Лайнер": 2}
+
+
+def test_ai_consequence_chain_creation():
+    """AIConsequenceChain создаётся с правильными полями."""
+    chain = AIConsequenceChain(
+        root_choice="Сжечь мост",
+        chain=[
+            AIConsequence(
+                cause="Мост сгорел",
+                effect="Путь закрыт",
+                affected_characters=[],
+                affected_locations=["Мост"],
+                world_impact="Мир стал опаснее",
+                mood_shift="grim",
+                trust_changes={},
+            ),
+        ],
+        resolution="Мост восстановлен через неделю",
+    )
+    assert chain.root_choice == "Сжечь мост"
+    assert len(chain.chain) == 1
+    assert chain.resolution == "Мост восстановлен через неделю"
+
+
+def test_parse_ai_consequence_chain_valid():
+    """Парсинг валидного ответа AI с цепочкой последствий."""
+    response = json.dumps({
+        "chain": [
+            {
+                "cause": "Мост сгорел",
+                "effect": "Путь закрыт",
+                "affected_characters": ["Лайнер"],
+                "affected_locations": ["Мост"],
+                "world_impact": "Мир стал опаснее",
+                "mood_shift": "grim",
+                "trust_changes": {"Лайнер": -1},
+            },
+        ],
+        "resolution": "Мост восстановлен через неделю",
+    })
+    chain = _parse_ai_consequence_chain(response)
+    assert chain is not None
+    assert len(chain.chain) == 1
+    assert chain.chain[0].cause == "Мост сгорел"
+    assert chain.chain[0].mood_shift == "grim"
+    assert chain.resolution == "Мост восстановлен через неделю"
+
+
+def test_parse_ai_consequence_chain_no_json():
+    """Парсинг ответа без JSON."""
+    chain = _parse_ai_consequence_chain("Просто текст")
+    assert chain is None
+
+
+def test_parse_ai_consequence_chain_missing_fields():
+    """Парсинг ответа с неполными данными."""
+    response = json.dumps({"chain": [{"cause": "Тест"}]})  # Нет effect
+    chain = _parse_ai_consequence_chain(response)
+    assert chain is None
+
+
+def test_parse_ai_consequence_chain_empty():
+    """Парсинг ответа с пустой цепочкой."""
+    response = json.dumps({"chain": [], "resolution": "Ничего не произошло"})
+    chain = _parse_ai_consequence_chain(response)
+    assert chain is None
+
+
+def test_build_consequence_prompt_basic():
+    """Базовый промпт для генерации последствий."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_consequence_prompt(ctx, "Сжечь мост", "risk")
+    assert "ЦЕПОЧКУ ПОСЛЕДСТВИЙ" in prompt
+    assert "JSON" in prompt
+    assert "Сжечь мост" in prompt
+    assert "risk" in prompt
+
+
+def test_build_consequence_prompt_with_context():
+    """Промпт с контекстом мира."""
+    ctx = WorldContext(
+        day_index=5,
+        recent_choices=[
+            {"day": 4, "text": "Идти вперёд", "tag": "risk", "won": True, "consequences": "[]"},
+        ],
+        active_locations=[
+            {"name": "Старый приют", "description": "Развалины", "atmosphere": "тихо", "times_visited": 2},
+        ],
+        active_characters=[
+            {"name": "Лайнер", "role": "npc", "personality": "Торговец", "mood": "neutral", "trust_stay": 5},
+        ],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_consequence_prompt(ctx, "Помочь незнакомцу", "care")
+    assert "Лайнер" in prompt
+    assert "Старый приют" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_consequence_chain_with_llm():
+    """Генерация цепочки последствий с mock LLM."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def mock_llm_caller(messages, temperature=0.8, max_tokens=1000, want_json=True):
+        return {
+            "chain": [
+                {
+                    "cause": "Мост сгорел",
+                    "effect": "Путь закрыт на 3 дня",
+                    "affected_characters": [],
+                    "affected_locations": ["Мост"],
+                    "world_impact": "Мир стал опаснее",
+                    "mood_shift": "grim",
+                    "trust_changes": {},
+                },
+            ],
+            "resolution": "Мост будет восстановлен через 3 дня",
+        }
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        chain = await generate_consequence_chain(
+            session, ctx, mock_llm_caller, "Сжечь мост", "risk"
+        )
+        assert chain is not None
+        assert len(chain.chain) == 1
+        assert chain.chain[0].cause == "Мост сгорел"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generate_consequence_chain_fallback():
+    """Генерация цепочки последствий возвращает None при ошибке LLM."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def failing_llm_caller(messages, temperature=0.8, max_tokens=1000, want_json=True):
+        raise Exception("LLM недоступен")
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        chain = await generate_consequence_chain(
+            session, ctx, failing_llm_caller, "Сжечь мост", "risk"
+        )
+        assert chain is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_consequence_chain():
+    """Применение цепочки последствий к миру."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with maker() as session:
+        # Добавляем персонажа
+        char = WorldCharacter(
+            name="ТестовыйNPC",
+            role="npc",
+            personality="Характер",
+            trust_stay=5,
+            created_day=1,
+        )
+        session.add(char)
+        await session.commit()
+
+        # Создаём цепочку
+        chain = AIConsequenceChain(
+            root_choice="Сжечь мост",
+            chain=[
+                AIConsequence(
+                    cause="Мост сгорел",
+                    effect="Путь закрыт",
+                    affected_characters=["ТестовыйNPC"],
+                    affected_locations=["Мост"],
+                    world_impact="Мир стал опаснее",
+                    mood_shift="grim",
+                    trust_changes={"ТестовыйNPC": -2},
+                ),
+            ],
+            resolution="Мост восстановлен",
+        )
+
+        # Применяем
+        await apply_consequence_chain(session, chain, day_index=5)
+        await session.commit()
+
+        # Проверяем что доверие изменилось
+        from sqlalchemy import select
+        q = select(WorldCharacter).where(WorldCharacter.name == "ТестовыйNPC")
+        result = await session.execute(q)
+        updated_char = result.scalar_one_or_none()
+        assert updated_char.trust_stay == 3
+
+        # Проверяем что событие записано
+        event_q = select(WorldEvent).where(WorldEvent.day_index == 5)
+        event_result = await session.execute(event_q)
+        events = event_result.scalars().all()
+        assert len(events) == 1
+        assert "Мост сгорел" in events[0].description
 
     await engine.dispose()
