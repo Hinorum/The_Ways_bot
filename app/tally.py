@@ -222,7 +222,7 @@ def flip_margin(counts: dict[int, int], win_rule, winner_card: int | None) -> tu
     return None
 
 
-def format_results(round_row: Round) -> str:
+def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, multiplier: float | None = None) -> str:
     from app.style import result_mark
 
     raw = json.loads(round_row.vote_counts_json or "{}")
@@ -254,9 +254,15 @@ def format_results(round_row: Round) -> str:
     else:
         lines.append(f"⚖️ Закон: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
+    stakes = path_stakes or {}
     for position in range(3):
         mark = " ← 🏆 След" if position == round_row.winner_card else ""
-        lines.append(f"{names[position]}: {counts.get(position, 0)}{mark}")
+        stake_nano = stakes.get(position, 0)
+        stake_str = f" ({from_nano(stake_nano):.2f} Gram)" if stake_nano > 0 else ""
+        lines.append(f"{names[position]}: {counts.get(position, 0)}{stake_str}{mark}")
+    # Коэффициент: если есть ставки на победивший путь
+    if multiplier is not None and multiplier > 0:
+        lines.append(f"🎯 Коэффициент: ×{multiplier:.2f}")
     if getattr(round_row, "tie_note", None):
         lines.append(f"🤝 {round_row.tie_note}")
     winner = names[round_row.winner_card or 0]
@@ -485,29 +491,12 @@ def format_economics(stats: dict) -> str:
     деньги, чтобы одна цифра не встречалась в посте дважды.
     """
     lines: list[str] = []
-    path_stakes = stats.get("path_stakes") or {}
-    if any(path_stakes.values()):
-        parts = " · ".join(
-            f"{('I', 'II', 'III')[pos]} {from_nano(path_stakes.get(pos, 0)):.2f}"
-            for pos in range(3)
-        )
-        lines.append(f"💸 Ставки на пути: {parts} Gram")
-        winner_stake = int(stats.get("winner_stake") or 0)
-        share = stats.get("winner_share_pct")
-        if winner_stake:
-            winner_pos = ("I", "II", "III")[int(stats.get("winner_card") or 0)] if stats.get("winner_card") is not None else ""
-            share_note = f" ({share}% банка)" if share is not None else ""
-            lines.append(
-                f"🎯 На путь {winner_pos} поставлено {from_nano(winner_stake):.2f} Gram{share_note}"
-            )
     if stats["pot"] <= 0:
         return "\n".join(lines)
     ton = from_nano
     lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram")
     if stats["refunded"]:
         lines.append("🎯 На верный путь не поставил никто — все ставки возвращены игрокам")
-    elif stats["multiplier"] is not None:
-        lines.append(f"🎯 Коэффициент верного пути: ×{stats['multiplier']:.2f}")
     if stats["week_today"] > 0 or stats["week_total"] > 0:
         lines.append(
             f"🗓 Неделя: ушло {ton(stats['week_today']):.2f} Gram"

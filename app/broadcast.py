@@ -338,9 +338,43 @@ async def results_body(finished: Round, session=None) -> str:
     """
     from app.tally import day_economics, format_economics, format_plugin_results
 
-    text = format_results(finished)
+    # Собираем ставки по путям и коэффициент (async)
+    path_stakes: dict[int, int] = {}
+    multiplier: float | None = None
+    economics_stats: dict | None = None
+    if session is not None:
+        try:
+            from sqlalchemy import func as sa_func, select as sa_select
+            from app.models import Vote, Stake
+            from app.config import settings
+            path_stakes_rows = await session.execute(
+                sa_select(Vote.card_position, sa_func.coalesce(sa_func.sum(Stake.amount_nanotons), 0))
+                .join(Stake, Stake.player_id == Vote.player_id)
+                .where(
+                    Vote.round_id == finished.id,
+                    Stake.round_id == finished.id,
+                    Stake.status == "confirmed",
+                    Stake.network == settings.ton_network,
+                )
+                .group_by(Vote.card_position)
+            )
+            path_stakes = {int(p): int(v) for p, v in path_stakes_rows.all()}
+            # Считаем экономику, чтобы получить коэффициент
+            economics_stats = await day_economics(session, finished)
+            multiplier = economics_stats.get("multiplier")
+        except Exception:
+            pass
+
+    text = format_results(finished, path_stakes, multiplier)
     round_id = getattr(finished, "id", None)
-    if round_id is not None:
+    if round_id is not None and economics_stats is not None:
+        try:
+            economics = format_economics(economics_stats)
+            if economics:
+                text += f"\n\n{economics}"
+        except Exception:
+            logger.exception("Экономика дня %s не посчитана", getattr(finished, "day_index", "?"))
+    elif round_id is not None:
         try:
             if session is not None:
                 stats = await day_economics(session, finished)
