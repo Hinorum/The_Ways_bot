@@ -765,3 +765,21 @@ class WorldSnapshot(Base):
     open_threads: Mapped[str] = mapped_column(Text, default="[]")
     world_trend: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NPCMotive(Base):
+    """Мотивация NPC — динамическая, загружается из БД.
+
+    Каждый NPC имеет 4 мотивации (devoted/cautious/wary/hostile),
+    которые могут меняться в зависимости от действий стаи.
+    """
+
+    __tablename__ = "npc_motives"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    npc_key: Mapped[str] = mapped_column(String(32), index=True)  # liner, archivist, master, heretic
+    mood: Mapped[str] = mapped_column(String(16))  # devoted, cautious, wary, hostile
+    motive_text: Mapped[str] = mapped_column(Text)
+    action_text: Mapped[str] = mapped_column(Text)
+    thought_pool_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of thoughts
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

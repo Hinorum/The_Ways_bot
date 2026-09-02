@@ -233,17 +233,21 @@ def generate_npc_cog(
     day_index: int,
     winning_tag: str | None = None,
     voter_count: int = 0,
+    motive_override: str | None = None,
+    thought_pool_override: list[str] | None = None,
 ) -> NPCCogResult:
     """Генерирует chain-of-thought для NPC на основе sentiment и контекста.
 
     Детерминированно: одинаковые входы → одинаковые выходы.
+    motive_override: если передано, используется вместо хардкода.
+    thought_pool_override: если передан, используется вместо хардкода.
     """
     tone_data = _TONES.get(sentiment, ("neutral", "безразличен"))
     raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
     mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
 
     inner_thought = _pick_thought(name, mood, day_index)
-    motivation = _MOTIVATIONS.get(name, {}).get(mood, "Наблюдать за стаей")
+    motivation = motive_override or _MOTIVATIONS.get(name, {}).get(mood, "Наблюдать за стаей")
     action_hint = _pick_action(name, mood, day_index)
 
     # Формируем focus line — готовую реплику для DM
@@ -261,6 +265,75 @@ def generate_npc_cog(
         action_hint=action_hint,
         focus_line=focus_line,
     )
+
+
+async def load_motive_from_db(
+    session: "AsyncSession",
+    npc_key: str,
+    mood: str,
+) -> tuple[str | None, list[str] | None]:
+    """Загружает мотив и пул мыслей из БД.
+
+    Returns:
+        (motive_text, thought_pool) или (None, None) если не найдено.
+    """
+    from sqlalchemy import select as sa_select
+    from app.models import NPCMotive
+
+    q = (
+        sa_select(NPCMotive)
+        .where(NPCMotive.npc_key == npc_key, NPCMotive.mood == mood)
+        .limit(1)
+    )
+    result = await session.execute(q)
+    row = result.scalar_one_or_none()
+    if not row:
+        return None, None
+
+    import json
+    thought_pool = json.loads(row.thought_pool_json) if row.thought_pool_json else None
+    return row.motive_text, thought_pool
+
+
+async def seed_npc_motives(session: "AsyncSession") -> int:
+    """Заполняет таблицу npc_motives начальными данными из хардкода.
+
+    Вставляет только те записи, которых ещё нет (по npc_key + mood).
+    Возвращает количество вставленных записей.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import NPCMotive
+    import json
+
+    inserted = 0
+    for npc_key, moods in _MOTIVATIONS.items():
+        for mood, motive_text in moods.items():
+            # Проверяем существование
+            q = (
+                sa_select(sa_func.count())
+                .select_from(NPCMotive)
+                .where(NPCMotive.npc_key == npc_key, NPCMotive.mood == mood)
+            )
+            result = await session.execute(q)
+            exists = result.scalar() > 0
+            if exists:
+                continue
+
+            action_text = _ACTIONS.get(npc_key, {}).get(mood, "Наблюдает за стаей")
+            thought_pool = _INNER_THOUGHTS.get(npc_key, {}).get(mood, [])
+
+            row = NPCMotive(
+                npc_key=npc_key,
+                mood=mood,
+                motive_text=motive_text,
+                action_text=action_text,
+                thought_pool_json=json.dumps(thought_pool, ensure_ascii=False),
+            )
+            session.add(row)
+            inserted += 1
+
+    await session.commit()
+    return inserted
 
 
 def npc_cogs_block(
@@ -287,19 +360,36 @@ async def generate_all_npc_cogs(
     day_index: int,
     winning_tag: str | None = None,
     voter_count: int = 0,
+    session: "AsyncSession | None" = None,
 ) -> list[NPCCogResult]:
     """Генерирует chain-of-thought для всех NPC.
 
     relations: {npc_name: sentiment_value}
+    session: если передан — загружает мотивы из БД, иначе — хардкод.
     """
+    from app.npc_cog import _TONE_TO_MOOD, _TONES, _DEFAULT_MOOD
+
     cogs = []
     for name, sentiment in relations.items():
+        # Определяем mood для загрузки из БД
+        tone_data = _TONES.get(sentiment, ("neutral", "безразличен"))
+        raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
+        mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
+
+        # Загружаем из БД если есть сессия
+        motive_override = None
+        thought_pool_override = None
+        if session:
+            motive_override, thought_pool_override = await load_motive_from_db(session, name, mood)
+
         cog = generate_npc_cog(
             name=name,
             sentiment=sentiment,
             day_index=day_index,
             winning_tag=winning_tag,
             voter_count=voter_count,
+            motive_override=motive_override,
+            thought_pool_override=thought_pool_override,
         )
         cogs.append(cog)
     return cogs

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 
 from app.config import settings
 from app.story import _chat_completion, _extract_json, styled_prompt, text_is_clean
@@ -302,11 +303,13 @@ async def plan_day_art(
     recent_beats: list[str] | None = None,
     anchor: dict | None = None,
     extra_motifs: list[str] | None = None,
+    recent_prompts: list[str] | None = None,
 ) -> dict:
     """Библия дня: LLM-план с одной повторной попыткой, иначе офлайн-план.
 
     anchor — якорь предыдущего дня для преемственности стиля; extra_motifs —
     визуальные приметы всплывших эхов (предмет давнего дня в кадре).
+    recent_prompts — последние промпты обложек для dedup.
     """
     beats = recent_beats or []
     if not settings.use_free_story_llm:
@@ -318,10 +321,10 @@ async def plan_day_art(
     # Сетевой сбой уже ретраится внутри _chat_completion; здесь — повторный
     # заход на случай, если модель очнулась/сменилась между попытками. Так же,
     # как у генератора главы (_free_story_llm), — без асимметрии.
-    for attempt in range(1, 3):
+    for attempt in range(1, 4):  # 3 попытки с учётом dedup
         result = await _chat_completion(messages, temperature=0.6, max_tokens=2000)
         if result is None:
-            if attempt == 1:
+            if attempt < 3:
                 logger.warning("Арт-библия: все модели недоступны — повтор через 3 с")
                 await asyncio.sleep(3)
                 continue
@@ -333,6 +336,12 @@ async def plan_day_art(
             logger.warning("Библия от %s не разобрана (попытка %d): %s", used_model, attempt, exc)
             continue
         if bible is not None:
+            # Проверяем dedup
+            if recent_prompts:
+                test_prompt = build_image_prompt(bible, "cover", seed=attempt)
+                if check_prompt_dedup(test_prompt, recent_prompts):
+                    logger.warning("Библия от %s дублирует обложку (попытка %d)", used_model, attempt)
+                    continue
             logger.info("Арт-библия дня составлена моделью %s (попытка %d)", used_model, attempt)
             return _merge_motifs(bible, extra_motifs)
         logger.warning("Модель %s вернула неполную библию (попытка %d)", used_model, attempt)
@@ -399,3 +408,201 @@ def build_intro_prompt(bible: dict, seed: int = 0) -> str:
 def build_intro_short_prompt(bible: dict) -> str:
     # styled_prompt сам добавляет стиль и запреты текста — без дублей.
     return styled_prompt(_INTRO_SCENE)
+
+
+# ── Dedup: проверка на повтор промптов ──────────────────────────────────────
+
+def _normalize_prompt_for_dedup(prompt: str) -> str:
+    """Нормализует промпт для сравнения: убирает стоп-слова, приводит к нижнему регистру."""
+    stop_words = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "shall", "can", "need", "dare", "ought",
+        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above", "below",
+        "between", "out", "off", "over", "under", "again", "further", "then",
+        "once", "and", "but", "or", "nor", "not", "so", "yet", "both", "either",
+        "neither", "each", "every", "all", "any", "few", "more", "most", "other",
+        "some", "such", "no", "only", "own", "same", "than", "too", "very",
+        "just", "because", "if", "when", "while", "where", "how", "what",
+        "which", "who", "whom", "this", "that", "these", "those",
+        # Русские стоп-слова
+        "и", "а", "но", "что", "как", "где", "когда", "если", "или", "ни",
+        "не", "нет", "да", "то", "в", "на", "с", "из", "за", "по", "для",
+        "от", "до", "при", "без", "под", "над", "между", "через", "после",
+        "перед", "около", "рядом", "вместо", "кроме", "except",
+    }
+    words = re.findall(r'\w+', prompt.lower())
+    return " ".join(w for w in words if w not in stop_words and len(w) > 2)
+
+
+def check_prompt_dedup(
+    new_prompt: str,
+    recent_prompts: list[str],
+    threshold: float = 0.6,
+) -> bool:
+    """Проверяет, не дублирует ли новый промпт последние обложки.
+
+    Args:
+        new_prompt: новый промпт для проверки
+        recent_prompts: список последних промптов (последний = самый свежий)
+        threshold: порог схожести (0-1, где 1 = идентичны)
+
+    Returns:
+        True если промпт слишком похож (дубликат), False если ОК.
+    """
+    if not recent_prompts:
+        return False
+
+    norm_new = _normalize_prompt_for_dedup(new_prompt)
+    if not norm_new:
+        return False
+
+    words_new = set(norm_new.split())
+    if not words_new:
+        return False
+
+    for old_prompt in recent_prompts[-3:]:  # Проверяем последние 3 обложки
+        norm_old = _normalize_prompt_for_dedup(old_prompt)
+        words_old = set(norm_old.split())
+        if not words_old:
+            continue
+
+        # Jaccard similarity
+        intersection = len(words_new & words_old)
+        union = len(words_new | words_old)
+        if union == 0:
+            continue
+
+        similarity = intersection / union
+        if similarity >= threshold:
+            logger.warning(
+                "Промпт дублирует недавнюю обложку (similarity=%.2f): "
+                "новый=%s... старый=%s...",
+                similarity,
+                new_prompt[:80],
+                old_prompt[:80],
+            )
+            return True
+
+    return False
+
+
+async def get_recent_image_prompts(
+    session: "AsyncSession",
+    limit: int = 3,
+) -> list[str]:
+    """Загружает последние N промптов обложек из БД."""
+    from sqlalchemy import select as sa_select
+    from app.models import Round
+
+    q = (
+        sa_select(Round.cover_image_prompt)
+        .where(Round.cover_image_prompt.isnot(None))
+        .order_by(Round.day_index.desc())
+        .limit(limit)
+    )
+    result = await session.execute(q)
+    return [row[0] for row in result.all() if row[0]]
+
+
+# ── Quality Gate: Laplacian variance ────────────────────────────────────────
+
+def calculate_laplacian_variance(image_path: str | Path) -> float:
+    """Вычисляет дисперсию Лапласиана для проверки резкости изображения.
+
+    Низкое значение = размытое/пустое изображение.
+    Высокое значение = чёткое/детализированное изображение.
+    Использует только PIL — без numpy.
+
+    Returns:
+        Дисперсия Лапласиана (обычно от 0 до 2000+).
+    """
+    from PIL import Image, ImageFilter
+
+    img = Image.open(image_path).convert("L")  # Grayscale
+    # Лапласиан через встроенный фильтр PIL
+    laplacian = img.filter(ImageFilter.Kernel(
+        size=(3, 3),
+        kernel=[0, 1, 0, 1, -4, 1, 0, 1, 0],
+        scale=1,
+        offset=0,
+    ))
+    pixels = list(laplacian.getdata())
+    n = len(pixels)
+    if n == 0:
+        return 0.0
+    mean = sum(pixels) / n
+    variance = sum((p - mean) ** 2 for p in pixels) / n
+    return float(variance)
+
+
+def check_image_quality(
+    image_path: str | Path,
+    min_variance: float = 100.0,
+) -> tuple[bool, float]:
+    """Проверяет качество изображения по дисперсии Лапласиана.
+
+    Args:
+        image_path: путь к изображению
+        min_variance: минимальная допустимая дисперсия
+
+    Returns:
+        (passed, variance) — прошло ли проверку и 실제 дисперсия
+    """
+    try:
+        variance = calculate_laplacian_variance(image_path)
+        passed = variance >= min_variance
+        if not passed:
+            logger.warning(
+                "Изображение не прошло quality gate: variance=%.2f < %.2f (%s)",
+                variance,
+                min_variance,
+                image_path,
+            )
+        return passed, variance
+    except Exception as exc:
+        logger.warning("Не удалось проверить качество изображения %s: %s", image_path, exc)
+        return False, 0.0
+
+
+async def fetch_image_with_quality_check(
+    prompt: str,
+    short_prompt: str,
+    dest: Path,
+    seed: int | None = None,
+    width: int = 768,
+    height: int = 1024,
+    negative_prompt: str | None = None,
+    min_variance: float = 100.0,
+    max_retries: int = 2,
+) -> tuple[bool, float]:
+    """Генерирует изображение с проверкой качества.
+
+    Если изображение не проходит quality gate, повторяет попытку.
+    Возвращает (success, final_variance).
+    """
+    from app.story import fetch_day_image
+
+    for attempt in range(max_retries):
+        success = await fetch_day_image(
+            prompt=prompt,
+            short_prompt=short_prompt,
+            dest=dest,
+            seed=seed,
+            width=width,
+            height=height,
+            negative_prompt=negative_prompt,
+        )
+        if not success:
+            continue
+
+        passed, variance = check_image_quality(dest, min_variance)
+        if passed:
+            return True, variance
+
+        # Повторяем с другим seed
+        if seed is not None:
+            seed = seed + 1_000_000
+
+    return False, 0.0
