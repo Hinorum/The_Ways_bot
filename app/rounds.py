@@ -919,40 +919,53 @@ async def _plan_and_render(
     # AI World Engine: генерируем нового NPC (1 раз в день)
     try:
         from app.story import _generate_session_characters
-        char_result = await _generate_session_characters(session, day_index)
-        if char_result:
-            logger.info("AIWorldEngine: %s", char_result)
-    except Exception as e:
-        logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
-
-    # AI World Engine: пытаемся использовать AI-локацию
-    try:
-        from app.world_engine import get_or_create_location, update_location_visit, get_world_context
-        from app.story import _chat_completion
-
         needs_dict = {
             "hunger": pack_needs.hunger,
             "thirst": pack_needs.thirst,
             "health": pack_needs.health,
         }
-        ctx = await get_world_context(session, day_index, needs_dict, season=round_row.season)
-        ai_location = await get_or_create_location(session, ctx, _chat_completion)
+        char_result = await _generate_session_characters(session, day_index, needs_dict, season=key)
+        if char_result:
+            logger.info("AIWorldEngine: %s", char_result)
+    except Exception as e:
+        logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
 
-        if ai_location:
-            # Переопределяем локацию главы
-            chapter["place"] = ai_location.name
-            # Обновляем описание места в тексте главы
-            if ai_location.description:
-                # Добавляем описание локации в начало текста
-                chapter["text"] = f"{ai_location.description}\n\n{chapter['text']}"
-            # Передаём atmosphere и scene для генерации обложки
-            if ai_location.atmosphere:
-                chapter["atmosphere"] = ai_location.atmosphere
-            if ai_location.scene:
-                chapter["location_scene"] = ai_location.scene
-            # Обновляем статистику посещения
-            await update_location_visit(session, ai_location.name, day_index)
-            logger.info("AIWorldEngine: использована AI-локация '%s' для дня %d", ai_location.name, day_index)
+    # AI World Engine: создаём контекст мира ОДИН раз для локаций и выборов
+    world_ctx = None
+    try:
+        from app.world_engine import get_world_context
+        needs_dict = {
+            "hunger": pack_needs.hunger,
+            "thirst": pack_needs.thirst,
+            "health": pack_needs.health,
+        }
+        world_ctx = await get_world_context(session, day_index, needs_dict, season=key)
+    except Exception as e:
+        logger.debug("AIWorldEngine: не удалось собрать контекст мира: %s", e)
+
+    # AI World Engine: пытаемся использовать AI-локацию
+    try:
+        from app.world_engine import get_or_create_location, update_location_visit
+        from app.story import _chat_completion
+
+        if world_ctx:
+            ai_location = await get_or_create_location(session, world_ctx, _chat_completion)
+
+            if ai_location:
+                # Переопределяем локацию главы
+                chapter["place"] = ai_location.name
+                # Обновляем описание места в тексте главы
+                if ai_location.description:
+                    # Добавляем описание локации в начало текста
+                    chapter["text"] = f"{ai_location.description}\n\n{chapter['text']}"
+                # Передаём atmosphere и scene для генерации обложки
+                if ai_location.atmosphere:
+                    chapter["atmosphere"] = ai_location.atmosphere
+                if ai_location.scene:
+                    chapter["location_scene"] = ai_location.scene
+                # Обновляем статистику посещения
+                await update_location_visit(session, ai_location.name, day_index)
+                logger.info("AIWorldEngine: использована AI-локация '%s' для дня %d", ai_location.name, day_index)
     except Exception as e:
         logger.warning("AIWorldEngine: ошибка генерации AI-локации: %s", e)
 
@@ -990,17 +1003,11 @@ async def _plan_and_render(
     cards_payload = []
     # AI World Engine: генерируем AI-выборы вместо фиксированных карт
     try:
-        from app.world_engine import generate_ai_choices, get_world_context, record_choice
+        from app.world_engine import generate_ai_choices, record_choice
         from app.story import _chat_completion
 
-        # Конвертируем PackNeeds в dict для world engine
-        needs_dict = {
-            "hunger": pack_needs.hunger,
-            "thirst": pack_needs.thirst,
-            "health": pack_needs.health,
-        }
-        ctx = await get_world_context(session, day_index, needs_dict, season=round_row.season)
-        ai_choices = await generate_ai_choices(session, ctx, _chat_completion)
+        if world_ctx:
+            ai_choices = await generate_ai_choices(session, world_ctx, _chat_completion)
 
         if ai_choices and len(ai_choices) >= 3:
             # Используем AI-выборы
@@ -1890,6 +1897,12 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             logger.debug("Кэш DayProjection не записан", exc_info=True)
     except Exception:
         logger.warning("DayProjection/plugin hooks не выполнены", exc_info=True)
+    # AI World Engine: создаём снимок мира в конце дня
+    try:
+        from app.world_engine import create_world_snapshot
+        await create_world_snapshot(session, round_row.day_index)
+    except Exception:
+        logger.debug("AIWorldEngine: снимок мира не создан", exc_info=True)
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
 
 
