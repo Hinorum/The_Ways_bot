@@ -544,3 +544,196 @@ async def generate_world_content(
     snapshot = await create_world_snapshot(session, day_index - 1, llm_caller)
 
     return choices, snapshot
+
+
+# ── AI Location Generation ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AILocation:
+    """AI-генерируемая локация."""
+
+    name: str
+    description: str
+    atmosphere: str
+    dangers: str
+    resources: str
+    scene: str  # English image prompt for cover art
+
+
+def _build_location_prompt(ctx: WorldContext) -> str:
+    """Строит промпт для AI-генерации новой локации."""
+
+    parts = [
+        "Сгенерируй НОВУЮ локацию для лабиринта, где бродят бездомные собаки.",
+        "",
+        "ТРЕБОВАНИЯ:",
+        "- Локация должна быть уникальной, не повторять существующие",
+        "- Имеет конкретную атмосферу, опасности и ресурсы",
+        "- Подходит для дневного исследования стаей",
+        "- Название на русском, 2-4 слова",
+        "",
+    ]
+
+    if ctx.active_locations:
+        parts.append("СУЩЕСТВУЮЩИЕ ЛОКАЦИИ (не повторять):")
+        for loc in ctx.active_locations[:10]:
+            parts.append(f"- {loc['name']}")
+        parts.append("")
+
+    if ctx.world_mood:
+        mood_desc = {
+            "tense": "напряжённая атмосфера",
+            "peaceful": "спокойная атмосфера",
+            "chaotic": "хаотичная атмосфера",
+            "hopeful": "надежда в воздухе",
+            "grim": "мрачная атмосфера",
+        }.get(ctx.world_mood, "")
+        if mood_desc:
+            parts.append(f"ТЕКУЩЕЕ НАСТРОЕНИЕ МИРА: {mood_desc}")
+            parts.append("")
+
+    parts.extend([
+        "СОЗДАЙ ЛОКАЦИЮ. Формат JSON:",
+        '{',
+        '  "name": "Название (2-4 слова на русском)",',
+        '  "description": "Описание локации (2-3 предложения)",',
+        '  "atmosphere": "Атмосфера и ощущения (1-2 предложения)",',
+        '  "dangers": "Что может пойти не так (1 предложение)",',
+        '  "resources": "Что можно найти полезного (1 предложение)",',
+        '  "scene": "Brief English image prompt for cover art (10-15 words)"',
+        '}',
+    ])
+
+    return "\n".join(parts)
+
+
+def _parse_ai_location(response_text: str) -> AILocation | None:
+    """Парсит ответ AI и возвращает локацию."""
+
+    json_match = re.search(r'\{[\s\S]*"name"[\s\S]*\}', response_text)
+    if not json_match:
+        return None
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return None
+
+    if not all(k in data for k in ("name", "description", "atmosphere")):
+        return None
+
+    return AILocation(
+        name=data["name"][:120],
+        description=data["description"][:500],
+        atmosphere=data.get("atmosphere", "")[:300],
+        dangers=data.get("dangers", "")[:200],
+        resources=data.get("resources", "")[:200],
+        scene=data.get("scene", "dark labyrinth corridor")[:200],
+    )
+
+
+async def generate_ai_location(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+) -> AILocation | None:
+    """Генерирует новую AI-локацию на основе контекста мира."""
+
+    prompt = _build_location_prompt(ctx)
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True)
+    except Exception as e:
+        logger.warning("AIWorldEngine: LLM не ответил для локации: %s", e)
+        return None
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict):
+        # Уже dict — напрямую
+        if all(k in response for k in ("name", "description", "atmosphere")):
+            return AILocation(
+                name=response["name"][:120],
+                description=response["description"][:500],
+                atmosphere=response.get("atmosphere", "")[:300],
+                dangers=response.get("dangers", "")[:200],
+                resources=response.get("resources", "")[:200],
+                scene=response.get("scene", "dark labyrinth corridor")[:200],
+            )
+    elif isinstance(response, str):
+        return _parse_ai_location(response)
+
+    return None
+
+
+async def get_or_create_location(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+) -> AILocation:
+    """Получает существующую локацию или создаёт новую.
+
+    Логика:
+    1. Если есть активные локации — выбираем одну (с учётом давности посещения)
+    2. Если нет — генерируем новую через AI
+    """
+
+    # Пробуем взять существующую локацию
+    if ctx.active_locations:
+        # Выбираем локацию, которая дольше не посещалась
+        least_visited = min(ctx.active_locations, key=lambda x: x.get("times_visited", 0))
+        return AILocation(
+            name=least_visited["name"],
+            description=least_visited["description"],
+            atmosphere=least_visited.get("atmosphere", ""),
+            dangers="",
+            resources="",
+            scene="dark labyrinth corridor",
+        )
+
+    # Генерируем новую
+    new_loc = await generate_ai_location(session, ctx, llm_caller)
+    if new_loc:
+        # Сохраняем в БД
+        db_loc = WorldLocation(
+            name=new_loc.name,
+            description=new_loc.description,
+            atmosphere=new_loc.atmosphere,
+            dangers=new_loc.dangers,
+            resources=new_loc.resources,
+            created_day=ctx.day_index,
+        )
+        session.add(db_loc)
+        await session.flush()
+        return new_loc
+
+    # Фолбэк
+    return AILocation(
+        name="Безымянный коридор",
+        description="Тёмный коридор уходит вглубь. Стены холодные и ровные.",
+        atmosphere="Тишина и холод",
+        dangers="Неизвестно",
+        resources="Возможно, что-то полезное",
+        scene="dark labyrinth corridor",
+    )
+
+
+async def update_location_visit(
+    session: AsyncSession,
+    location_name: str,
+    day_index: int,
+) -> None:
+    """Обновляет статистику посещения локации."""
+
+    q = select(WorldLocation).where(WorldLocation.name == location_name)
+    result = await session.execute(q)
+    loc = result.scalar_one_or_none()
+
+    if loc:
+        loc.last_visited_day = day_index
+        loc.times_visited += 1
+        await session.flush()

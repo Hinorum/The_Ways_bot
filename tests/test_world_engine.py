@@ -19,15 +19,21 @@ from app.models import (
 )
 from app.world_engine import (
     AIChoice,
+    AILocation,
     WorldContext,
+    _build_location_prompt,
     _build_world_prompt,
     _fallback_choices,
     _parse_ai_choices,
+    _parse_ai_location,
     create_world_snapshot,
     generate_ai_choices,
+    generate_ai_location,
+    get_or_create_location,
     get_world_context,
     record_choice,
     record_world_event,
+    update_location_visit,
 )
 
 
@@ -590,5 +596,306 @@ async def test_generate_ai_choices_fallback():
     async with maker() as session:
         choices = await generate_ai_choices(session, ctx, failing_llm_caller)
         assert len(choices) == 3  # Фолбэк возвращает 3 выбора
+
+    await engine.dispose()
+
+
+# ── Tests: AI Location Generation ──────────────────────────────────────────
+
+
+def test_ai_location_creation():
+    """AILocation создаётся с правильными полями."""
+    loc = AILocation(
+        name="Тестовая локация",
+        description="Описание",
+        atmosphere="Атмосфера",
+        dangers="Опасности",
+        resources="Ресурсы",
+        scene="image prompt",
+    )
+    assert loc.name == "Тестовая локация"
+    assert loc.atmosphere == "Атмосфера"
+    assert loc.scene == "image prompt"
+
+
+def test_parse_ai_location_valid():
+    """Парсинг валидного ответа AI с локацией."""
+    response = '{"name": "Тёмный Грот", "description": "Пещера с сталактитами", "atmosphere": "Холодно и сыро", "dangers": "Обвалы", "resources": "Вода", "scene": "dark cave with stalactites"}'
+    loc = _parse_ai_location(response)
+    assert loc is not None
+    assert loc.name == "Тёмный Грот"
+    assert loc.scene == "dark cave with stalactites"
+
+
+def test_parse_ai_location_no_json():
+    """Парсинг ответа без JSON."""
+    loc = _parse_ai_location("Просто текст")
+    assert loc is None
+
+
+def test_parse_ai_location_missing_fields():
+    """Парсинг ответа с неполными данными."""
+    response = '{"name": "Тест"}'  # Нет description и atmosphere
+    loc = _parse_ai_location(response)
+    assert loc is None
+
+
+def test_parse_ai_location_truncation():
+    """Парсинг ответа с длинными строками."""
+    response = json.dumps({
+        "name": "A" * 200,
+        "description": "B" * 600,
+        "atmosphere": "C" * 400,
+        "dangers": "D" * 300,
+        "resources": "E" * 300,
+        "scene": "F" * 300,
+    })
+    loc = _parse_ai_location(response)
+    assert loc is not None
+    assert len(loc.name) <= 120
+    assert len(loc.description) <= 500
+    assert len(loc.atmosphere) <= 300
+    assert len(loc.scene) <= 200
+
+
+def test_build_location_prompt_basic():
+    """Базовый промпт для генерации локации."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_location_prompt(ctx)
+    assert "НОВУЮ локацию" in prompt
+    assert "JSON" in prompt
+    assert "name" in prompt
+
+
+def test_build_location_prompt_with_existing():
+    """Промпт содержит существующие локации (не повторять)."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[
+            {"name": "Старый приют", "description": "Развалины", "atmosphere": "тихо", "times_visited": 2},
+        ],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_location_prompt(ctx)
+    assert "СУЩЕСТВУЮЩИЕ ЛОКАЦИИ" in prompt
+    assert "Старый приют" in prompt
+
+
+def test_build_location_prompt_with_mood():
+    """Промпт содержит настроение мира."""
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="chaotic",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+    prompt = _build_location_prompt(ctx)
+    assert "хаотичная атмосфера" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_location_with_llm():
+    """Генерация AI-локации с mock LLM."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        return {
+            "name": "Кристальный зал",
+            "description": "Зал с świeтящими кристаллами на стенах",
+            "atmosphere": "Тепло и свет",
+            "dangers": "Кристаллы могут ослепить",
+            "resources": "Целебная энергия кристаллов",
+            "scene": "crystal hall glowing walls",
+        }
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="hopeful",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        loc = await generate_ai_location(session, ctx, mock_llm_caller)
+        assert loc is not None
+        assert loc.name == "Кристальный зал"
+        assert loc.scene == "crystal hall glowing walls"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_location_fallback():
+    """Генерация AI-локации возвращает None при ошибке LLM (фолбэк в get_or_create_location)."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def failing_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        raise Exception("LLM недоступен")
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        loc = await generate_ai_location(session, ctx, failing_llm_caller)
+        # При ошибке LLM возвращает None
+        assert loc is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_location_existing():
+    """Получение существующей локации."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with maker() as session:
+        # Добавляем локацию
+        loc = WorldLocation(
+            name="Тестовая локация",
+            description="Описание",
+            atmosphere="Атмосфера",
+            created_day=1,
+            times_visited=0,
+        )
+        session.add(loc)
+        await session.commit()
+
+        ctx = WorldContext(
+            day_index=2,
+            recent_choices=[],
+            active_locations=[
+                {"name": "Тестовая локация", "description": "Описание", "atmosphere": "Атмосфера", "times_visited": 0},
+            ],
+            active_characters=[],
+            world_mood="tense",
+            open_threads=[],
+            pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+            season="unknown",
+        )
+
+        async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+            # Не должен вызываться — есть существующая локация
+            raise Exception("LLM не должен вызываться")
+
+        result = await get_or_create_location(session, ctx, mock_llm_caller)
+        assert result.name == "Тестовая локация"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_location_new():
+    """Создание новой локации когда нет существующих."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async def mock_llm_caller(messages, temperature=0.9, max_tokens=800, want_json=True):
+        return {
+            "name": "Новая локация",
+            "description": "Описание новой локации",
+            "atmosphere": "Атмосфера",
+            "dangers": "Опасности",
+            "resources": "Ресурсы",
+            "scene": "new location scene",
+        }
+
+    ctx = WorldContext(
+        day_index=1,
+        recent_choices=[],
+        active_locations=[],
+        active_characters=[],
+        world_mood="tense",
+        open_threads=[],
+        pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+    async with maker() as session:
+        result = await get_or_create_location(session, ctx, mock_llm_caller)
+        assert result.name == "Новая локация"
+
+        # Проверяем что локация сохранилась в БД
+        from sqlalchemy import select
+        q = select(WorldLocation).where(WorldLocation.name == "Новая локация")
+        db_result = await session.execute(q)
+        db_loc = db_result.scalar_one_or_none()
+        assert db_loc is not None
+        assert db_loc.description == "Описание новой локации"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_location_visit():
+    """Обновление статистики посещения локации."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with maker() as session:
+        # Добавляем локацию
+        loc = WorldLocation(
+            name="Тестовая локация",
+            description="Описание",
+            atmosphere="Атмосфера",
+            created_day=1,
+            times_visited=0,
+        )
+        session.add(loc)
+        await session.commit()
+
+        # Обновляем посещение
+        await update_location_visit(session, "Тестовая локация", day_index=5)
+        await session.commit()
+
+        # Проверяем
+        from sqlalchemy import select
+        q = select(WorldLocation).where(WorldLocation.name == "Тестовая локация")
+        result = await session.execute(q)
+        updated_loc = result.scalar_one_or_none()
+        assert updated_loc.times_visited == 1
+        assert updated_loc.last_visited_day == 5
 
     await engine.dispose()

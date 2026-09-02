@@ -907,6 +907,33 @@ async def _plan_and_render(
     media_root = Path(settings.media_dir)
     cover_path = media_root / f"day{day_index}_cover.jpg"
     day_seed = 10_000 + day_index * 7
+
+    # AI World Engine: пытаемся использовать AI-локацию
+    try:
+        from app.world_engine import get_or_create_location, update_location_visit, get_world_context
+        from app.story import _chat_completion
+
+        needs_dict = {
+            "hunger": pack_needs.hunger,
+            "thirst": pack_needs.thirst,
+            "health": pack_needs.health,
+        }
+        ctx = await get_world_context(session, day_index, needs_dict)
+        ai_location = await get_or_create_location(session, ctx, _chat_completion)
+
+        if ai_location:
+            # Переопределяем локацию главы
+            chapter["place"] = ai_location.name
+            # Обновляем описание места в тексте главы
+            if ai_location.description:
+                # Добавляем описание локации в начало текста
+                chapter["text"] = f"{ai_location.description}\n\n{chapter['text']}"
+            # Обновляем статистику посещения
+            await update_location_visit(session, ai_location.name, day_index)
+            logger.info("AIWorldEngine: использована AI-локация '%s' для дня %d", ai_location.name, day_index)
+    except Exception as e:
+        logger.warning("AIWorldEngine: ошибка генерации AI-локации: %s", e)
+
     # Сид обложки привязан к месту дня: возвращение в «Старый приют»
     # рисует тот же мир, а не новую случайную сцену.
     cover_seed = place_seed_for(chapter.get("place")) or day_seed
