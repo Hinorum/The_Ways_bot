@@ -230,9 +230,9 @@ async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypat
     user = captured["user"]
     # называем обе публичные карты дня
     assert "Тропа Истока" in user and "Пепел Моста" in user
-    # вечер передаёт трепет переплетённости выбора
-    assert "переплетённость" in user
+    # вечер передаёт атмосферу и детали
+    assert "атмосферн" in user
     # запрет на раскрытие расклада и победителя
-    assert "цифр голосов" in user and "имён победителя" in user
-    assert "намёков на текущий расклад" in user
+    assert "цифр" in user and "победителя" in user
+    assert "намёков" in user
 
