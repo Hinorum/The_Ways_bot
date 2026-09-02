@@ -59,7 +59,8 @@ class WorldContext:
 
 
 async def get_world_context(
-    session: AsyncSession, day_index: int, pack_state: dict | None = None
+    session: AsyncSession, day_index: int, pack_state: dict | None = None,
+    season: str | None = None,
 ) -> WorldContext:
     """Собирает контекст мира для генерации AI-выборов."""
 
@@ -128,7 +129,7 @@ async def get_world_context(
         world_mood=world_mood,
         open_threads=open_threads,
         pack_needs=pack_state or {"hunger": 5, "thirst": 5, "health": 10},
-        season="unknown",
+        season=season or "unknown",
     )
 
 

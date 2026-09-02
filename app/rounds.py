@@ -863,6 +863,13 @@ async def _plan_and_render(
         )
     except Exception:
         focus_line = None
+    # AI World Engine: блок персонажей для промпта
+    characters_block = ""
+    try:
+        from app.story import _build_dynamic_character_block
+        characters_block = await _build_dynamic_character_block(session)
+    except Exception:
+        pass
     # Банк повторов: формулировки и места последних дней — модель не должна
     # дублировать их дословно (литературный де-дуп, окно 7 дней).
     repeat_block = await recent_repeats_block(session, day_index)
@@ -882,6 +889,7 @@ async def _plan_and_render(
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
+        characters_block=characters_block,
         is_expanded=day_index == 1 or twist,
     )
 
@@ -908,6 +916,15 @@ async def _plan_and_render(
     cover_path = media_root / f"day{day_index}_cover.jpg"
     day_seed = 10_000 + day_index * 7
 
+    # AI World Engine: генерируем нового NPC (1 раз в день)
+    try:
+        from app.story import _generate_session_characters
+        char_result = await _generate_session_characters(session, day_index)
+        if char_result:
+            logger.info("AIWorldEngine: %s", char_result)
+    except Exception as e:
+        logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
+
     # AI World Engine: пытаемся использовать AI-локацию
     try:
         from app.world_engine import get_or_create_location, update_location_visit, get_world_context
@@ -918,7 +935,7 @@ async def _plan_and_render(
             "thirst": pack_needs.thirst,
             "health": pack_needs.health,
         }
-        ctx = await get_world_context(session, day_index, needs_dict)
+        ctx = await get_world_context(session, day_index, needs_dict, season=round_row.season)
         ai_location = await get_or_create_location(session, ctx, _chat_completion)
 
         if ai_location:
@@ -977,7 +994,7 @@ async def _plan_and_render(
             "thirst": pack_needs.thirst,
             "health": pack_needs.health,
         }
-        ctx = await get_world_context(session, day_index, needs_dict)
+        ctx = await get_world_context(session, day_index, needs_dict, season=round_row.season)
         ai_choices = await generate_ai_choices(session, ctx, _chat_completion)
 
         if ai_choices and len(ai_choices) >= 3:
@@ -1783,7 +1800,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             consequence=winning_card.consequence,
             tag=getattr(winning_card, "tag", "custom") or "custom",
             characters_involved=[],
-            location=chapter.get("place") if chapter else None,
+            location=round_row.place,
         )
         await record_choice(
             session,
@@ -1798,13 +1815,22 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     try:
         from app.world_engine import process_choice_consequences, get_world_context
         from app.story import _chat_completion
+        from app.models import PackState as PackStateModel
+        from sqlalchemy import select as sa_select
 
-        needs_dict = {
-            "hunger": pack_needs.hunger,
-            "thirst": pack_needs.thirst,
-            "health": pack_needs.health,
-        }
-        ctx = await get_world_context(session, round_row.day_index, needs_dict)
+        # Загружаем потребности стаи из БД или дефолты
+        try:
+            ps_result = await session.execute(sa_select(PackStateModel).limit(1))
+            ps = ps_result.scalar_one_or_none()
+            needs_dict = {
+                "hunger": ps.hunger if ps else 5,
+                "thirst": ps.thirst if ps else 5,
+                "health": ps.health if ps else 10,
+            }
+        except Exception:
+            needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
+
+        ctx = await get_world_context(session, round_row.day_index, needs_dict, season=round_row.season)
         chain = await process_choice_consequences(
             session,
             ctx,
