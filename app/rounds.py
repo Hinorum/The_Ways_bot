@@ -35,6 +35,11 @@ from app.models import (
     Vote,
     WatcherState,
     WinRule,
+    WorldChoice,
+    WorldEvent,
+    WorldLocation,
+    WorldCharacter,
+    WorldSnapshot,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
 from app.memory import recall_beats
@@ -877,6 +882,7 @@ async def _plan_and_render(
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
+        is_expanded=day_index == 1 or twist,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -933,17 +939,62 @@ async def _plan_and_render(
             height=720,
         )
     cards_payload = []
-    for position, card in enumerate(chapter["cards"]):
-        cards_payload.append(
-            {
-                "position": position,
-                "title": card["title"],
-                "description": card["description"],
-                "consequence": card["consequence"],
-                "tag": card.get("tag", "care"),
-                "image_path": "",
-            }
-        )
+    # AI World Engine: генерируем AI-выборы вместо фиксированных карт
+    try:
+        from app.world_engine import generate_ai_choices, get_world_context, record_choice
+        from app.story import _chat_completion
+
+        # Конвертируем PackNeeds в dict для world engine
+        needs_dict = {
+            "hunger": pack_needs.hunger,
+            "thirst": pack_needs.thirst,
+            "health": pack_needs.health,
+        }
+        ctx = await get_world_context(session, day_index, needs_dict)
+        ai_choices = await generate_ai_choices(session, ctx, _chat_completion)
+
+        if ai_choices and len(ai_choices) >= 3:
+            # Используем AI-выборы
+            for position, choice in enumerate(ai_choices[:3]):
+                cards_payload.append(
+                    {
+                        "position": position,
+                        "title": choice.title,
+                        "description": choice.description,
+                        "consequence": choice.consequence,
+                        "tag": choice.tag,
+                        "image_path": "",
+                    }
+                )
+            logger.info("AIWorldEngine: сгенерированы AI-выборы для дня %d", day_index)
+        else:
+            # Фолбэк на фиксированные карты
+            for position, card in enumerate(chapter["cards"]):
+                cards_payload.append(
+                    {
+                        "position": position,
+                        "title": card["title"],
+                        "description": card["description"],
+                        "consequence": card["consequence"],
+                        "tag": card.get("tag", "care"),
+                        "image_path": "",
+                    }
+                )
+            logger.info("AIWorldEngine: фолбэк на фиксированные карты для дня %d", day_index)
+    except Exception as e:
+        logger.warning("AIWorldEngine: ошибка генерации AI-выборов: %s", e)
+        # Фолбэк на фиксированные карты
+        for position, card in enumerate(chapter["cards"]):
+            cards_payload.append(
+                {
+                    "position": position,
+                    "title": card["title"],
+                    "description": card["description"],
+                    "consequence": card["consequence"],
+                    "tag": card.get("tag", "care"),
+                    "image_path": "",
+                }
+            )
     return {
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,

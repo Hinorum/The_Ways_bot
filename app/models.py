@@ -648,3 +648,120 @@ class PackState(Base):
     alive_count: Mapped[int] = mapped_column(Integer, default=5)
     last_updated_day: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── AI-generated world state ──────────────────────────────────────────────
+
+
+class WorldLocation(Base):
+    """Локация, сгенерированная AI и сохранённая в мире.
+
+    Каждый раз, когда стая исследует новое место, AI создаёт его.
+    Локации помнятся и меняются от действий игроков.
+    """
+
+    __tablename__ = "world_locations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    description: Mapped[str] = mapped_column(Text)
+    atmosphere: Mapped[str] = mapped_column(Text, default="")
+    dangers: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[str] = mapped_column(Text, default="")
+    created_day: Mapped[int] = mapped_column(Integer)
+    last_visited_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    times_visited: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorldCharacter(Base):
+    """Персонаж, сгенерированный AI — NPC или член стаи.
+
+    AI создаёт персонажа с именем, характером, flaw, virtue.
+    Персонаж эволюционирует: его черты меняются от действий.
+    """
+
+    __tablename__ = "world_characters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    role: Mapped[str] = mapped_column(String(32))  # "pack" | "npc" | "neutral" | "hostile"
+    personality: Mapped[str] = mapped_column(Text)
+    flaw: Mapped[str] = mapped_column(Text, default="")
+    virtue: Mapped[str] = mapped_column(Text, default="")
+    moral_alignment: Mapped[str] = mapped_column(String(32), default="neutral")
+    mood: Mapped[str] = mapped_column(String(32), default="neutral")
+    trust_stay: Mapped[int] = mapped_column(Integer, default=5)  # 0-10
+    created_day: Mapped[int] = mapped_column(Integer)
+    last_seen_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_alive: Mapped[bool] = mapped_column(Boolean, default=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorldChoice(Base):
+    """Каждый выбор стаи — AI-сгенерированный или игроком.
+
+    Полный трекинг: что выбрали, почему, какие последствия.
+    """
+
+    __tablename__ = "world_choices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day_index: Mapped[int] = mapped_column(Integer, index=True)
+    choice_text: Mapped[str] = mapped_column(Text)
+    choice_tag: Mapped[str] = mapped_column(String(32))  # risk | care | cunning | custom
+    consequences_json: Mapped[str] = mapped_column(Text, default="[]")
+    characters_involved: Mapped[str] = mapped_column(Text, default="[]")
+    location: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    votes_count: Mapped[int] = mapped_column(Integer, default=0)
+    won: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorldEvent(Base):
+    """Событие мира — последствие выбора или случайная мутация.
+
+    AI генерирует события, которые меняют мир:
+    - NPC появляется/исчезает
+    - Локация меняется
+    - Отношения меняются
+    - Новые возможности открываются
+    """
+
+    __tablename__ = "world_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day_index: Mapped[int] = mapped_column(Integer, index=True)
+    event_type: Mapped[str] = mapped_column(String(32))  # "appearance" | "departure" | "mutation" | "discovery" | "conflict" | "alliance"
+    description: Mapped[str] = mapped_column(Text)
+    characters_involved: Mapped[str] = mapped_column(Text, default="[]")
+    locations_involved: Mapped[str] = mapped_column(Text, default="[]")
+    impact: Mapped[str] = mapped_column(Text, default="")  # what changed in the world
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorldSnapshot(Base):
+    """Снимок состояния мира в конце дня.
+
+    AI анализирует все события дня и создаёт снимок:
+    - настроение мира
+    - ключевые изменения
+    - что открылось/закрылось
+    - тренды
+    """
+
+    __tablename__ = "world_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    day_index: Mapped[int] = mapped_column(Integer, unique=True)
+    mood: Mapped[str] = mapped_column(String(32))  # tense | peaceful | chaotic | hopeful | grim
+    summary: Mapped[str] = mapped_column(Text)
+    active_locations: Mapped[str] = mapped_column(Text, default="[]")
+    active_characters: Mapped[str] = mapped_column(Text, default="[]")
+    open_threads: Mapped[str] = mapped_column(Text, default="[]")
+    world_trend: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,0 +1,546 @@
+"""AI World Engine — генерация мира, выборов и последствий.
+
+Заменяет фиксированные карты на AI-генерируемые выборы.
+Мир создаётся динамически: локации, персонажи, события — всё генерируется AI
+и сохраняется в БД для консистентности.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import (
+    WorldChoice,
+    WorldCharacter,
+    WorldEvent,
+    WorldLocation,
+    WorldSnapshot,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Data classes ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AIChoice:
+    """Один AI-сгенерированный выбор."""
+
+    title: str
+    description: str
+    consequence: str
+    tag: str  # risk | care | cunning | custom
+    characters_involved: list[str]
+    location: str | None = None
+
+
+@dataclass(frozen=True)
+class WorldContext:
+    """Контекст мира для генерации AI-выборов."""
+
+    day_index: int
+    recent_choices: list[dict]  # последние выборы
+    active_locations: list[dict]  # активные локации
+    active_characters: list[dict]  # активные персонажи
+    world_mood: str  # tense | peaceful | chaotic | hopeful | grim
+    open_threads: list[str]  # незавершённые сюжетные линии
+    pack_needs: dict  # hunger, thirst, health
+    season: str  # текущий сезон
+
+
+# ── World State Queries ────────────────────────────────────────────────────
+
+
+async def get_world_context(
+    session: AsyncSession, day_index: int, pack_state: dict | None = None
+) -> WorldContext:
+    """Собирает контекст мира для генерации AI-выборов."""
+
+    # Последние 10 выборов
+    recent_q = (
+        select(WorldChoice)
+        .order_by(WorldChoice.day_index.desc())
+        .limit(10)
+    )
+    recent_result = await session.execute(recent_q)
+    recent_choices = [
+        {
+            "day": c.day_index,
+            "text": c.choice_text,
+            "tag": c.choice_tag,
+            "won": c.won,
+            "consequences": c.consequences_json,
+        }
+        for c in recent_result.scalars().all()
+    ]
+
+    # Активные локации
+    loc_q = select(WorldLocation).where(WorldLocation.is_active == True)
+    loc_result = await session.execute(loc_q)
+    active_locations = [
+        {
+            "name": l.name,
+            "description": l.description,
+            "atmosphere": l.atmosphere,
+            "times_visited": l.times_visited,
+        }
+        for l in loc_result.scalars().all()
+    ]
+
+    # Активные персонажи
+    char_q = select(WorldCharacter).where(WorldCharacter.is_alive == True)
+    char_result = await session.execute(char_q)
+    active_characters = [
+        {
+            "name": c.name,
+            "role": c.role,
+            "personality": c.personality,
+            "mood": c.mood,
+            "trust_stay": c.trust_stay,
+        }
+        for c in char_result.scalars().all()
+    ]
+
+    # Последний снимок мира
+    snap_q = (
+        select(WorldSnapshot)
+        .order_by(WorldSnapshot.day_index.desc())
+        .limit(1)
+    )
+    snap_result = await session.execute(snap_q)
+    snapshot = snap_result.scalar_one_or_none()
+
+    world_mood = snapshot.mood if snapshot else "tense"
+    open_threads = json.loads(snapshot.open_threads) if snapshot and snapshot.open_threads else []
+
+    return WorldContext(
+        day_index=day_index,
+        recent_choices=recent_choices,
+        active_locations=active_locations,
+        active_characters=active_characters,
+        world_mood=world_mood,
+        open_threads=open_threads,
+        pack_needs=pack_state or {"hunger": 5, "thirst": 5, "health": 10},
+        season="unknown",
+    )
+
+
+# ── AI Choice Generation ──────────────────────────────────────────────────
+
+
+def _build_world_prompt(ctx: WorldContext) -> str:
+    """Строит промпт для AI-генерации выборов на основе текущего состояния мира."""
+
+    parts = [
+        "Ты — Ведущий (Dungeon Master) игры. Мир живёт и меняется от выборов игроков.",
+        "Сгенерируй 3 варианта выбора для стаи бездомных собак, которые бродят по лабиринту.",
+        "",
+        "КРИТИЧЕСКИЕ ПРАВИЛА:",
+        "- Каждый выбор ОБЯЗАТЕЛЬНО имеет последствия, которые повлияют на мир",
+        "- Выборы должны быть ТРУДНЫМИ дилеммами без очевидно правильного ответа",
+        "- Никаких метакомментариев — только художественный текст",
+        "- Пиши简单ым русским языком, короткими предложениями",
+        "- Каждый выбор — уникальная ситуация, не повторяй предыдущие",
+        "",
+    ]
+
+    # Контекст мира
+    if ctx.active_locations:
+        parts.append("ЛОКАЦИИ:")
+        for loc in ctx.active_locations[:5]:
+            parts.append(f"- {loc['name']}: {loc['description'][:100]}")
+        parts.append("")
+
+    if ctx.active_characters:
+        parts.append("ПЕРСОНАЖИ:")
+        for char in ctx.active_characters[:5]:
+            parts.append(
+                f"- {char['name']} ({char['role']}): {char['personality'][:80]}, "
+                f"доверие к стае: {char['trust_stay']}/10"
+            )
+        parts.append("")
+
+    if ctx.recent_choices:
+        parts.append("ПОСЛЕДНИЕ ВЫБОРЫ СТАИ:")
+        for choice in ctx.recent_choices[:5]:
+            won_mark = " [ВЫБРАН]" if choice["won"] else ""
+            parts.append(f"- День {choice['day']}: {choice['text'][:80]}{won_mark}")
+        parts.append("")
+
+    # Потребности стаи
+    needs = ctx.pack_needs
+    parts.append(
+        f"ПОТРЕБНОСТИ СТАИ: голод={needs.get('hunger', 5)}, "
+        f"жажда={needs.get('thirst', 5)}, здоровье={needs.get('health', 10)}"
+    )
+
+    if ctx.open_threads:
+        parts.append(f"НЕЗАВЕРШЁННЫЕ СЮЖЕТЫ: {'; '.join(ctx.open_threads[:3])}")
+
+    parts.extend([
+        "",
+        "СГЕНЕРИРУЙ 3 ВЫБОРА. Формат JSON:",
+        '{',
+        '  "choices": [',
+        '    {',
+        '      "title": "Краткое название (2-5 слов)",',
+        '      "description": "Описание ситуации (1-2 предложения)",',
+        '      "consequence": "Что произойдёт при выборе (1-2 предложения)",',
+        '      "tag": "risk|care|cunning",',
+        '      "characters_involved": ["имя"],',
+        '      "location": "название локации или null"',
+        '    }',
+        '  ]',
+        '}',
+        "",
+        "ТРЕБОВАНИЯ К TAG:",
+        "- risk: опасный путь, шанс потерять или получить много",
+        "- care: забота, помощь, но代价",
+        "- cunning: хитрость, обман, но может не сработать",
+        "",
+        "Каждый выбор должен:",
+        "1. Быть связан с текущим состоянием мира",
+        "2. Иметь конкретные последствия",
+        "3. Вовлекать хотя бы одного персонажа",
+        "4. Происходить в определённой локации",
+    ])
+
+    return "\n".join(parts)
+
+
+def _parse_ai_choices(response_text: str) -> list[AIChoice]:
+    """Парсит ответ AI и возвращает список выборов."""
+
+    # Ищем JSON в ответе
+    json_match = re.search(r'\{[\s\S]*"choices"[\s\S]*\}', response_text)
+    if not json_match:
+        logger.warning("AIWorldEngine: не найден JSON в ответе AI")
+        return []
+
+    try:
+        data = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        logger.warning("AIWorldEngine: ошибка парсинга JSON")
+        return []
+
+    choices = []
+    for item in data.get("choices", []):
+        if not all(k in item for k in ("title", "description", "consequence", "tag")):
+            continue
+
+        tag = item["tag"]
+        if tag not in ("risk", "care", "cunning", "custom"):
+            tag = "custom"
+
+        choices.append(
+            AIChoice(
+                title=item["title"][:120],
+                description=item["description"][:500],
+                consequence=item["consequence"][:500],
+                tag=tag,
+                characters_involved=item.get("characters_involved", []),
+                location=item.get("location"),
+            )
+        )
+
+    return choices[:3]  # Максимум 3 выбора
+
+
+async def generate_ai_choices(
+    session: AsyncSession,
+    ctx: WorldContext,
+    llm_caller,
+) -> list[AIChoice]:
+    """Генерирует 3 AI-выбора на основе контекста мира.
+
+    Args:
+        session: сессия БД
+        ctx: контекст мира
+        llm_caller: async callable (messages, temperature, max_tokens, want_json) -> dict | None
+    """
+
+    prompt = _build_world_prompt(ctx)
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.9, max_tokens=1500, want_json=True)
+    except Exception as e:
+        logger.warning("AIWorldEngine: LLM не ответил: %s", e)
+        result = None
+
+    if not result or "choices" not in (result[0] if isinstance(result, tuple) else result):
+        # Фолбэк: генерируем простые выборы на основе контекста
+        return _fallback_choices(ctx)
+
+    response = result[0] if isinstance(result, tuple) else result
+    choices_text = response.get("choices", response)
+    if isinstance(choices_text, str):
+        choices = _parse_ai_choices(choices_text)
+    else:
+        # Уже dict
+        choices = []
+        for item in choices_text if isinstance(choices_text, list) else []:
+            if isinstance(item, dict) and all(k in item for k in ("title", "description", "consequence", "tag")):
+                choices.append(
+                    AIChoice(
+                        title=item["title"][:120],
+                        description=item["description"][:500],
+                        consequence=item["consequence"][:500],
+                        tag=item.get("tag", "custom"),
+                        characters_involved=item.get("characters_involved", []),
+                        location=item.get("location"),
+                    )
+                )
+
+    if len(choices) < 3:
+        # Дополняем фолбэком
+        fallback = _fallback_choices(ctx)
+        for fb in fallback:
+            if len(choices) >= 3:
+                break
+            if fb.title not in [c.title for c in choices]:
+                choices.append(fb)
+
+    return choices[:3]
+
+
+def _fallback_choices(ctx: WorldContext) -> list[AIChoice]:
+    """Генерирует фолбэк-выборы на основе контекста, когда AI недоступен."""
+
+    needs = ctx.pack_needs
+    hunger = needs.get("hunger", 5)
+    health = needs.get("health", 10)
+
+    choices = []
+
+    # Выбор на основе потребностей
+    if hunger > 7:
+        choices.append(
+            AIChoice(
+                title="Голодный путь",
+                description="Стая стоит перед развилкой: влево — тёмный коридор с запахом еды, вправо — светлый проход в никуда.",
+                consequence="Если пойдём на запах — может быть еда, а может быть ловушка. Если в светлый — точно не еда, но безопасно.",
+                tag="risk",
+                characters_involved=[],
+            )
+        )
+    else:
+        choices.append(
+            AIChoice(
+                title="Тихий коридор",
+                description="Коридор уходит вглубь. Стены холодные, но ровные. Где-то вдали капает вода.",
+                consequence="Можно идти вперёд — возможно, найдём что-то полезное. Или вернуться — ничего не потеряем.",
+                tag="cunning",
+                characters_involved=[],
+            )
+        )
+
+    if health < 7:
+        choices.append(
+            AIChoice(
+                title="Целительный лист",
+                description="На стене растёт блестящий мох. Он выглядит как лекарство — но кто знает.",
+                consequence="Мох светится зелёным. Если съесть — может помочь. Если нет — будет хуже.",
+                tag="care",
+                characters_involved=[],
+            )
+        )
+    else:
+        choices.append(
+            AIChoice(
+                title="Чужой след",
+                description="На полу свежие следы. Кто-то был здесь совсем недавно — и пошёл дальше в лабиринт.",
+                consequence="Можно следовать за следами — может привести к людям или к опасности. Или игнорировать.",
+                tag="risk",
+                characters_involved=[],
+            )
+        )
+
+    choices.append(
+        AIChoice(
+            title="Развилка теней",
+            description="Три коридора расходятся. В каждом — своя тишина. Лабиринт ждёт решения.",
+            consequence="Каждый путь ведёт к разным последствиям. Назад дороги нет.",
+            tag="cunning",
+            characters_involved=[],
+            location=ctx.active_locations[0]["name"] if ctx.active_locations else None,
+        )
+    )
+
+    return choices[:3]
+
+
+# ── World State Management ─────────────────────────────────────────────────
+
+
+async def record_choice(
+    session: AsyncSession,
+    day_index: int,
+    choice: AIChoice,
+    votes_count: int = 0,
+    won: bool = False,
+) -> WorldChoice:
+    """Записывает выбор в БД."""
+
+    world_choice = WorldChoice(
+        day_index=day_index,
+        choice_text=choice.description,
+        choice_tag=choice.tag,
+        consequences_json=json.dumps([choice.consequence], ensure_ascii=False),
+        characters_involved=json.dumps(choice.characters_involved, ensure_ascii=False),
+        location=choice.location,
+        votes_count=votes_count,
+        won=won,
+    )
+    session.add(world_choice)
+    await session.flush()
+    return world_choice
+
+
+async def record_world_event(
+    session: AsyncSession,
+    day_index: int,
+    event_type: str,
+    description: str,
+    characters_involved: list[str] | None = None,
+    locations_involved: list[str] | None = None,
+    impact: str = "",
+) -> WorldEvent:
+    """Записывает событие мира."""
+
+    event = WorldEvent(
+        day_index=day_index,
+        event_type=event_type,
+        description=description,
+        characters_involved=json.dumps(characters_involved or [], ensure_ascii=False),
+        locations_involved=json.dumps(locations_involved or [], ensure_ascii=False),
+        impact=impact,
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def create_world_snapshot(
+    session: AsyncSession,
+    day_index: int,
+    llm_caller,
+) -> WorldSnapshot:
+    """AI создаёт снимок мира в конце дня."""
+
+    # Собираем данные дня
+    choices_q = (
+        select(WorldChoice)
+        .where(WorldChoice.day_index == day_index)
+    )
+    choices_result = await session.execute(choices_q)
+    day_choices = choices_result.scalars().all()
+
+    events_q = (
+        select(WorldEvent)
+        .where(WorldEvent.day_index == day_index)
+    )
+    events_result = await session.execute(events_q)
+    day_events = events_result.scalars().all()
+
+    locs_q = select(WorldLocation).where(WorldLocation.is_active == True)
+    locs_result = await session.execute(locs_q)
+    active_locs = locs_result.scalars().all()
+
+    chars_q = select(WorldCharacter).where(WorldCharacter.is_alive == True)
+    chars_result = await session.execute(chars_q)
+    active_chars = chars_result.scalars().all()
+
+    # Промпт для AI
+    prompt_parts = [
+        "Проанализируй день в мире игры и создай краткий снимок.",
+        "",
+        f"День {day_index}.",
+        "",
+    ]
+
+    if day_choices:
+        prompt_parts.append("ВЫБОРЫ ДНЯ:")
+        for c in day_choices:
+            mark = " [ПОБЕДИЛ]" if c.won else ""
+            prompt_parts.append(f"- {c.choice_text[:80]}{mark}")
+
+    if day_events:
+        prompt_parts.append("")
+        prompt_parts.append("СОБЫТИЯ:")
+        for e in day_events:
+            prompt_parts.append(f"- [{e.event_type}] {e.description[:80]}")
+
+    prompt_parts.extend([
+        "",
+        "СОЗДАЙ СНИМОК МИРА. Формат JSON:",
+        '{',
+        '  "mood": "tense|peaceful|chaotic|hopeful|grim",',
+        '  "summary": "1-2 предложения о дне",',
+        '  "open_threads": ["незавершённая линия"],',
+        '  "world_trend": "что меняется в мире"',
+        '}',
+    ])
+
+    prompt = "\n".join(prompt_parts)
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        result = await llm_caller(messages, temperature=0.7, max_tokens=500, want_json=True)
+    except Exception:
+        result = None
+
+    mood = "tense"
+    summary = f"День {day_index} в лабиринте."
+    open_threads = []
+    world_trend = ""
+
+    if result:
+        response = result[0] if isinstance(result, tuple) else result
+        if isinstance(response, dict):
+            mood = response.get("mood", mood)
+            summary = response.get("summary", summary)
+            open_threads = response.get("open_threads", open_threads)
+            world_trend = response.get("world_trend", world_trend)
+
+    snapshot = WorldSnapshot(
+        day_index=day_index,
+        mood=mood,
+        summary=summary,
+        active_locations=json.dumps([l.name for l in active_locs], ensure_ascii=False),
+        active_characters=json.dumps([c.name for c in active_chars], ensure_ascii=False),
+        open_threads=json.dumps(open_threads, ensure_ascii=False),
+        world_trend=world_trend,
+    )
+    session.add(snapshot)
+    await session.flush()
+    return snapshot
+
+
+async def generate_world_content(
+    session: AsyncSession,
+    day_index: int,
+    llm_caller,
+) -> tuple[list[AIChoice], WorldSnapshot]:
+    """Полный цикл: генерация выборов + снимок мира.
+
+    Вызывается при подготовке нового дня.
+    """
+
+    # 1. Собираем контекст
+    ctx = await get_world_context(session, day_index)
+
+    # 2. Генерируем AI-выборы
+    choices = await generate_ai_choices(session, ctx, llm_caller)
+
+    # 3. Создаём снимок мира (на основе прошлого дня)
+    snapshot = await create_world_snapshot(session, day_index - 1, llm_caller)
+
+    return choices, snapshot
