@@ -988,23 +988,78 @@ async def fetch_day_image(
     width: int = 768,
     height: int = 1024,
     negative_prompt: str | None = None,
+    prev_cover_path: Path | None = None,
 ) -> bool:
     """Лестница кадра: Gemini «nano banana» → Pollinations (полный промпт,
     потом сжатый — длинные промпты иногда давят модель). False — вызывающий
     код рисует локальный абстракт. Один сетевой кадр в день делает лестницу
-    практически безошибочной: ни один провайдер не успевает затроттлиться."""
-    # Gemini: 2 попытки с backoff
-    for attempt in range(2):
-        if await _fetch_gemini_image(prompt, dest, width=width, height=height):
-            return True
-        if attempt == 0:
-            await asyncio.sleep(10)
-    if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
-        return True
-    if not settings.use_free_images:
+   практически безошибочной: ни один провайдер не успевает затроттлиться."""
+    for attempt in range(3):
+        # Gemini: 2 попытки с backoff
+        for gemini_attempt in range(2):
+            if await _fetch_gemini_image(prompt, dest, width=width, height=height):
+                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
+                    if _image_quality_ok(dest):
+                        return True
+                else:
+                    if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
+                        return True
+                logger.info("Story: облока дублирует/некачественная, retry seed=%s", seed)
+                break
+            if gemini_attempt == 0:
+                await asyncio.sleep(10)
+        # Pollinations
+        if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
+            if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
+                if _image_quality_ok(dest):
+                    return True
+            else:
+                if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
+                    return True
+            logger.info("Story: Pollinations облока дублирует/некачественная, retry seed=%s", seed)
+        if not settings.use_free_images:
+            return False
+        retry_seed = None if seed is None else seed + 9_000_001 + attempt * 1000
+        if await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt):
+            if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
+                if _image_quality_ok(dest):
+                    return True
+            else:
+                if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
+                    return True
+            logger.info("Story: short облока дублирует/некачественная, retry seed=%s", seed)
+    return False
+
+
+def _images_similar(path1: Path, path2: Path, threshold: float = 0.85) -> bool:
+    """Сравнивает два изображения по color histogram. True = похожи."""
+    try:
+        from PIL import Image
+        import imagehash
+        img1 = Image.open(path1)
+        img2 = Image.open(path2)
+        hash1 = imagehash.average_hash(img1)
+        hash2 = imagehash.average_hash(img2)
+        similarity = 1 - (hash1 - hash2) / 64
+        return similarity >= threshold
+    except Exception:
         return False
-    retry_seed = None if seed is None else seed + 9_000_001
-    return await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt)
+
+
+def _image_quality_ok(path: Path, min_variance: float = 100.0) -> bool:
+    """Проверяет качество изображения по Laplacian variance (четкость).
+    variance < порога = размытое изображение."""
+    try:
+        import cv2
+        import numpy as np
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return False
+        laplacian = cv2.Laplacian(img, cv2.CV_64F)
+        variance = laplacian.var()
+        return variance >= min_variance
+    except Exception:
+        return True
 
 
 async def generate_chapter(

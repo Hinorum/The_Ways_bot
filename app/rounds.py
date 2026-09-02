@@ -925,6 +925,23 @@ async def _plan_and_render(
     except Exception as e:
         logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
 
+    # AI World Engine: получаем NPC для генерации обложки
+    try:
+        from app.models import WorldCharacter
+        from sqlalchemy import select
+        stmt = select(WorldCharacter).where(
+            WorldCharacter.is_alive == True,
+            WorldCharacter.last_seen_day >= day_index - 1,
+        )
+        ai_chars = (await session.execute(stmt)).scalars().all()
+        if ai_chars:
+            chapter["ai_characters"] = [
+                {"name": c.name, "mood": c.mood, "trust": c.trust_stay, "role": c.role}
+                for c in ai_chars
+            ]
+    except Exception as e:
+        logger.debug("AIWorldEngine: запрос NPC для обложки не удался: %s", e)
+
     # AI World Engine: пытаемся использовать AI-локацию
     try:
         from app.world_engine import get_or_create_location, update_location_visit, get_world_context
@@ -959,6 +976,12 @@ async def _plan_and_render(
     # Сид обложки привязан к месту дня: возвращение в «Старый приют»
     # рисует тот же мир, а не новую случайную сцену.
     cover_seed = place_seed_for(chapter.get("place")) or day_seed
+    # Предыдущая облока для dedup
+    prev_cover_path = None
+    if day_index > 1:
+        prev_cover = media_root / f"day{day_index - 1}_cover.jpg"
+        if prev_cover.exists():
+            prev_cover_path = prev_cover
     # ОДИН кадр дня: обложка «мир после вчерашнего выбора». Пути голосования
     # остаются текстом и кнопками — залп из четырёх генераций бил free-лимиты
     # (429), и три карты из четырёх уходили в PIL-заглушки.
@@ -969,6 +992,7 @@ async def _plan_and_render(
         seed=cover_seed,
         width=1280,
         height=720,
+        prev_cover_path=prev_cover_path,
     )
     if not fetched_cover:
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
