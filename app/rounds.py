@@ -1774,6 +1774,26 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             )
     except Exception:
         logger.warning("Дрейф нрава стаи не удался", exc_info=True)
+    # AI World Engine: запись выбора стаи
+    try:
+        from app.world_engine import record_choice, AIChoice
+        choice_obj = AIChoice(
+            title=winning_card.title,
+            description=winning_card.consequence,
+            consequence=winning_card.consequence,
+            tag=getattr(winning_card, "tag", "custom") or "custom",
+            characters_involved=[],
+            location=chapter.get("place") if chapter else None,
+        )
+        await record_choice(
+            session,
+            day_index=round_row.day_index,
+            choice=choice_obj,
+            votes_count=sum(counts.values()) if counts else 0,
+            won=True,
+        )
+    except Exception:
+        logger.warning("AIWorldEngine: запись выбора не удалась", exc_info=True)
     # AI World Engine: каскад последствий от выбора стаи
     try:
         from app.world_engine import process_choice_consequences, get_world_context

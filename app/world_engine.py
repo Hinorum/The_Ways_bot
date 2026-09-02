@@ -146,7 +146,7 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "- Каждый выбор ОБЯЗАТЕЛЬНО имеет последствия, которые повлияют на мир",
         "- Выборы должны быть ТРУДНЫМИ дилеммами без очевидно правильного ответа",
         "- Никаких метакомментариев — только художественный текст",
-        "- Пиши简单ым русским языком, короткими предложениями",
+        "- Пиши простым русским языком, короткими предложениями",
         "- Каждый выбор — уникальная ситуация, не повторяй предыдущие",
         "",
     ]
@@ -202,7 +202,7 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "",
         "ТРЕБОВАНИЯ К TAG:",
         "- risk: опасный путь, шанс потерять или получить много",
-        "- care: забота, помощь, но代价",
+        "- care: забота, помощь, но ценой",
         "- cunning: хитрость, обман, но может не сработать",
         "",
         "Каждый выбор должен:",
@@ -522,28 +522,6 @@ async def create_world_snapshot(
     session.add(snapshot)
     await session.flush()
     return snapshot
-
-
-async def generate_world_content(
-    session: AsyncSession,
-    day_index: int,
-    llm_caller,
-) -> tuple[list[AIChoice], WorldSnapshot]:
-    """Полный цикл: генерация выборов + снимок мира.
-
-    Вызывается при подготовке нового дня.
-    """
-
-    # 1. Собираем контекст
-    ctx = await get_world_context(session, day_index)
-
-    # 2. Генерируем AI-выборы
-    choices = await generate_ai_choices(session, ctx, llm_caller)
-
-    # 3. Создаём снимок мира (на основе прошлого дня)
-    snapshot = await create_world_snapshot(session, day_index - 1, llm_caller)
-
-    return choices, snapshot
 
 
 # ── AI Location Generation ─────────────────────────────────────────────────
@@ -955,44 +933,6 @@ async def update_character_state(
         await session.flush()
 
 
-async def generate_character_interaction(
-    session: AsyncSession,
-    ctx: WorldContext,
-    llm_caller,
-    character_name: str,
-    player_action: str,
-) -> str:
-    """Генерирует реакцию персонажа на действие игрока."""
-
-    # Находим персонажа в БД
-    q = select(WorldCharacter).where(WorldCharacter.name == character_name)
-    result = await session.execute(q)
-    char = result.scalar_one_or_none()
-
-    if not char:
-        return f"{character_name} молча наблюдает за стаей."
-
-    prompt_parts = [
-        f"Персонаж: {char.name}",
-        f"Характер: {char.personality}",
-        f"Слабость: {char.flaw}" if char.flaw else "",
-        f"Сила: {char.virtue}" if char.virtue else "",
-        f"Настроение: {char.mood}",
-        f"Доверие к стае: {char.trust_stay}/10",
-        f"Действие игрока: {player_action}",
-        "",
-        "Сгенерируй краткую реакцию персонажа (1-2 предложения). Формат: реплика или действие.",
-    ]
-
-    prompt = "\n".join([p for p in prompt_parts if p])
-    messages = [{"role": "user", "content": prompt}]
-
-    try:
-        result = await llm_caller(messages, temperature=0.8, max_tokens=200, want_json=False)
-    except Exception:
-        return f"{char.name} молча наблюдает за стаей."
-
-
 # ── AI Consequence Cascading ───────────────────────────────────────────────
 
 
@@ -1230,12 +1170,3 @@ async def process_choice_consequences(
     await apply_consequence_chain(session, chain, day_index)
 
     return chain
-
-    if result:
-        response = result[0] if isinstance(result, tuple) else result
-        if isinstance(response, str):
-            return response[:300]
-        elif isinstance(response, dict):
-            return response.get("text", response.get("response", ""))[:300]
-
-    return f"{char.name} молча наблюдает за стаей."
