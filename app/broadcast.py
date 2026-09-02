@@ -396,7 +396,7 @@ async def results_body(finished: Round, session=None) -> str:
     try:
         from app.tally import format_world_effects
         if session is not None:
-            world_effects = format_world_effects(finished, session)
+            world_effects = await format_world_effects(finished, session)
             if world_effects:
                 text += f"\n\n{world_effects}"
     except Exception:

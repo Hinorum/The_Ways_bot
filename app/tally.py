@@ -273,91 +273,83 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
     return "\n".join(lines)
 
 
-def format_world_effects(round_row: Round, session=None) -> str:
+async def format_world_effects(round_row: Round, session=None) -> str:
     """Форматирует эффекты AI World Engine для итогов дня."""
+    if not session:
+        return ""
     lines = []
+    from sqlalchemy import select as sa_select
+
+    # Настроение мира
+    try:
+        from app.models import WorldSnapshot
+        q = sa_select(WorldSnapshot).where(WorldSnapshot.day_index == round_row.day_index)
+        result = await session.execute(q)
+        snapshot = result.scalar_one_or_none()
+        if snapshot:
+            mood_map = {
+                "tense": "напряжён",
+                "peaceful": "спокоен",
+                "chaotic": "хаотичен",
+                "hopeful": "полон надежды",
+                "grim": "мрачен",
+            }
+            mood_desc = mood_map.get(snapshot.mood, snapshot.mood)
+            lines.append(f"🌍 Миp {mood_desc}")
+            if snapshot.summary:
+                lines.append(f"📝 {_clip(snapshot.summary, 150)}")
+    except Exception:
+        pass
 
     # Локация: атмосфера
-    if round_row.place and session:
+    if round_row.place:
         try:
-            from sqlalchemy import select as sa_select
             from app.models import WorldLocation
-            import asyncio
-
-            async def _get_atmosphere():
-                q = sa_select(WorldLocation).where(WorldLocation.name == round_row.place)
-                result = await session.execute(q)
-                loc = result.scalar_one_or_none()
-                return loc.atmosphere if loc and loc.atmosphere else None
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                atmosphere = None
-            else:
-                atmosphere = loop.run_until_complete(_get_atmosphere())
-            if atmosphere:
-                lines.append(f"🌫 Атмосфера: {_clip(atmosphere, 120)}")
+            q = sa_select(WorldLocation).where(WorldLocation.name == round_row.place)
+            result = await session.execute(q)
+            loc = result.scalar_one_or_none()
+            if loc and loc.atmosphere:
+                lines.append(f"🌫 Атмосфера: {_clip(loc.atmosphere, 120)}")
         except Exception:
             pass
 
     # Цепочка последствий: события дня
-    if session:
-        try:
-            from sqlalchemy import select as sa_select
-            from app.models import WorldEvent
-
-            async def _get_events():
-                q = (
-                    sa_select(WorldEvent)
-                    .where(WorldEvent.day_index == round_row.day_index)
-                    .limit(3)
-                )
-                result = await session.execute(q)
-                return result.scalars().all()
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                events = []
-            else:
-                events = loop.run_until_complete(_get_events())
-            if events:
-                for event in events:
-                    lines.append(f"🔗 {_clip(event.description, 150)}")
-        except Exception:
-            pass
+    try:
+        from app.models import WorldEvent
+        q = (
+            sa_select(WorldEvent)
+            .where(WorldEvent.day_index == round_row.day_index)
+            .limit(3)
+        )
+        result = await session.execute(q)
+        events = result.scalars().all()
+        if events:
+            for event in events:
+                lines.append(f"🔗 {_clip(event.description, 150)}")
+    except Exception:
+        pass
 
     # Trust changes: доверие NPC
-    if session:
-        try:
-            from sqlalchemy import select as sa_select
-            from app.models import WorldCharacter
-
-            async def _get_trust_changes():
-                q = (
-                    sa_select(WorldCharacter)
-                    .where(WorldCharacter.is_alive == True)
-                    .where(WorldCharacter.last_seen_day == round_row.day_index)
-                    .limit(3)
-                )
-                result = await session.execute(q)
-                chars = result.scalars().all()
-                changes = []
-                for c in chars:
-                    if c.trust_stay >= 7:
-                        changes.append(f"{c.name}: доверие ↑")
-                    elif c.trust_stay <= 3:
-                        changes.append(f"{c.name}: доверие ↓")
-                return changes
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                trust_lines = []
-            else:
-                trust_lines = loop.run_until_complete(_get_trust_changes())
-            if trust_lines:
-                lines.append("🤝 " + "; ".join(trust_lines))
-        except Exception:
-            pass
+    try:
+        from app.models import WorldCharacter
+        q = (
+            sa_select(WorldCharacter)
+            .where(WorldCharacter.is_alive == True)
+            .where(WorldCharacter.last_seen_day == round_row.day_index)
+            .limit(3)
+        )
+        result = await session.execute(q)
+        chars = result.scalars().all()
+        changes = []
+        for c in chars:
+            if c.trust_stay >= 7:
+                changes.append(f"{c.name}: доверие ↑")
+            elif c.trust_stay <= 3:
+                changes.append(f"{c.name}: доверие ↓")
+        if changes:
+            lines.append("🤝 " + "; ".join(changes))
+    except Exception:
+        pass
 
     return "\n".join(lines)
 
