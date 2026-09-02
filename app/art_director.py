@@ -91,6 +91,10 @@ _PALETTE_ROTATION = [
     ("dusty teal and charcoal with coin-gold lantern light", "cold moonlit rim light"),
     ("burnt orange and sandy beige with acid-green accents", "warm ember glow"),
     ("charcoal and dusty teal with neon radioactive-red glints", "bioluminescent haze"),
+    ("dark slate and blood-red with cold steel highlights", "harsh industrial glare"),
+    ("deep navy and silver with warm amber accents", "candlelit warmth"),
+    ("muted olive and rust with pale yellow undertones", "overcast diffused light"),
+    ("obsidian black and forest green with mossy highlights", "undergrowth filtered light"),
 ]
 
 
@@ -228,6 +232,16 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | Non
     char_block = ""
     if char_motifs:
         char_block = "\nПЕРСОНАЖИ В КАДРЕ (добавь описанных фигур): " + "; ".join(char_motifs) + ".\n"
+    # Атмосфера локации из AI World Engine
+    atmosphere = chapter.get("atmosphere", "")
+    atmosphere_block = ""
+    if atmosphere:
+        atmosphere_block = f"\nАТМОСФЕРА ЛОКАЦИИ: {atmosphere}\n"
+    # Сцена локации из AI World Engine (английский промпт)
+    location_scene = chapter.get("location_scene", "")
+    scene_override = ""
+    if location_scene:
+        scene_override = f"\nСЦЕНА ЛОКАЦИИ (испуй как основу): {location_scene}\n"
     return (
         "Ответь только JSON, все текстовые значения на английском. Собери "
         "визуальную библию одного дня игры: ОДИН кадр.\n\n"
@@ -235,6 +249,8 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | Non
         f"{yesterday_block}"
         f"{anchor_block}"
         f"{char_block}"
+        f"{atmosphere_block}"
+        f"{scene_override}"
         "Требования. Обложка — широкий кинематографичный кадр всей сцены дня; "
         "последствие вчерашнего канона читается в сцене первым взглядом. Стая "
         "присутствует в кадре; если в тексте есть Еретик — это тощий пёс в "

@@ -993,8 +993,12 @@ async def fetch_day_image(
     потом сжатый — длинные промпты иногда давят модель). False — вызывающий
     код рисует локальный абстракт. Один сетевой кадр в день делает лестницу
     практически безошибочной: ни один провайдер не успевает затроттлиться."""
-    if await _fetch_gemini_image(prompt, dest, width=width, height=height):
-        return True
+    # Gemini: 2 попытки с backoff
+    for attempt in range(2):
+        if await _fetch_gemini_image(prompt, dest, width=width, height=height):
+            return True
+        if attempt == 0:
+            await asyncio.sleep(10)
     if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
         return True
     if not settings.use_free_images:

@@ -945,6 +945,11 @@ async def _plan_and_render(
             if ai_location.description:
                 # Добавляем описание локации в начало текста
                 chapter["text"] = f"{ai_location.description}\n\n{chapter['text']}"
+            # Передаём atmosphere и scene для генерации обложки
+            if ai_location.atmosphere:
+                chapter["atmosphere"] = ai_location.atmosphere
+            if ai_location.scene:
+                chapter["location_scene"] = ai_location.scene
             # Обновляем статистику посещения
             await update_location_visit(session, ai_location.name, day_index)
             logger.info("AIWorldEngine: использована AI-локация '%s' для дня %d", ai_location.name, day_index)
