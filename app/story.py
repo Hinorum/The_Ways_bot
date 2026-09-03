@@ -193,60 +193,6 @@ def _voice_cards_for(text: str) -> str:
 # Структурированные «кристаллы памяти»: компактный JSON-снимок мира,
 # который инжектится в промпт вместо сырых текстов канона.
 # Формат: {events: [...], characters: {...}, promises: [...], world_facts: [...]}
-def build_world_crystal(
-    chapter: dict,
-    day_index: int,
-    win_rule=None,
-    echoes=None,
-) -> dict:
-    """Строит структурированный снимок мира из данных главы."""
-    crystal: dict = {
-        "day": day_index,
-        "events": [],
-        "characters": {},
-        "promises": [],
-        "world_facts": [],
-    }
-    # Извлекаем события из текста главы
-    text = str(chapter.get("text", ""))
-    if text:
-        # Простой парсинг: ищем упоминания персонажей
-        char_names = {
-            "баркод": "Баркод", "стежка": "Стежка", "вектор": "Вектор",
-            "пиксель": "Пиксель", "безымянная": "Безымянная",
-            "лайнер": "Лайнер", "архивариус": "Архивариус",
-            "еретик": "Еретик", "администратор": "Администратор",
-        }
-        low = text.lower()
-        for key, name in char_names.items():
-            if key in low:
-                crystal["characters"][name] = {"present": True}
-    # Извлекаем ключевые факты из lore_summary
-    summary = str(chapter.get("lore_summary", ""))
-    if summary:
-        crystal["world_facts"].append(summary[:200])
-    # Обещания из описаний карт
-    for card in chapter.get("cards") or []:
-        consequence = str(card.get("consequence", ""))
-        if consequence and len(consequence) > 20:
-            crystal["promises"].append(consequence[:150])
-    return crystal
-
-
-def crystal_to_prompt(crystal: dict) -> str:
-    """Конвертирует кристалл памяти в компактную строку для промпта."""
-    parts = [f"День {crystal.get('day', '?')}"]
-    if crystal.get("characters"):
-        chars = ", ".join(crystal["characters"].keys())
-        parts.append(f"Персонажи: {chars}")
-    if crystal.get("promises"):
-        promises = "; ".join(crystal["promises"][:2])
-        parts.append(f"Обещания: {promises}")
-    if crystal.get("world_facts"):
-        facts = "; ".join(crystal["world_facts"][:2])
-        parts.append(f"Факты: {facts}")
-    return " | ".join(parts)
-
 
 # Witness filter: не все персонажи знают обо всех событиях.
 # Если событие произошло за кадром — только присутствующие знают о нём.
@@ -457,10 +403,13 @@ async def _build_dynamic_character_block(session) -> str:
         return ""
 
 
-async def _generate_session_characters(session, day_index: int) -> str:
+async def _generate_session_characters(
+    session, day_index: int, pack_needs: dict | None = None, season: str = "unknown",
+) -> str:
     """Генерирует персонажей для текущей сессии через AI World Engine.
 
     Вызывается при подготовке нового дня для создания уникальных NPC.
+    pack_needs: {"hunger": int, "thirst": int, "health": int} или None для дефолта.
     """
     from app.world_engine import generate_ai_character, WorldContext, AICharacter
 
@@ -470,6 +419,7 @@ async def _generate_session_characters(session, day_index: int) -> str:
         result = await session.execute(q)
         existing_chars = result.scalars().all()
 
+        needs = pack_needs or {"hunger": 5, "thirst": 5, "health": 10}
         ctx = WorldContext(
             day_index=day_index,
             recent_choices=[],
@@ -486,8 +436,8 @@ async def _generate_session_characters(session, day_index: int) -> str:
             ],
             world_mood="tense",
             open_threads=[],
-            pack_needs={"hunger": 5, "thirst": 5, "health": 10},
-            season="unknown",
+            pack_needs=needs,
+            season=season,
         )
 
         # Генерируем нового персонажа
@@ -993,73 +943,55 @@ async def fetch_day_image(
     """Лестница кадра: Gemini «nano banana» → Pollinations (полный промпт,
     потом сжатый — длинные промпты иногда давят модель). False — вызывающий
     код рисует локальный абстракт. Один сетевой кадр в день делает лестницу
-   практически безошибочной: ни один провайдер не успевает затроттлиться."""
-    for attempt in range(3):
+    практически безошибочной: ни один провайдер не успевает затроттиться.
+    Каждое изображение проходит quality gate (Laplacian variance) и dedup."""
+    from app.art_director import check_image_quality
+
+    min_variance = 100.0  # Минимальная дисперсия Лапласиана
+
+    for outer in range(3):
         # Gemini: 2 попытки с backoff
-        for gemini_attempt in range(2):
+        for attempt in range(2):
             if await _fetch_gemini_image(prompt, dest, width=width, height=height):
-                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                    if _image_quality_ok(dest):
+                passed, variance = check_image_quality(dest, min_variance)
+                if passed:
+                    if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
                         return True
+                    if not _images_similar(prev_cover_path, dest):
+                        return True
+                    logger.info("Story: облока дублирует вчерашнюю, retry seed=%s", seed)
                 else:
-                    if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
-                        return True
-                logger.info("Story: облока дублирует/некачественная, retry seed=%s", seed)
-                break
-            if gemini_attempt == 0:
+                    logger.warning("Gemini: изображение размытое (variance=%.2f), пробуем дальше", variance)
+            if attempt == 0:
                 await asyncio.sleep(10)
-        # Pollinations
+
         if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
-            if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                if _image_quality_ok(dest):
+            passed, variance = check_image_quality(dest, min_variance)
+            if passed:
+                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
                     return True
+                if not _images_similar(prev_cover_path, dest):
+                    return True
+                logger.info("Story: Pollinations облока дублирует, retry seed=%s", seed)
             else:
-                if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
-                    return True
-            logger.info("Story: Pollinations облока дублирует/некачественная, retry seed=%s", seed)
+                logger.warning("Pollinations: изображение размытое (variance=%.2f), пробуем короткий промпт", variance)
+
         if not settings.use_free_images:
             return False
-        retry_seed = None if seed is None else seed + 9_000_001 + attempt * 1000
+
+        retry_seed = None if seed is None else seed + 9_000_001 + outer * 1000
         if await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt):
-            if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                if _image_quality_ok(dest):
+            passed, variance = check_image_quality(dest, min_variance)
+            if passed:
+                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
                     return True
+                if not _images_similar(prev_cover_path, dest):
+                    return True
+                logger.info("Story: short облока дублирует, retry seed=%s", seed)
             else:
-                if not _images_similar(prev_cover_path, dest) and _image_quality_ok(dest):
-                    return True
-            logger.info("Story: short облока дублирует/некачественная, retry seed=%s", seed)
+                logger.warning("Pollinations (short): изображение размытое (variance=%.2f)", variance)
+
     return False
-
-
-def _images_similar(path1: Path, path2: Path, threshold: float = 0.85) -> bool:
-    """Сравнивает два изображения по color histogram. True = похожи."""
-    try:
-        from PIL import Image
-        import imagehash
-        img1 = Image.open(path1)
-        img2 = Image.open(path2)
-        hash1 = imagehash.average_hash(img1)
-        hash2 = imagehash.average_hash(img2)
-        similarity = 1 - (hash1 - hash2) / 64
-        return similarity >= threshold
-    except Exception:
-        return False
-
-
-def _image_quality_ok(path: Path, min_variance: float = 100.0) -> bool:
-    """Проверяет качество изображения по Laplacian variance (четкость).
-    variance < порога = размытое изображение."""
-    try:
-        import cv2
-        import numpy as np
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return False
-        laplacian = cv2.Laplacian(img, cv2.CV_64F)
-        variance = laplacian.var()
-        return variance >= min_variance
-    except Exception:
-        return True
 
 
 async def generate_chapter(
