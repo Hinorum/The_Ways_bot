@@ -26,14 +26,24 @@ class SimpleRound:
         self.id = day_index * 10
         self.tie_note = None
         self.cards = [
-            type("C", (), {"position": i, "title": f"Путь {i}", "consequence": f"с{i}"})()
+            type("C", (), {
+                "position": i,
+                "title": f"Путь {i}",
+                "consequence": f"с{i}",
+                "food_cost": 0,
+                "water_cost": 0,
+                "health_risk": 0,
+                "trust_change": 0,
+                "emotional_consequence": "",
+                "npc_reactions_json": "[]",
+            })()
             for i in range(3)
         ]
 
 
 def test_results_majority_law_and_crowd_agree() -> None:
     text = format_results(_round(WinRule.MAJORITY, {0: 9, 1: 3, 2: 1}, winner=0))
-    assert "Архивариус вскрывает урну" in text
+    assert "Страница" in text
     assert "большинство" in text or "кричала" in text or "решили всё" in text
     assert "Путь 0: 9 ← 🏆 След" in text
 
@@ -41,10 +51,10 @@ def test_results_majority_law_and_crowd_agree() -> None:
 def test_results_minority_twist_when_crowd_votes_against_law() -> None:
     """Меньшинство по закону, но стая громче всех лаяла за победителя — бунт."""
     text = format_results(_round(WinRule.MINORITY, {0: 8, 1: 2, 2: 3}, winner=0))
-    reveal_line = next(line for line in text.splitlines() if "урну" in line)
+    reveal_line = next(line for line in text.splitlines() if "Страница" in line)
     assert any(
         word in reveal_line
-        for word in ("парадокс", "против закона", "не заметила")
+        for word in ("парадокс", "против правила", "не заметила")
     )
 
 
@@ -83,7 +93,7 @@ def test_results_no_flip_line_for_blowout() -> None:
 
 def test_results_keeps_tie_note(test_rules_round) -> None:
     text = format_results(test_rules_round)
-    assert "жребий закона" in text
+    assert "жребий правила" in text
 
 
 @pytest.fixture
@@ -95,11 +105,23 @@ def test_rules_round():
         win_rule=WinRule.MEDIAN,
         winner_card=2,
         vote_counts_json='{"0": 0, "1": 1, "2": 1}',
-        tie_note="Голоса разделились (II и III) — жребий закона по обязательству дня выбрал путь III.",
+        tie_note="Голоса разделились (II и III) — жребий правила по обязательству дня выбрал путь III.",
         cards=[
-            SimpleNamespace(position=0, title="Сон вповалку", consequence="с0"),
-            SimpleNamespace(position=1, title="Чужое имя", consequence="с1"),
-            SimpleNamespace(position=2, title="Красный сигнал", consequence="с2"),
+            SimpleNamespace(
+                position=0, title="Сон вповалку", consequence="с0",
+                food_cost=0, water_cost=0, health_risk=0, trust_change=0,
+                emotional_consequence="", npc_reactions_json="[]",
+            ),
+            SimpleNamespace(
+                position=1, title="Чужое имя", consequence="с1",
+                food_cost=0, water_cost=0, health_risk=0, trust_change=0,
+                emotional_consequence="", npc_reactions_json="[]",
+            ),
+            SimpleNamespace(
+                position=2, title="Красный сигнал", consequence="с2",
+                food_cost=0, water_cost=0, health_risk=0, trust_change=0,
+                emotional_consequence="", npc_reactions_json="[]",
+            ),
         ],
     )
 

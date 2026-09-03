@@ -365,7 +365,11 @@ async def test_results_message_appends_epilogue() -> None:
         winner_card=1,
         vote_counts_json='{"0": 2, "1": 9, "2": 4}',
         cards=[
-            SimpleNamespace(position=i, title=f"Карта {i}", consequence="Канон.")
+            SimpleNamespace(
+                position=i, title=f"Карта {i}", consequence="Запись.",
+                food_cost=0, water_cost=0, health_risk=0, trust_change=0,
+                emotional_consequence="", npc_reactions_json="[]",
+            )
             for i in range(3)
         ],
         epilogue_text="Пёс запомнил эту тропу.",

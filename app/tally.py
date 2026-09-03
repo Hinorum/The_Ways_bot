@@ -169,7 +169,7 @@ def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) ->
                 f"закон выбрал меру — {w} голосов ровно посередине",
             )
         else:
-            phrases = ("счёт разошёлся с законом так, что Архивариус пожал плечами",)
+            phrases = ("счёт разошёлся с правилом так, что дневник промолчал",)
     return phrases[rng.randrange(len(phrases))]
 
 
@@ -223,6 +223,7 @@ def flip_margin(counts: dict[int, int], win_rule, winner_card: int | None) -> tu
 
 
 def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, multiplier: float | None = None) -> str:
+    import json
     from app.style import result_mark
 
     raw = json.loads(round_row.vote_counts_json or "{}")
@@ -232,13 +233,13 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
     reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     lines = [
         f"{result_mark(mark_key)} День {round_row.day_index} закрыт",
-        f"🕯 Архивариус вскрывает урну: {reveal}.",
+        f"📖 Страница {round_row.day_index}: {reveal}.",
     ]
     total_votes = sum(counts.values())
     if total_votes:
         word_v = _votes_word(total_votes)
         lines.append(f"🗳 Проголосовало: {total_votes} {word_v}")
-    # «Канон на волоске»: сколько голосов отделяло мир от другого исхода.
+    # «Запись на волоске»: сколько голосов отделяло мир от другого исхода.
     margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     if margin is not None:
         k, alt = margin
@@ -250,9 +251,9 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
                 "и тропа повела бы иначе."
             )
     if getattr(round_row, "sealed", False):
-        lines.append(f"🗝 Запечатанный закон: {RULE_PHRASES[round_row.win_rule]}")
+        lines.append(f"🗝 Запечатанное правило: {RULE_PHRASES[round_row.win_rule]}")
     else:
-        lines.append(f"⚖️ Закон: {RULE_PHRASES[round_row.win_rule]}")
+        lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):
@@ -286,7 +287,7 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
         (card for card in round_row.cards if card.position == round_row.winner_card), None
     )
     consequence = _tg_escape(winner_card.consequence if winner_card else "")
-    lines += ["", f"📜 Канон: {winner}", _clip(consequence, 240)]
+    lines += ["", f"📖 Запись дня: {winner}", _clip(consequence, 240)]
     # Эмоциональное описание
     if winner_card and winner_card.emotional_consequence:
         lines.append("")

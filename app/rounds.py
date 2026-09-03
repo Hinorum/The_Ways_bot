@@ -933,7 +933,6 @@ async def _plan_and_render(
     # AI World Engine: получаем NPC для генерации обложки
     try:
         from app.models import WorldCharacter
-        from sqlalchemy import select
         stmt = select(WorldCharacter).where(
             WorldCharacter.is_alive == True,
             WorldCharacter.last_seen_day >= day_index - 1,
@@ -1159,7 +1158,7 @@ _ECHO_ART_MOTIFS = {
 _TIE_THEATER = (
     "Кость архива стукнула о дно урны: путь {chosen}.",
     "Жребий запечатанного счёта лёг на {paths} — и указал {chosen}.",
-    "Архивариус дважды встряхнул урну; выпало {chosen}.",
+    "Дневник перевернул страницу дважды; выпало {chosen}.",
 )
 
 
