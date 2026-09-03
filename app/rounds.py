@@ -1140,7 +1140,27 @@ async def _materialize_round(
     from app.bestiary import note_round as bestiary_note_round
 
     try:
-        await bestiary_note_round(session, round_row, season_key_value=payload.get("season"))
+        # Формируем контекст для AI-генерации описаний бестиария
+        story_ctx = ""
+        choices_ctx = ""
+        if payload.get("chapter_text"):
+            story_ctx = payload["chapter_text"][:1000]
+        if payload.get("cards"):
+            choices_lines = []
+            for card in payload["cards"][:3]:
+                title = card.get("title", "")
+                desc = card.get("description", "")
+                choices_lines.append(f"- {title}: {desc}")
+            choices_ctx = "\n".join(choices_lines)
+
+        await bestiary_note_round(
+            session,
+            round_row,
+            season_key_value=payload.get("season"),
+            llm_caller=_chat_completion if story_ctx else None,
+            story_context=story_ctx,
+            choices_context=choices_ctx,
+        )
     except Exception:
         logger.warning("Запись бестиария дня %s не удалась", day_index, exc_info=True)
     return round_row

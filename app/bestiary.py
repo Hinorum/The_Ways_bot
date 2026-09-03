@@ -16,11 +16,19 @@
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import BestiarySighting, Round
 from app.season import villain_stage
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
 
 # Ключ → (титул, описание). Титул скрытого существа не показываем.
 BEASTIES: dict[str, tuple[str, str]] = {
@@ -116,12 +124,71 @@ BEASTIES: dict[str, tuple[str, str]] = {
         "Страницы переворачиваются сами, когда стая выбирает. "
         "Не торговец — проводник, который ведёт стаю туда, куда "
         "решил сам. Он не хранит папки — "
-        "он управляет потоком дня."
+        "он управляет потоком дня.",
     ),
 }
 
+# NPC-ключи, для которых генерируем AI-описания
+_NPC_BEAST_KEYS = {"master", "heretic", "journal", "rat", "anubis"}
 
-async def note_round(session: AsyncSession, round_row: Round, season_key_value: str | None = None) -> int:
+
+async def _generate_ai_entry(
+    npc_key: str,
+    story_context: str,
+    choices_context: str,
+    llm_caller,
+) -> str | None:
+    """Генерирует AI-описание для бестиария на основе контекста дня."""
+    if not llm_caller:
+        return None
+
+    static_title = BEASTIES.get(npc_key, (npc_key, ""))[0]
+    prompt = (
+        f"Ты — летописец лабиринта. Напиши короткую запись в бестиарий о {static_title}.\n\n"
+        f"Контекст дня:\n{story_context}\n\n"
+        f"Выборы стаи:\n{choices_context}\n\n"
+        f"Стиль: 2-4 предложения, тёмный, атмосферный, метафоры. "
+        f"Опиши, что {static_title} сделал сегодня, как его поступок повлиял на стаю. "
+        f"Без markdown, без заголовков, просто текст."
+    )
+
+    try:
+        result = await llm_caller(
+            [{"role": "user", "content": prompt}],
+            temperature=0.9,
+            max_tokens=300,
+            want_json=False,
+        )
+        if result is None:
+            return None
+
+        response = result[0] if isinstance(result, tuple) else result
+        if isinstance(response, dict):
+            # Пытаемся извлечь текст из ответа
+            text = response.get("text") or response.get("content") or response.get("message", {}).get("content", "")
+        elif isinstance(response, str):
+            text = response
+        else:
+            return None
+
+        text = text.strip()
+        if len(text) < 20:
+            return None
+        return text
+
+    except Exception as e:
+        logger.warning("Бестиарий: AI-генерация не удалась для %s: %s", npc_key, e)
+        return None
+
+
+async def note_round(
+    session: AsyncSession,
+    round_row: Round,
+    season_key_value: str | None = None,
+    llm_caller=None,
+    story_context: str = "",
+    choices_context: str = "",
+) -> int:
     """Фиксирует встречи, которые несёт этот день. Возвращает число новых записей."""
     season = season_key_value or round_row.season or str(round_row.day_index)
     wanted: list[tuple[str, str]] = []
@@ -173,6 +240,18 @@ async def note_round(session: AsyncSession, round_row: Round, season_key_value: 
             wanted.append(("aretha", f"{title}. {desc}"))
     except Exception:
         pass
+
+    # AI-генерация описаний для NPC
+    ai_generated: dict[str, str] = {}
+    if llm_caller and (story_context or choices_context):
+        for beast_key, _ in wanted:
+            if beast_key in _NPC_BEAST_KEYS:
+                ai_text = await _generate_ai_entry(
+                    beast_key, story_context, choices_context, llm_caller
+                )
+                if ai_text:
+                    ai_generated[beast_key] = ai_text
+
     created = 0
     for beast_key, description in wanted:
         exists = (
@@ -186,13 +265,15 @@ async def note_round(session: AsyncSession, round_row: Round, season_key_value: 
         if exists is not None:
             continue
         title = BEASTIES.get(beast_key, (beast_key, ""))[0]
+        # Используем AI-описание, если есть
+        final_description = ai_generated.get(beast_key, description)
         session.add(
             BestiarySighting(
                 season=season,
                 beast_key=beast_key,
                 day_index=round_row.day_index,
                 title=title,
-                description=description,
+                description=final_description,
             )
         )
         created += 1
