@@ -1044,6 +1044,10 @@ async def _plan_and_render(
                         "consequence": choice.consequence,
                         "tag": choice.tag,
                         "image_path": "",
+                        "food_cost": choice.food_cost,
+                        "water_cost": choice.water_cost,
+                        "health_risk": choice.health_risk,
+                        "trust_change": choice.trust_change,
                     }
                 )
             logger.info("AIWorldEngine: сгенерированы AI-выборы для дня %d", day_index)

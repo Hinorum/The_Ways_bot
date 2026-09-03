@@ -39,6 +39,10 @@ class AIChoice:
     tag: str  # risk | care | cunning | custom
     characters_involved: list[str]
     location: str | None = None
+    food_cost: int = 0  # Сколько еды тратится (-)
+    water_cost: int = 0  # Сколько воды тратится (-)
+    health_risk: int = 0  # Максимальный урон здоровью (-)
+    trust_change: int = 0  # Изменение trust (+/-)
 
 
 @dataclass(frozen=True)
@@ -196,10 +200,27 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         '      "consequence": "Что произойдёт при выборе (1-2 предложения)",',
         '      "tag": "risk|care|cunning",',
         '      "characters_involved": ["имя"],',
-        '      "location": "название локации или null"',
+        '      "location": "название локации или null",',
+        '      "food_cost": 0,',
+        '      "water_cost": 0,',
+        '      "health_risk": 0,',
+        '      "trust_change": 0',
         '    }',
         '  ]',
         '}',
+        "",
+        "СТОИМОСТЬ ВЫБОРА (обязательные поля):",
+        "- food_cost: сколько еды тратится (0-3). 0 = бесплатно, 3 = дорого",
+        "- water_cost: сколько воды тратится (0-3)",
+        "- health_risk: максимальный урон здоровью (0-5). 0 = безопасно, 5 = смертельно",
+        "- trust_change: изменение доверия (-3 до +3). -3 = предательство, +3 = героизм",
+        "",
+        "ПРАВИЛА ДЛЯ ЦЕН:",
+        "- risk: health_risk >= 2, food_cost >= 1",
+        "- care: trust_change >= 1, food_cost >= 1",
+        "- cunning: health_risk >= 1, trust_change <= 0",
+        "- Каждый выбор должен иметь ХОТЯ БЫ ОДНУ ненулевую стоимость",
+        "- Дорогие выборы дают больше награды (опиши в consequence)",
         "",
         "ТРЕБОВАНИЯ К TAG:",
         "- risk: опасный путь, шанс потерять или получить много",
@@ -211,6 +232,7 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "2. Иметь конкретные последствия",
         "3. Вовлекать хотя бы одного персонажа",
         "4. Происходить в определённой локации",
+        "5. Иметь конкретную стоимость (еда/вода/здоровье/доверие)",
     ])
 
     return "\n".join(parts)
@@ -297,6 +319,10 @@ async def generate_ai_choices(
                         tag=item.get("tag", "custom"),
                         characters_involved=item.get("characters_involved", []),
                         location=item.get("location"),
+                        food_cost=int(item.get("food_cost", 0) or 0),
+                        water_cost=int(item.get("water_cost", 0) or 0),
+                        health_risk=int(item.get("health_risk", 0) or 0),
+                        trust_change=int(item.get("trust_change", 0) or 0),
                     )
                 )
 
@@ -388,7 +414,7 @@ async def record_choice(
     votes_count: int = 0,
     won: bool = False,
 ) -> WorldChoice:
-    """Записывает выбор в БД."""
+    """Записывает выбор в БД и применяет стоимость к стае."""
 
     world_choice = WorldChoice(
         day_index=day_index,
@@ -401,6 +427,32 @@ async def record_choice(
         won=won,
     )
     session.add(world_choice)
+
+    # Применяем стоимость к PackState (только для выигравшего выбора)
+    if won:
+        from app.models import PackState
+        from sqlalchemy import select as sa_select
+
+        q = sa_select(PackState).limit(1)
+        result = await session.execute(q)
+        pack = result.scalar_one_or_none()
+
+        if pack:
+            # Еда: +2 за выбор, -cost
+            pack.hunger = max(0, min(10, pack.hunger + 2 - choice.food_cost))
+            # Вода: +2 за выбор, -cost
+            pack.thirst = max(0, min(10, pack.thirst + 2 - choice.water_cost))
+            # Здоровье: -risk (рандомно от 0 до health_risk)
+            import random
+            actual_damage = random.randint(0, choice.health_risk) if choice.health_risk > 0 else 0
+            pack.health = max(0, min(10, pack.health - actual_damage))
+            pack.last_updated_day = day_index
+
+            logger.info(
+                "AIWorldEngine: выбор '%s' применён: hunger=%d, thirst=%d, health=%d (урон=%d)",
+                choice.title, pack.hunger, pack.thirst, pack.health, actual_damage,
+            )
+
     await session.flush()
     return world_choice
 

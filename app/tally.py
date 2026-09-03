@@ -259,7 +259,23 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
         mark = " ← 🏆 След" if position == round_row.winner_card else ""
         stake_nano = stakes.get(position, 0)
         stake_str = f" ({from_nano(stake_nano):.2f} Gram)" if stake_nano > 0 else ""
-        lines.append(f"{names[position]}: {counts.get(position, 0)}{stake_str}{mark}")
+
+        # Стоимость выбора
+        card = next((c for c in round_row.cards if c.position == position), None)
+        cost_parts = []
+        if card:
+            if card.food_cost > 0:
+                cost_parts.append(f"−{card.food_cost} еда")
+            if card.water_cost > 0:
+                cost_parts.append(f"−{card.water_cost} вода")
+            if card.health_risk > 0:
+                cost_parts.append(f"⚡{card.health_risk} урон")
+            if card.trust_change != 0:
+                sign = "+" if card.trust_change > 0 else ""
+                cost_parts.append(f"{sign}{card.trust_change} доверие")
+        cost_str = f" 💰{', '.join(cost_parts)}" if cost_parts else ""
+
+        lines.append(f"{names[position]}: {counts.get(position, 0)}{stake_str}{cost_str}{mark}")
     # Коэффициент: если есть ставки на победивший путь
     if multiplier is not None and multiplier > 0:
         lines.append(f"🎯 Коэффициент: ×{multiplier:.2f}")

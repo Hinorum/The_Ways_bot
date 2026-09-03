@@ -183,6 +183,11 @@ class Card(Base):
     image_path: Mapped[str] = mapped_column(String(400))
     consequence: Mapped[str] = mapped_column(Text)
     tag: Mapped[str] = mapped_column(String(16), default="care")
+    # Стоимость выбора (для AI World Engine)
+    food_cost: Mapped[int] = mapped_column(Integer, default=0)
+    water_cost: Mapped[int] = mapped_column(Integer, default=0)
+    health_risk: Mapped[int] = mapped_column(Integer, default=0)
+    trust_change: Mapped[int] = mapped_column(Integer, default=0)
 
     round: Mapped[Round] = relationship(back_populates="cards")
 
