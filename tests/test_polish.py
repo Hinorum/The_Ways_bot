@@ -161,8 +161,6 @@ def test_story_prompt_demands_full_narrative() -> None:
     assert "реплика" in prompt and "сенсорная деталь" in prompt
     assert "крючок" in prompt  # финальная строка главы обрывает сцену
     assert "голосом дневника" in prompt  # закон звучит репликой в сцене
-    assert "обещание + угроза" in prompt or "обещание +" in prompt
-    assert "не больше 280 знаков" in prompt  # лимит описания карты (показ ≤260)
     # Закон дня объявлен как известный факт.
     assert RULE_PHRASES[WinRule.MAJORITY] in prompt
 

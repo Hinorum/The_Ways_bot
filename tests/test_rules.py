@@ -49,9 +49,9 @@ def test_results_text_explains_the_lot() -> None:
         vote_counts_json='{"0": 0, "1": 1, "2": 1}',
         tie_note="Голоса разделились (II и III) — жребий закона по обязательству дня выбрал путь III.",
         cards=[
-            SimpleNamespace(position=0, title="Сон вповалку", consequence="с0"),
-            SimpleNamespace(position=1, title="Чужое имя", consequence="с1"),
-            SimpleNamespace(position=2, title="Красный сигнал", consequence="с2"),
+            SimpleNamespace(position=0, title="Сон вповалку", consequence="с0", food_cost=0, water_cost=0, health_risk=0, trust_change=0, emotional_consequence="", npc_reactions_json="{}"),
+            SimpleNamespace(position=1, title="Чужое имя", consequence="с1", food_cost=0, water_cost=0, health_risk=0, trust_change=0, emotional_consequence="", npc_reactions_json="{}"),
+            SimpleNamespace(position=2, title="Красный сигнал", consequence="с2", food_cost=0, water_cost=0, health_risk=0, trust_change=0, emotional_consequence="", npc_reactions_json="{}"),
         ],
     )
     text = format_results(round_row)

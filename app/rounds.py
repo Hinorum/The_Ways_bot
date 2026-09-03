@@ -1053,8 +1053,19 @@ async def _plan_and_render(
                 )
             logger.info("AIWorldEngine: сгенерированы AI-выборы для дня %d", day_index)
         else:
-            # Фолбэк на фиксированные карты
-            for position, card in enumerate(chapter["cards"]):
+            # Фолбэк на карты из главы (если AI вернул карточки) или офлайн-пул
+            chapter_cards = chapter.get("cards") or []
+            if not chapter_cards:
+                # AI не вернул карточки — генерируем из офлайн-пула
+                from app.lore import _cards
+                import secrets as _secrets
+                rng = _secrets.SystemRandom()
+                offline_cards = _cards(rng, day_index)
+                chapter_cards = [
+                    {"title": c[0], "description": c[1], "consequence": c[2], "tag": tag}
+                    for c, tag in zip(offline_cards, ["risk", "care", "cunning"])
+                ]
+            for position, card in enumerate(chapter_cards[:3]):
                 cards_payload.append(
                     {
                         "position": position,
@@ -1065,11 +1076,21 @@ async def _plan_and_render(
                         "image_path": "",
                     }
                 )
-            logger.info("AIWorldEngine: фолбэк на фиксированные карты для дня %d", day_index)
+            logger.info("AIWorldEngine: фолбэк на карты для дня %d", day_index)
     except Exception as e:
         logger.warning("AIWorldEngine: ошибка генерации AI-выборов: %s", e)
-        # Фолбэк на фиксированные карты
-        for position, card in enumerate(chapter["cards"]):
+        # Фолбэк на карты из главы или офлайн-пул
+        chapter_cards = chapter.get("cards") or []
+        if not chapter_cards:
+            from app.lore import _cards
+            import secrets as _secrets
+            rng = _secrets.SystemRandom()
+            offline_cards = _cards(rng, day_index)
+            chapter_cards = [
+                {"title": c[0], "description": c[1], "consequence": c[2], "tag": tag}
+                for c, tag in zip(offline_cards, ["risk", "care", "cunning"])
+            ]
+        for position, card in enumerate(chapter_cards[:3]):
             cards_payload.append(
                 {
                     "position": position,
