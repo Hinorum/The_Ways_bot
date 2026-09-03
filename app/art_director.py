@@ -46,7 +46,7 @@ ART_SYSTEM_PROMPT = (
     "мелково-белая отметка в форме апострофа — знак Еретика; "
     "биолюминесцентная бирюза — коридоры и стены лабиринта; "
     "тёплое золото — миски, чудо и память стаи; "
-    "пыльно-серый — архив и папки Архивариуса; "
+    "пыльно-серый — страницы старого дневника; "
     "тёмно-коричневый и грязно-оранжевый — подвал, Крыса и обглоданные таблички; "
     "зеленовато-золотой и тени длиннее обычного — предвестия Анубиса и чаши весов."
 )
@@ -112,12 +112,9 @@ _CHARACTER_MOTIFS = {
         "and a satchel of glowing memory vials, an old dusty silent radio "
         "slung on a strap at his hip"
     ),
-    "архивариус": (
-        "Caretaker of Paths, the labyrinth master, a gaunt dog in a cloak adorned with "
-        "labyrinth symbols, a glowing lantern instead of spectacles, a ring of "
-        "ancient keys on his belt, every key opens a different corridor, he does "
-        "not show the path — he chooses which path to open today, "
-        "written records and living memory"
+    "дневник": (
+        "an old weathered journal with faded pages, glowing faintly in the dark, "
+        "pages turning by themselves, whispering secrets of the labyrinth"
     ),
     "администратор": (
         "faceless Administrator, a tall silhouette of counting hands and "

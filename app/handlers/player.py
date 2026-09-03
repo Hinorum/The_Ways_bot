@@ -113,9 +113,9 @@ async def cmd_start(message: Message) -> None:
         f"{day_mark(uid)} <b>{settings.world_name}</b>",
         "",
         "Потерянные собаки идут сквозь лабиринт нестабильных коридоров.",
-        "Ты — один из них. Каждое утро Архивариус выносит три тропы",
-        "и объявляет Закон дня: большинство, меньшинство или середина.",
-        "Он видит обе версии каждого дня и торгует расхождениями.",
+        "Ты — один из них. Каждое утро Старый дневник шепчет три тропы",
+        "и объявляет Правило дня: большинство, меньшинство или середина.",
+        "Он хранит спорные версии каждого дня.",
         "",
         "Один выбор на всех. Победивший путь впечатается в мир.",
         "Завтрашняя глава вырастет из того, что ты выберешь сейчас.",
@@ -642,7 +642,7 @@ _SNIFF_SCENES = (
     "стаю заново. {calling_title} не считает — он слышит, когда счёт сбивается.",
     "Короткий отдых в «{place}»: миски остывают, а твой нюх греется о чужое воспоминание. "
     "{calling_title} знает: память — тоже провизия.",
-    "Ночь у карт в «{place}». Ты перебираешь запахи дня, как папки Архивариуса. "
+    "Ночь у карт в «{place}». Ты перебираешь запахи дня, как страницы дневника. "
     "{calling_title} откладывает один запах на завтра: пригодится.",
     "Во сне в «{place}» ты видишь тропу без карт. {calling_title} просыпается раньше всех "
     "и молчит об этом до итогов.",
@@ -770,7 +770,7 @@ async def on_remember(callback: CallbackQuery) -> None:
                 for index, option in enumerate(quiz["options"])
             ]
         )
-    await callback.message.answer("🧠 Архивариус прищуривается: «Откуда этот след?»", reply_markup=keyboard)
+    await callback.message.answer("📖 Дневник шепчет: «Откуда этот след?»", reply_markup=keyboard)
     await callback.answer()
 
 
@@ -816,16 +816,16 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
         session.add(WatcherState(key=marker, value="1"))
         if correct:
             await register_memory_hit(session, player.id, round_id)
-            await callback.answer("Архивариус молча ставит галочку. ✨ +1 нюх.", show_alert=True)
+            await callback.answer("Дневник молча ставит галочку. ✨ +1 нюх.", show_alert=True)
             if callback.message is not None:
                 try:
                     await callback.message.answer(
-                        "📚 «Память лабиринта пополнилась», — шепчет Архивариус и не объясняет, чью."
+                        "📚 «Память лабиринта пополнилась», — шепчет дневник и не объясняет, чью."
                     )
                 except Exception:
                     pass
         else:
-            await callback.answer("Архивариус хмурится: «Не тот след». Попробуй завтра.", show_alert=True)
+            await callback.answer("Дневник молчит: «Не тот след». Попробуй завтра.", show_alert=True)
         await session.commit()
 
 
