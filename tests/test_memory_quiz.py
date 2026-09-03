@@ -68,7 +68,7 @@ def test_keyboard_remember_is_conditional() -> None:
 def test_correct_memory_choice_uses_index_not_text() -> None:
     # Регресс-ловушка: handler раньше сверял текст варианта с множеством
     # индексов (всегда False) — верный ответ никогда не засчитывался,
-    # из-за чего призвание «Архивариус» и «+1 нюх» были недостижимы.
+    # из-за чего призвание «Жрец» и «+1 нюх» были недостижимы.
     from app.echoes import correct_memory_choice
 
     quiz = build_memory_quiz(501, 33, ["Тёплые миски"], ["Старый приют", "Гулкий мост"])

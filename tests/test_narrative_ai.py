@@ -136,7 +136,7 @@ class TestKolmogorovScore:
 class TestIsSummaryQuality:
     def test_good_summary(self) -> None:
         text = (
-            "Архивариус нашёл старую карту в подземелье. Портал дрожит на краю. "
+            "Дневник нашёл старую карту в подземелье. Портал дрожит на краю. "
             "Стая решает идти через тёмный коридор. Лай отражается от стен."
         )
         assert is_summary_quality(text) is True

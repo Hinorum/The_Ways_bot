@@ -79,7 +79,7 @@ def sample_ai_response():
                 "description": "Страж стоит у двери. Можно отвлечь его шумом.",
                 "consequence": "Если получится — пройдём. Если нет — будет хуже.",
                 "tag": "cunning",
-                "characters_involved": ["Архивариус"],
+                "characters_involved": ["Дневник"],
                 "location": "Ворота",
             },
         ]

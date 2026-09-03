@@ -23,7 +23,7 @@ def test_base_chapter_length() -> None:
 
 
 def test_expanded_in_prologue_and_midpoint() -> None:
-    prologue = _prompt("Сезон: акт 1.\nПРОЛОГ, день 2 — «Архивариус».", is_expanded=True)
+    prologue = _prompt("Сезон: акт 1.\nПРОЛОГ, день 2 — «Дневник».", is_expanded=True)
     assert "1400-1700 знаков" in prologue and prologue.count("1400-1700") == 2
     midpoint = _prompt("Сезон: акт 2.\nПОВОРОТ СЕРЕДИНЫ: сегодня Хозяин Ошибки.", is_expanded=True)
     assert "1400-1700 знаков" in midpoint

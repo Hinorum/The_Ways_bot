@@ -30,7 +30,7 @@ def test_no_prologue_after_seven() -> None:
 def test_season_block_injects_prologue_by_run_day() -> None:
     for day, fragment in (
         (1, "Приход"),
-        (2, "Архивариус"),
+        (2, "Старый дневник"),
         (3, "Лайнер"),
         (4, "Баркод"),
         (5, "Свернувший с Пути"),
