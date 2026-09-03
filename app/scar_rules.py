@@ -183,15 +183,28 @@ async def process_round_scars(
         triggered = check_streak_for_scar(history_tags, rule, current_day)
         if triggered is None:
             continue
-        # Проверяем, нет ли уже такого шрама
+        
+        # Проверяем, нет ли уже такого шрама за последние 3 дня
+        # Используем limit(1) и scalar() вместо scalar_one_or_none()
+        # чтобы избежать ошибки MultipleResultsFound
         existing = await session.execute(
-            select(WorldScar).where(
+            select(WorldScar.id)
+            .where(
                 WorldScar.scar_key == rule.scar_key,
                 WorldScar.created_day >= current_day - 3,
             )
+            .order_by(WorldScar.created_day.desc())
+            .limit(1)
         )
-        if existing.scalar_one_or_none() is not None:
+        
+        # scalar() вернёт первый id или None, если записей нет
+        existing_scar_id = existing.scalar()
+        
+        if existing_scar_id is not None:
+            # Такой шрам уже есть — пропускаем
             continue
+        
+        # Создаём новый шрам
         scar = await create_scar(session, rule, current_day)
         new_scars.append(scar)
 
