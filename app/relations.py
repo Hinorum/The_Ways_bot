@@ -109,7 +109,7 @@ NPC_WANTS = {
 _FOCUS_PHASES = ("завязка", "развитие", "ход")
 
 
-def npc_focus_line(run_day: int) -> str | None:
+def npc_focus_line(run_day: int, npc_titles: dict[str, str] | None = None) -> str | None:
     """Микро-линия NPC: одна хотелка развивается три дня подряд
     (завязка → развитие → ход), затем линия переходит к следующему
     персонажу. Детерминировано по дню забега; None — день ≤ 0."""
@@ -120,16 +120,37 @@ def npc_focus_line(run_day: int) -> str | None:
     npc = keys[arc % len(keys)]
     wants = NPC_WANTS[npc]
     want = wants[(arc // len(keys)) % len(wants)]
+    titles = npc_titles or NPC_TITLES
     return (
-        f"ФОКУС ДНЯ [{_FOCUS_PHASES[phase]}] — {NPC_TITLES[npc]}: {want}. "
+        f"ФОКУС ДНЯ [{_FOCUS_PHASES[phase]}] — {titles.get(npc, npc)}: {want}. "
         "Дай этому реплику или жест в сцене."
     )
-def relations_prompt_block(relations: dict[str, int]) -> str | None:
+
+
+async def get_npc_titles(session: AsyncSession | None = None) -> dict[str, str]:
+    """Возвращает словарь {npc_key: display_name} из БД или хардкода."""
+    if session is None:
+        return dict(NPC_TITLES)
+    try:
+        from app.npc_cog import get_npc_names
+        db_names = await get_npc_names(session)
+        if db_names:
+            # Объединяем: БД > хардкод
+            result = dict(NPC_TITLES)
+            result.update(db_names)
+            return result
+    except Exception:
+        pass
+    return dict(NPC_TITLES)
+
+
+def relations_prompt_block(relations: dict[str, int], npc_titles: dict[str, str] | None = None) -> str | None:
     """Строка для промпта главы. None — все отношения нейтральны."""
+    titles = npc_titles or NPC_TITLES
     parts = [
-        f"{NPC_TITLES[npc]} — {tone_line(value)}"
+        f"{titles[npc]} — {tone_line(value)}"
         for npc, value in relations.items()
-        if npc in NPC_TITLES and value != 0
+        if npc in titles and value != 0
     ]
     if not parts:
         return None
@@ -199,6 +220,7 @@ __all__ = [
     "apply_round_result",
     "clamp_relation",
     "default_relations",
+    "get_npc_titles",
     "load_relations",
     "relations_block_for_session",
     "relations_prompt_block",

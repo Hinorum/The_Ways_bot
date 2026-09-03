@@ -744,11 +744,12 @@ async def _plan_and_render(
     except Exception:
         pass
     # Отношения NPC к стае: канон последних дней в одной строке тона.
-    from app.relations import load_relations, relations_prompt_block
+    from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
     try:
         npc_sentiments = await load_relations(session)
-        relations_block = relations_prompt_block(npc_sentiments)
+        npc_titles = await get_npc_titles(session)
+        relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
         relations_block = None
@@ -854,12 +855,13 @@ async def _plan_and_render(
     order_axis, moral_axis = anchor_axes(anchor)
     # Фокус-день NPC (каждый третий день забега).
     try:
-        from app.relations import npc_focus_line
+        from app.relations import npc_focus_line, get_npc_titles
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
+        npc_titles = await get_npc_titles(session)
         focus_line = (
-            npc_focus_line(run_day_now) if "focus" in guests else None
+            npc_focus_line(run_day_now, npc_titles=npc_titles) if "focus" in guests else None
         )
     except Exception:
         focus_line = None

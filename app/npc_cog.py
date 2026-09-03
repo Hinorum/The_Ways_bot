@@ -336,6 +336,163 @@ async def seed_npc_motives(session: "AsyncSession") -> int:
     return inserted
 
 
+async def load_npc_profile(session: "AsyncSession", npc_key: str) -> dict | None:
+    """Загружает AI-профиль NPC из БД.
+
+    Возвращает dict с ключами: name, personality, speech_style, appearance, default_mood.
+    """
+    from sqlalchemy import select as sa_select
+    from app.models import NPCProfile
+
+    q = sa_select(NPCProfile).where(NPCProfile.npc_key == npc_key).limit(1)
+    result = await session.execute(q)
+    row = result.scalar_one_or_none()
+    if not row:
+        return None
+
+    return {
+        "name": row.name,
+        "personality": row.personality,
+        "speech_style": row.speech_style,
+        "appearance": row.appearance,
+        "default_mood": row.default_mood,
+    }
+
+
+async def seed_npc_profiles(session: "AsyncSession", llm_caller=None) -> int:
+    """Заполняет таблицу npc_profiles начальными данными.
+
+    Если передан llm_caller — генерирует через LLM.
+    Иначе — использует хардкод как фолбэк.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import NPCProfile
+
+    # Хардкод как фолбэк
+    _FALLBACK_PROFILES = {
+        "liner": {
+            "name": "Лайнер",
+            "personality": "Опытный скаут, помнит каждый коридор. Говорит коротко, по делу. Ценит стайную дисциплину.",
+            "speech_style": "Дёрганый, военный. Короткие фразы. Часто обращается к «правилам».",
+            "appearance": "Среднего размера волк со шрамом на морде, потёртый шлем с фонариком.",
+            "default_mood": "neutral",
+        },
+        "master": {
+            "name": "Администратор",
+            "personality": "Хранитель систем и правил. Знает каждую камеру. Считает стаю инструментом, но уважает её выбор.",
+            "speech_style": "Официальный, с техническими терминами. Иногда саркастичен.",
+            "appearance": "Огромный волк в потёртой куртке с нашивками,.eye-implant мерцает синим.",
+            "default_mood": "neutral",
+        },
+        "heretic": {
+            "name": "Еретик",
+            "personality": "Бунтарь, сомневается в системе. Ищет правду за пределами коридоров. Опасен, но искренен.",
+            "speech_style": "Философский, метафоричный. Часто цитирует «старые тексты».",
+            "appearance": "Худой, рубленый волк с выгоревшей шерстью, глаза горят янтарём.",
+            "default_mood": "neutral",
+        },
+    }
+
+    inserted = 0
+    for npc_key, fallback in _FALLBACK_PROFILES.items():
+        # Проверяем существование
+        q = (
+            sa_select(sa_func.count())
+            .select_from(NPCProfile)
+            .where(NPCProfile.npc_key == npc_key)
+        )
+        result = await session.execute(q)
+        exists = result.scalar() > 0
+        if exists:
+            continue
+
+        # Если есть LLM — генерируем через AI
+        profile_data = fallback
+        if llm_caller:
+            try:
+                ai_profile = await _generate_npc_profile_via_llm(npc_key, llm_caller)
+                if ai_profile:
+                    profile_data = ai_profile
+            except Exception:
+                pass  # Используем фолбэк
+
+        row = NPCProfile(
+            npc_key=npc_key,
+            name=profile_data["name"],
+            personality=profile_data["personality"],
+            speech_style=profile_data.get("speech_style", ""),
+            appearance=profile_data.get("appearance", ""),
+            default_mood=profile_data.get("default_mood", "neutral"),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_npc_profile_via_llm(npc_key: str, llm_caller) -> dict | None:
+    """Генерирует профиль NPC через LLM."""
+
+    _ROLE_DESCRIPTIONS = {
+        "liner": "Лайнер — опытный скаут стаи, помнит каждый коридор лабиринта. Говорит коротко, по делу.",
+        "master": "Администратор — хранитель систем и правил лабиринта. Знает каждую камеру, считает стаю инструментом.",
+        "heretic": "Еретик — бунтарь, сомневается в системе, ищет правду за пределами коридоров.",
+    }
+
+    role_desc = _ROLE_DESCRIPTIONS.get(npc_key, f"NPC с ключом {npc_key}")
+
+    prompt = (
+        f"Создай короткий профиль NPC для текстовой RPG в мире постапокалиптического лабиринта.\n\n"
+        f"Роль: {role_desc}\n\n"
+        f"Верни JSON:\n"
+        f'{{"name": "Имя", "personality": "Характер и привычки (2-3 предложения)", '
+        f'"speech_style": "Как говорит (1-2 предложения)", '
+        f'"appearance": "Внешность (1 предложение)", '
+        f'"default_mood": "neutral"}}\n\n'
+        f"Имя должно быть русским, коротким, запоминающимся."
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=400, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict) and all(k in response for k in ("name", "personality")):
+        return {
+            "name": response["name"][:80],
+            "personality": response["personality"][:300],
+            "speech_style": response.get("speech_style", "")[:150],
+            "appearance": response.get("appearance", "")[:150],
+            "default_mood": response.get("default_mood", "neutral"),
+        }
+
+    return None
+
+
+async def get_npc_name(session: "AsyncSession", npc_key: str) -> str:
+    """Возвращает имя NPC из БД или хардкода."""
+    profile = await load_npc_profile(session, npc_key)
+    if profile:
+        return profile["name"]
+    # Фолбэк
+    _FALLBACK_NAMES = {"liner": "Лайнер", "master": "Администратор", "heretic": "Еретик"}
+    return _FALLBACK_NAMES.get(npc_key, npc_key)
+
+
+async def get_npc_names(session: "AsyncSession") -> dict[str, str]:
+    """Возвращает имена всех NPC из БД."""
+    from sqlalchemy import select as sa_select
+    from app.models import NPCProfile
+
+    q = sa_select(NPCProfile)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    return {row.npc_key: row.name for row in rows}
+
+
 def npc_cogs_block(
     cogs: list[NPCCogResult],
     max_lines: int = 8,

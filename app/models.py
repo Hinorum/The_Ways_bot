@@ -792,3 +792,23 @@ class NPCMotive(Base):
     action_text: Mapped[str] = mapped_column(Text)
     thought_pool_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of thoughts
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NPCProfile(Base):
+    """AI-сгенерированный профиль NPC — замена хардкода.
+
+    Хранит имя, личность, стиль речи, отношение к стае.
+    Генерируется один раз при старте, обновляется по мере развития отношений.
+    """
+
+    __tablename__ = "npc_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    npc_key: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # liner, master, heretic
+    name: Mapped[str] = mapped_column(String(80))  # AI-сгенерированное имя
+    personality: Mapped[str] = mapped_column(Text)  # Характер, привычки, таргет
+    speech_style: Mapped[str] = mapped_column(Text, default="")  # Как говорит
+    appearance: Mapped[str] = mapped_column(Text, default="")  # Внешность (для обложек)
+    default_mood: Mapped[str] = mapped_column(String(16), default="neutral")  # Начальное настроение
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
