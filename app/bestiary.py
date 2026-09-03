@@ -133,9 +133,9 @@ async def note_round(session: AsyncSession, round_row: Round, season_key_value: 
         title, desc = BEASTIES["pit"]
         wanted.append(("pit", f"{title}. {desc}"))
     else:
-        # Закон объявлен — Архивариус вышел из тени и показал расхождение.
-        title, desc = BEASTIES["archivist"]
-        wanted.append(("archivist", f"{title}. {desc}"))
+        # Закон объявлен — дневник вышел из тени и показал расхождение.
+        title, desc = BEASTIES["journal"]
+        wanted.append(("journal", f"{title}. {desc}"))
     anchor_moment = round_row.opens_at
     from app.season import run_position, get_cached_anchor
 
