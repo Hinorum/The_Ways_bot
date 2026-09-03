@@ -108,17 +108,117 @@ PROLOGUE_HINTS: dict[int, str] = {
 }
 
 
+async def load_prologue_beats_from_db(session, season: int) -> dict[int, dict[str, str]]:
+    """Загружает биты пролога из БД. Возвращает {day_index: {title, block}}."""
+    from sqlalchemy import select as sa_select
+    from app.models import PrologueBeat
 
-def prologue_block(run_day: int, alignment_label: str | None = None, season: int = 1) -> str | None:
+    q = sa_select(PrologueBeat).where(PrologueBeat.season == season)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+
+    beats = {}
+    for row in rows:
+        beats[row.day_index] = {"title": row.title, "block": row.block}
+    return beats
+
+
+async def seed_prologue_beats(session, llm_caller=None, season: int = 1) -> int:
+    """Заполняет таблицу prologue_beats начальными данными.
+
+    Если передан llm_caller — генерирует через LLM.
+    Иначе — использует хардкод как фолбэк.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import PrologueBeat
+
+    inserted = 0
+    source_beats = PROLOGUE_BEATS if season == 1 else _SEASON2_PROLOGUE_BEATS
+
+    for day_index, beat_data in source_beats.items():
+        # Проверяем существование
+        q = (
+            sa_select(sa_func.count())
+            .select_from(PrologueBeat)
+            .where(PrologueBeat.season == season, PrologueBeat.day_index == day_index)
+        )
+        result = await session.execute(q)
+        exists = result.scalar() > 0
+        if exists:
+            continue
+
+        # Если есть LLM — генерируем через AI
+        title = beat_data["title"]
+        block = beat_data["block"]
+        if llm_caller:
+            try:
+                ai_beat = await _generate_prologue_beat_via_llm(day_index, season, llm_caller)
+                if ai_beat:
+                    title = ai_beat["title"]
+                    block = ai_beat["block"]
+            except Exception:
+                pass  # Используем фолбэк
+
+        row = PrologueBeat(
+            season=season,
+            day_index=day_index,
+            title=title,
+            block=block,
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_prologue_beat_via_llm(day_index: int, season: int, llm_caller) -> dict | None:
+    """Генерирует бит пролога через LLM."""
+
+    season_desc = "первый" if season == 1 else "второй"
+    prompt = (
+        f"Создай бит пролога для текстовой RPG в мире постапокалиптического лабиринта.\n\n"
+        f"Сезон: {season_desc}\n"
+        f"День пролога: {day_index}\n\n"
+        f"Контекст: Стая из 5 собак входит в лабиринт. Каждый день пролога "
+        f"знакомит с одним персонажем или аспектом мира.\n\n"
+        f"Верни JSON:\n"
+        f'{{"title": "Короткое название (2-3 слова)", '
+        f'"block": "Блок для промпта (3-5 предложений, атмосферный, метафоричный)"}}\n\n'
+        f"Стиль: тёмный, атмосферный, без markdown."
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=400, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict) and all(k in response for k in ("title", "block")):
+        return {
+            "title": response["title"][:80],
+            "block": response["block"][:500],
+        }
+
+    return None
+
+
+
+def prologue_block(run_day: int, alignment_label: str | None = None, season: int = 1, db_beats: dict | None = None) -> str | None:
     """Блок пролога для промпта главы. None — день вне пролога.
 
     Сезон 1: полный 7-дневный пролог — знакомство с миром и лицами.
     Сезон 2+: короткий 3-дневный пролог — возвращение и память.
     Характер забега вплетается с первых дней.
+    db_beats: AI-сгенерированные биты из БД (опционально).
     """
     if season >= 2:
-        return _season2_prologue(run_day, alignment_label)
-    beat = PROLOGUE_BEATS.get(run_day)
+        return _season2_prologue(run_day, alignment_label, db_beats=db_beats)
+
+    # Используем AI-биты из БД если есть, иначе — хардкод
+    beats = db_beats or PROLOGUE_BEATS
+    beat = beats.get(run_day)
     if beat is None:
         return None
     tail = (
@@ -169,9 +269,10 @@ _SEASON2_PROLOGUE_BEATS: dict[int, dict[str, str]] = {
 }
 
 
-def _season2_prologue(run_day: int, alignment_label: str | None = None) -> str | None:
+def _season2_prologue(run_day: int, alignment_label: str | None = None, db_beats: dict | None = None) -> str | None:
     """Короткий пролог для сезонов 2+: 3 дня вместо 7, рефлексивный, без экспозиции."""
-    beat = _SEASON2_PROLOGUE_BEATS.get(run_day)
+    beats = db_beats or _SEASON2_PROLOGUE_BEATS
+    beat = beats.get(run_day)
     if beat is None:
         return None
     align = (
@@ -183,10 +284,11 @@ def _season2_prologue(run_day: int, alignment_label: str | None = None) -> str |
     return beat["block"] + align
 
 
-def prologue_title(run_day: int, season: int = 1) -> str | None:
+def prologue_title(run_day: int, season: int = 1, db_beats: dict | None = None) -> str | None:
     """Короткий титул дня пролога для статусной строки анонса."""
     if season >= 2:
-        beat = _SEASON2_PROLOGUE_BEATS.get(run_day)
+        beats = db_beats or _SEASON2_PROLOGUE_BEATS
     else:
-        beat = PROLOGUE_BEATS.get(run_day)
+        beats = db_beats or PROLOGUE_BEATS
+    beat = beats.get(run_day)
     return beat["title"] if beat else None

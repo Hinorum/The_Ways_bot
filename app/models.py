@@ -817,3 +817,20 @@ class NPCProfile(Base):
     default_mood: Mapped[str] = mapped_column(String(16), default="neutral")  # Начальное настроение
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PrologueBeat(Base):
+    """AI-сгенерированный бит пролога — замена хардкода.
+
+    Хранит контент для каждого дня пролога.
+    Генерируется один раз при старте сезона.
+    """
+
+    __tablename__ = "prologue_beats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[int] = mapped_column(Integer, index=True)  # Номер сезона
+    day_index: Mapped[int] = mapped_column(Integer)  # День пролога (1-7)
+    title: Mapped[str] = mapped_column(String(80))  # Название дня
+    block: Mapped[str] = mapped_column(Text)  # Блок для промпта
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
