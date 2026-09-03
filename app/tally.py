@@ -282,10 +282,15 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
     if getattr(round_row, "tie_note", None):
         lines.append(f"🤝 {round_row.tie_note}")
     winner = names[round_row.winner_card or 0]
-    consequence = _tg_escape(next(
-        card.consequence for card in round_row.cards if card.position == round_row.winner_card
-    ))
+    winner_card = next(
+        (card for card in round_row.cards if card.position == round_row.winner_card), None
+    )
+    consequence = _tg_escape(winner_card.consequence if winner_card else "")
     lines += ["", f"📜 Канон: {winner}", _clip(consequence, 240)]
+    # Эмоциональное описание
+    if winner_card and winner_card.emotional_consequence:
+        lines.append("")
+        lines.append(f"💫 {_tg_escape(winner_card.emotional_consequence)}")
     return "\n".join(lines)
 
 

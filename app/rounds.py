@@ -1048,6 +1048,7 @@ async def _plan_and_render(
                         "water_cost": choice.water_cost,
                         "health_risk": choice.health_risk,
                         "trust_change": choice.trust_change,
+                        "emotional_consequence": choice.emotional_consequence,
                     }
                 )
             logger.info("AIWorldEngine: сгенерированы AI-выборы для дня %d", day_index)

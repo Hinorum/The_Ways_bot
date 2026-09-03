@@ -43,6 +43,7 @@ class AIChoice:
     water_cost: int = 0  # Сколько воды тратится (-)
     health_risk: int = 0  # Максимальный урон здоровью (-)
     trust_change: int = 0  # Изменение trust (+/-)
+    emotional_consequence: str = ""  # Эмоциональное описание
 
 
 @dataclass(frozen=True)
@@ -204,7 +205,8 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         '      "food_cost": 0,',
         '      "water_cost": 0,',
         '      "health_risk": 0,',
-        '      "trust_change": 0',
+        '      "trust_change": 0,',
+        '      "emotional_consequence": "Эмоциональное описание (1-3 предложения)"',
         '    }',
         '  ]',
         '}',
@@ -214,6 +216,13 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "- water_cost: сколько воды тратится (0-3)",
         "- health_risk: максимальный урон здоровью (0-5). 0 = безопасно, 5 = смертельно",
         "- trust_change: изменение доверия (-3 до +3). -3 = предательство, +3 = героизм",
+        "",
+        "ЭМОЦИОНАЛЬНОЕ ОПИСАНИЕ (обязательно):",
+        "- Что увидели псы в момент выбора",
+        "- Что почувствовали (страх, надежду, гордость, боль)",
+        "- Как изменилась атмосфера вокруг",
+        "- Что останется в памяти стаи",
+        "- 1-3 предложения, красивый русский язык",
         "",
         "ПРАВИЛА ДЛЯ ЦЕН:",
         "- risk: health_risk >= 2, food_cost >= 1",
@@ -233,6 +242,7 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "3. Вовлекать хотя бы одного персонажа",
         "4. Происходить в определённой локации",
         "5. Иметь конкретную стоимость (еда/вода/здоровье/доверие)",
+        "6. Иметь эмоциональное описание",
     ])
 
     return "\n".join(parts)
@@ -323,6 +333,7 @@ async def generate_ai_choices(
                         water_cost=int(item.get("water_cost", 0) or 0),
                         health_risk=int(item.get("health_risk", 0) or 0),
                         trust_change=int(item.get("trust_change", 0) or 0),
+                        emotional_consequence=item.get("emotional_consequence", "")[:500],
                     )
                 )
 

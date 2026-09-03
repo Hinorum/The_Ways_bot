@@ -188,6 +188,8 @@ class Card(Base):
     water_cost: Mapped[int] = mapped_column(Integer, default=0)
     health_risk: Mapped[int] = mapped_column(Integer, default=0)
     trust_change: Mapped[int] = mapped_column(Integer, default=0)
+    # Эмоциональное описание последствий
+    emotional_consequence: Mapped[str] = mapped_column(Text, default="")
 
     round: Mapped[Round] = relationship(back_populates="cards")
 
