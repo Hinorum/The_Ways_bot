@@ -343,3 +343,139 @@ def arc_details_from_block(season_block: str | None) -> dict:
     if stage_idx is None and not mission:
         return {}
     return {"stage": stage_idx, "mission": mission}
+
+
+async def load_season_arc_from_db(session, season: int) -> list[dict] | None:
+    """Загружает арку сезона из БД. Возвращает список этапов или None."""
+    from sqlalchemy import select as sa_select
+    from app.models import SeasonArc
+
+    q = sa_select(SeasonArc).where(SeasonArc.season == season).order_by(SeasonArc.stage_index)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+
+    if not rows:
+        return None
+
+    stages = []
+    for row in rows:
+        import json
+        stages.append({
+            "index": row.stage_index,
+            "name": row.name,
+            "purpose": row.purpose,
+            "tone": row.tone,
+            "missions": tuple(json.loads(row.missions_json)) if row.missions_json else (),
+            "whisper": tuple(json.loads(row.whisper_json)) if row.whisper_json else (),
+            "teaser": tuple(json.loads(row.teaser_json)) if row.teaser_json else (),
+            "guest": row.guest or None,
+        })
+    return stages
+
+
+async def seed_season_arcs(session, llm_caller=None, season: int = 1) -> int:
+    """Заполняет таблицу season_arcs начальными данными.
+
+    Если передан llm_caller — генерирует через LLM.
+    Иначе — использует хардкод как фолбэк.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import SeasonArc
+    import json
+
+    inserted = 0
+    for stage in _ARC_STAGES:
+        # Проверяем существование
+        q = (
+            sa_select(sa_func.count())
+            .select_from(SeasonArc)
+            .where(SeasonArc.season == season, SeasonArc.stage_index == stage["index"])
+        )
+        result = await session.execute(q)
+        exists = result.scalar() > 0
+        if exists:
+            continue
+
+        # Если есть LLM — генерируем через AI
+        name = stage["name"]
+        purpose = stage["purpose"]
+        tone = stage.get("tone", "")
+        missions = list(stage.get("missions", ()))
+        whisper = list(stage.get("whisper", ()))
+        teaser = list(stage.get("teaser", ()))
+        guest = stage.get("guest", "")
+
+        if llm_caller:
+            try:
+                ai_stage = await _generate_season_stage_via_llm(stage["index"], season, llm_caller)
+                if ai_stage:
+                    name = ai_stage["name"]
+                    purpose = ai_stage["purpose"]
+                    tone = ai_stage.get("tone", tone)
+                    missions = ai_stage.get("missions", missions)
+                    whisper = ai_stage.get("whisper", whisper)
+                    teaser = ai_stage.get("teaser", teaser)
+                    guest = ai_stage.get("guest", guest)
+            except Exception:
+                pass  # Используем фолбэк
+
+        row = SeasonArc(
+            season=season,
+            stage_index=stage["index"],
+            name=name,
+            purpose=purpose,
+            tone=tone,
+            missions_json=json.dumps(missions, ensure_ascii=False),
+            whisper_json=json.dumps(whisper, ensure_ascii=False),
+            teaser_json=json.dumps(teaser, ensure_ascii=False),
+            guest=guest,
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_season_stage_via_llm(stage_index: int, season: int, llm_caller) -> dict | None:
+    """Генерирует этап сезона через LLM."""
+
+    stage_names = {0: "Вход", 1: "Поиск", 2: "Кризис", 3: "Финал"}
+    stage_name = stage_names.get(stage_index, f"Этап {stage_index}")
+
+    prompt = (
+        f"Создай этап сюжетной арки для текстовой RPG в мире постапокалиптического лабиринта.\n\n"
+        f"Сезон: {season}\n"
+        f"Этап: {stage_name} (индекс {stage_index}/3)\n\n"
+        f"Контекст: Стая из 5 собак проходит лабиринт. Каждый этап — 25% сезона.\n"
+        f"Этапы: Вход (знакомство) → Поиск (расследование) → Кризис (ломка) → Финал (выбор)\n\n"
+        f"Верни JSON:\n"
+        f'{{"name": "Название этапа", '
+        f'"purpose": "Цель этапа (1-2 предложения)", '
+        f'"tone": "Тон (1 предложение)", '
+        f'"missions": ["Миссия 1", "Миссия 2", "Миссия 3"], '
+        f'"whisper": ["Шёпот 1", "Шёпот 2", "Шёпот 3"], '
+        f'"teaser": ["Тизер 1", "Тизер 2"], '
+        f'"guest": "Гость этапа (1 предложение)"}}\n\n'
+        f"Стиль: тёмный, атмосферный, метафоричный."
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=800, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict) and all(k in response for k in ("name", "purpose")):
+        return {
+            "name": response["name"][:80],
+            "purpose": response["purpose"][:300],
+            "tone": response.get("tone", "")[:200],
+            "missions": [m[:150] for m in response.get("missions", [])],
+            "whisper": [w[:150] for w in response.get("whisper", [])],
+            "teaser": [t[:150] for t in response.get("teaser", [])],
+            "guest": response.get("guest", "")[:200],
+        }
+
+    return None

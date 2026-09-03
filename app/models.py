@@ -834,3 +834,25 @@ class PrologueBeat(Base):
     title: Mapped[str] = mapped_column(String(80))  # Название дня
     block: Mapped[str] = mapped_column(Text)  # Блок для промпта
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SeasonArc(Base):
+    """AI-сгенерированная арка сезона — замена хардкода.
+
+    Хранит контент для каждого этапа сезона (Вход/Поиск/Кризис/Финал).
+    Генерируется один раз при старте сезона.
+    """
+
+    __tablename__ = "season_arcs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[int] = mapped_column(Integer, index=True)  # Номер сезона
+    stage_index: Mapped[int] = mapped_column(Integer)  # Индекс этапа (0-3)
+    name: Mapped[str] = mapped_column(String(80))  # Название этапа
+    purpose: Mapped[str] = mapped_column(Text)  # Цель этапа
+    tone: Mapped[str] = mapped_column(Text, default="")  # Тон
+    missions_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of missions
+    whisper_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of whispers
+    teaser_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of teasers
+    guest: Mapped[str] = mapped_column(Text, default="")  # Гость этапа
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
