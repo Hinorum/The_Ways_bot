@@ -428,7 +428,7 @@ async def _teaser_job(round_id: int) -> None:
             text = _random.Random(f"teaser:{round_id}").choice(list(_TEASER_FALLBACKS))
         text = f"Маска дня — «{mask_title}»: {mask_mood}. {text}"
         if sealed:
-            text += " И это ещё не всё: закон дня вскроется вместе с итогами."
+            text += " И это ещё не всё: правило дня вскроется вместе с итогами."
         async with SessionLocal() as session2:
             session2.add(WatcherState(key=marker, value="1"))
             await session2.commit()

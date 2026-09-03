@@ -73,7 +73,7 @@ def test_status_text_survives_huge_cards() -> None:
     round_row.cards = cards
     text = status_text(round_row)
     # Фазовая строка и дедлайн не вытесняются длинными описаниями.
-    assert "Закон дня:" in text
+    assert "Правило дня:" in text
     assert "Голосование до:" in text
     for i in range(3):
         assert f"{['I', 'II', 'III'][i]}. Карта {i}" in text

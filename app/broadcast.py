@@ -76,11 +76,11 @@ def status_text(
         if sealed:
             commitment = round_row.rule_commitment.split(":")[0][:12]
             phase = (
-                "🗝 Закон дня запечатан архивом до итогов. "
+                "🗝 Правило дня запечатано до итогов. "
                 f"Обязательство: {commitment}…"
             )
         else:
-            phase = f"⚖️ Закон дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
+            phase = f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
     elif round_row.status.value == "tallying":
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:

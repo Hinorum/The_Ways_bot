@@ -337,7 +337,7 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
         current_rels = await load_relations(session)
         tag = winning.tag if winning else "care"
         shift_map = _SHIFTS.get(tag, {})
-        for npc_name in ("liner", "archivist", "master", "heretic"):
+        for npc_name in ("liner", "journal", "master", "heretic"):
             new_val = current_rels.get(npc_name, 0)
             shift = shift_map.get(npc_name, 0)
             old_val = max(-3, min(3, new_val - shift))

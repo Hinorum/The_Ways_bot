@@ -39,7 +39,7 @@ async def simulate(days: int, skip_images: bool) -> None:
             ).scalars().all()
             for echo in surfaced:
                 print(f"  Эхо [{echo.kind}]: {echo.title}")
-            print(f"\nЗакон дня объявлен (commitment {round_row.rule_commitment[:16]}…)")
+            print(f"\nПравило дня объявлено (commitment {round_row.rule_commitment[:16]}…)")
             votes = [0, 1, 1, 1, 2, 2]
             for index, position in enumerate(votes, start=1):
                 player = await session.get(Player, index)
