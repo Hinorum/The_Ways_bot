@@ -190,6 +190,8 @@ class Card(Base):
     trust_change: Mapped[int] = mapped_column(Integer, default=0)
     # Эмоциональное описание последствий
     emotional_consequence: Mapped[str] = mapped_column(Text, default="")
+    # Реакции NPC (JSON)
+    npc_reactions_json: Mapped[str] = mapped_column(Text, default="[]")
 
     round: Mapped[Round] = relationship(back_populates="cards")
 

@@ -291,6 +291,20 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
     if winner_card and winner_card.emotional_consequence:
         lines.append("")
         lines.append(f"💫 {_tg_escape(winner_card.emotional_consequence)}")
+    # Реакции NPC
+    if winner_card and winner_card.npc_reactions_json:
+        try:
+            import json
+            reactions = json.loads(winner_card.npc_reactions_json)
+            if reactions:
+                lines.append("")
+                for r in reactions[:3]:
+                    name = _tg_escape(str(r.get("name", "")))
+                    reaction = _tg_escape(str(r.get("reaction", "")))
+                    if name and reaction:
+                        lines.append(f"🐾 {name}: «{reaction}»")
+        except Exception:
+            pass
     return "\n".join(lines)
 
 

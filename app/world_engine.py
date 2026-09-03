@@ -44,6 +44,7 @@ class AIChoice:
     health_risk: int = 0  # Максимальный урон здоровью (-)
     trust_change: int = 0  # Изменение trust (+/-)
     emotional_consequence: str = ""  # Эмоциональное описание
+    npc_reactions: list = None  # Реакции NPC [{name, reaction}]
 
 
 @dataclass(frozen=True)
@@ -206,7 +207,8 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         '      "water_cost": 0,',
         '      "health_risk": 0,',
         '      "trust_change": 0,',
-        '      "emotional_consequence": "Эмоциональное описание (1-3 предложения)"',
+        '      "emotional_consequence": "Эмоциональное описание (1-3 предложения)",',
+        '      "npc_reactions": [{"name": "имя", "reaction": "что сказал/подумал"}]',
         '    }',
         '  ]',
         '}',
@@ -223,6 +225,13 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "- Как изменилась атмосфера вокруг",
         "- Что останется в памяти стаи",
         "- 1-3 предложения, красивый русский язык",
+        "",
+        "РЕАКЦИИ NPC (обязательно):",
+        "- 1-3 персонажа из characters_involved",
+        "- Что они сказали или подумали",
+        "- Как отреагировали на выбор",
+        "- Их характер и позиция",
+        "- 1-2 предложения на персонажа",
         "",
         "ПРАВИЛА ДЛЯ ЦЕН:",
         "- risk: health_risk >= 2, food_cost >= 1",
@@ -243,6 +252,7 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "4. Происходить в определённой локации",
         "5. Иметь конкретную стоимость (еда/вода/здоровье/доверие)",
         "6. Иметь эмоциональное описание",
+        "7. Иметь реакции NPC",
     ])
 
     return "\n".join(parts)
@@ -321,6 +331,17 @@ async def generate_ai_choices(
         choices = []
         for item in choices_text if isinstance(choices_text, list) else []:
             if isinstance(item, dict) and all(k in item for k in ("title", "description", "consequence", "tag")):
+                # Парсим npc_reactions
+                npc_reactions_raw = item.get("npc_reactions", [])
+                npc_reactions = []
+                if isinstance(npc_reactions_raw, list):
+                    for r in npc_reactions_raw:
+                        if isinstance(r, dict) and "name" in r and "reaction" in r:
+                            npc_reactions.append({
+                                "name": str(r["name"])[:50],
+                                "reaction": str(r["reaction"])[:200],
+                            })
+
                 choices.append(
                     AIChoice(
                         title=item["title"][:120],
@@ -334,6 +355,7 @@ async def generate_ai_choices(
                         health_risk=int(item.get("health_risk", 0) or 0),
                         trust_change=int(item.get("trust_change", 0) or 0),
                         emotional_consequence=item.get("emotional_consequence", "")[:500],
+                        npc_reactions=npc_reactions[:3],
                     )
                 )
 
