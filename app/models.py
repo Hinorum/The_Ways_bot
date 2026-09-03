@@ -606,6 +606,11 @@ class ConsequenceBranch(Base):
     history_json: Mapped[str] = mapped_column(Text, default="[]")
     created_day: Mapped[int] = mapped_column(Integer)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    # AI-generated branch content
+    title: Mapped[str] = mapped_column(String(120), default="")
+    stage_text: Mapped[str] = mapped_column(Text, default="")  # Текущая стадия
+    choices_json: Mapped[str] = mapped_column(Text, default="{}")  # {tag: description}
+    resolution: Mapped[str] = mapped_column(Text, default="")  # Как разрешается
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -201,14 +201,48 @@ async def create_branch(
     session: AsyncSession,
     tree: ConsequenceTree,
     current_day: int,
+    ai_title: str = "",
+    ai_stage_text: str = "",
+    ai_choices: dict[str, str] | None = None,
+    ai_resolution: str = "",
 ) -> ConsequenceBranch:
-    """Создаёт новую ветвь последствий."""
+    """Создаёт новую ветвь последствий с AI-контентом."""
     branch = ConsequenceBranch(
         branch_key=tree.key,
         current_stage=0,
         history_json="[]",
         created_day=current_day,
         resolved=False,
+        title=ai_title or tree.trigger_card,
+        stage_text=ai_stage_text,
+        choices_json=json.dumps(ai_choices or {}, ensure_ascii=False),
+        resolution=ai_resolution,
+    )
+    session.add(branch)
+    await session.flush()
+    return branch
+
+
+async def create_branch_ai(
+    session: AsyncSession,
+    branch_key: str,
+    current_day: int,
+    title: str,
+    stage_text: str,
+    choices: dict[str, str],
+    resolution: str = "",
+) -> ConsequenceBranch:
+    """Создаёт новую AI-ветвь без привязки к CONSEQUENCE_TREES."""
+    branch = ConsequenceBranch(
+        branch_key=branch_key,
+        current_stage=0,
+        history_json="[]",
+        created_day=current_day,
+        resolved=False,
+        title=title,
+        stage_text=stage_text,
+        choices_json=json.dumps(choices, ensure_ascii=False),
+        resolution=resolution,
     )
     session.add(branch)
     await session.flush()
@@ -252,15 +286,25 @@ def format_active_branches(branches: list[ConsequenceBranch]) -> str:
 
     lines = ["АКТИВНЫЕ ПОСЛЕДСТВИЯ:"]
     for branch in branches:
-        tree = CONSEQUENCE_TREES.get(branch.branch_key)
-        if tree is None:
-            continue
-        text = get_stage_text(tree, branch.current_stage)
-        if text:
-            choices = get_stage_choices(tree, branch.current_stage)
+        # Используем AI-контент из БД если есть
+        if branch.stage_text:
+            text = branch.stage_text
+            choices = json.loads(branch.choices_json) if branch.choices_json else {}
             choice_text = ""
             if choices:
                 choice_text = f" Выбор: {'/'.join(choices.keys())}."
             lines.append(f"- {text}{choice_text}")
+        else:
+            # Фолбэк к хардкоду
+            tree = CONSEQUENCE_TREES.get(branch.branch_key)
+            if tree is None:
+                continue
+            text = get_stage_text(tree, branch.current_stage)
+            if text:
+                choices = get_stage_choices(tree, branch.current_stage)
+                choice_text = ""
+                if choices:
+                    choice_text = f" Выбор: {'/'.join(choices.keys())}."
+                lines.append(f"- {text}{choice_text}")
 
     return "\n".join(lines) if len(lines) > 1 else ""
