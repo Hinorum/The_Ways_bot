@@ -700,11 +700,29 @@ async def _plan_and_render(
     prev_summary = None
     if day_index <= 2:
         prev_summary = await previous_season_summary(session, key)
+
+    # Load AI-generated prologue beats and season arc from DB
+    db_prologue_beats = None
+    db_season_arc = None
+    try:
+        from app.prologue import load_prologue_beats_from_db
+        from app.story_arc import load_season_arc_from_db
+        from app.season import current_season as _current_season
+        from datetime import datetime as _dt
+
+        season_num = _current_season(anchor, open_moment)
+        db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
+        db_season_arc = await load_season_arc_from_db(session, season=season_num)
+    except Exception:
+        pass
+
     sblock = build_season_block(
         anchor=anchor,
         moment=open_moment,
         balance=balance,
         previous_season_summary=prev_summary,
+        db_prologue_beats=db_prologue_beats,
+        db_season_arc=db_season_arc,
     )
     places_block = (
         await places_memory_block(session) if "places" in guests else None

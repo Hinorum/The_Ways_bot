@@ -494,8 +494,13 @@ def season_block(
     moment: datetime,
     balance: dict[str, int] | None = None,
     previous_season_summary: str | None = None,
+    db_prologue_beats: dict | None = None,
+    db_season_arc: list[dict] | None = None,
 ) -> str:
-    """Готовый блок для промпта главы по якорю забега."""
+    """Готовый блок для промпта главы по якорю забега.
+    db_prologue_beats: AI-сгенерированные биты пролога из БД (опционально).
+    db_season_arc: AI-сгенерированная арка сезона из БД (опционально).
+    """
     run_day, total = run_position(anchor, moment)
     season = current_season(anchor, moment)
     order_axis, moral_axis = anchor_axes(anchor)
@@ -519,7 +524,8 @@ def season_block(
     from app.prologue import prologue_block
 
     pblock = prologue_block(
-        run_day, alignment_label=alignment_label(order_axis, moral_axis), season=season
+        run_day, alignment_label=alignment_label(order_axis, moral_axis), season=season,
+        db_beats=db_prologue_beats,
     )
     if pblock:
         block += "\n" + pblock

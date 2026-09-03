@@ -85,6 +85,25 @@ async def boot_game(bot) -> None:
     except Exception:
         log.exception("GEPA: не удалось загрузить ген при старте")
 
+    # AI World Engine: seed NPC profiles, prologue beats, season arcs
+    try:
+        from app.db import async_session
+        from app.npc_cog import seed_npc_profiles
+        from app.prologue import seed_prologue_beats
+        from app.story_arc import seed_season_arcs
+        from app.story import _chat_completion
+
+        async with async_session() as session:
+            npc_count = await seed_npc_profiles(session, llm_caller=_chat_completion)
+            prologue_count = await seed_prologue_beats(session, llm_caller=_chat_completion, season=1)
+            arc_count = await seed_season_arcs(session, llm_caller=_chat_completion, season=1)
+            log.info(
+                "AI World Engine: seeded %d NPC profiles, %d prologue beats, %d season arcs",
+                npc_count, prologue_count, arc_count,
+            )
+    except Exception:
+        log.exception("AI World Engine: seeding failed — using hardcoded fallbacks")
+
     for name, step in (("backup", boot_maintenance), ("profile", lambda: apply_profile(bot))):
         try:
             await step()
