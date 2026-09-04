@@ -924,10 +924,14 @@ async def _plan_and_render(
         pass
     # AI-атмосферные пэды из БД для compose_chapter
     try:
-        from app.lore import load_all_atmospheric, load_all_voice_examples, load_all_inner_thoughts
+        from app.lore import load_all_atmospheric, load_all_voice_examples, load_all_voice_banned, load_all_inner_thoughts
+        from app.season import load_villain_events, load_heretic_events
         await load_all_atmospheric(session, season=1)
         await load_all_voice_examples(session, season=1)
+        await load_all_voice_banned(session, season=1)
         await load_all_inner_thoughts(session, season=1)
+        await load_villain_events(session, season=1)
+        await load_heretic_events(session, season=1)
     except Exception:
         pass
     chapter = await generate_chapter(

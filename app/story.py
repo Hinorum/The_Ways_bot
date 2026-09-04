@@ -484,22 +484,26 @@ async def _generate_session_characters(
     return ""
 
 
-def _build_dynamic_prompt(text_blocks: tuple[str, ...] = ()) -> str:
-    """Собирает системный промпт: база + микро-блоки для упомянутых NPC."""
+def _build_dynamic_prompt(text_blocks: tuple[str, ...] = (), micro_prompts_override: dict[str, str] | None = None) -> str:
+    """Собирает системный промпт: база + микро-блоки для упомянутых NPC.
+
+    micro_prompts_override: AI-сгенерированные микро-промпты из БД.
+    """
     import re as _re
     text = " ".join(text_blocks).lower()
     parts = [BASE_PROMPT]
+    prompts = micro_prompts_override or CHARACTER_MICRO_PROMPTS
     for name in NPC_NAMES:
         if name in text:
-            key = name if name in CHARACTER_MICRO_PROMPTS else name.split()[0]
-            if key in CHARACTER_MICRO_PROMPTS:
-                parts.append(CHARACTER_MICRO_PROMPTS[key])
+            key = name if name in prompts else name.split()[0]
+            if key in prompts:
+                parts.append(prompts[key])
     return "\n\n".join(parts)
 
 
-def _build_scene_prompt(text_blocks: tuple[str, ...] = ()) -> str:
+def _build_scene_prompt(text_blocks: tuple[str, ...] = (), micro_prompts_override: dict[str, str] | None = None) -> str:
     """Динамический промпт для _free_story_llm с учётом персонажей сцены."""
-    return _build_dynamic_prompt(text_blocks)
+    return _build_dynamic_prompt(text_blocks, micro_prompts_override=micro_prompts_override)
 
 
 # Полный промпт для обратной совместимости (тесты, fallback)
@@ -1663,7 +1667,15 @@ async def _free_story_llm(
         season_block or "", villain_block or "", alignment_block or "",
         focus_line or "", " ".join(previous_beats[-3:]),
     )
-    _system_prompt = _build_scene_prompt(_text_blocks)
+    # AI-микро-промпты из профилей
+    _micro_prompts = None
+    if npc_profiles:
+        try:
+            from app.npc_cog import build_npc_micro_prompts
+            _micro_prompts = build_npc_micro_prompts(npc_profiles)
+        except Exception:
+            pass
+    _system_prompt = _build_scene_prompt(_text_blocks, micro_prompts_override=_micro_prompts)
     _old_tokens = _estimate_tokens(DM_SYSTEM_PROMPT)
     _new_tokens = _estimate_tokens(_system_prompt)
     if _new_tokens < _old_tokens:

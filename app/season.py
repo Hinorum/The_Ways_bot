@@ -630,8 +630,13 @@ _MIDPOINT_BLOCK = (
 def villain_event(season_key_value: str, stage: int, salt: str = "") -> str:
     """Событие ступени плана. Соль делает перезапуски сезона разными:
     полный сброс стирает план, и новая арка начинается с других событий,
-    хотя пул и тональность ступеней неизменны."""
-    pool = _VILLAIN_EVENTS.get(stage) or _VILLAIN_EVENTS[0]
+    хотя пул и тональность ступеней неизменны.
+
+    Приоритет: AI cache > хардкод.
+    """
+    # Пытаемся взять из AI-кэша (сезон 1)
+    ai_pool = get_villain_event_from_cache(1, stage)
+    pool = list(ai_pool) if ai_pool and len(ai_pool) >= 3 else list(_VILLAIN_EVENTS.get(stage, _VILLAIN_EVENTS[0]))
     digest = hashlib.sha256(f"villain:{season_key_value}:{stage}:{salt}".encode()).hexdigest()
     rng = random.Random(int(digest[:16], 16))
     return rng.choice(pool)
@@ -713,8 +718,11 @@ def heretic_event(anchor_key_value: str, stage: int, run_day: int) -> str:
     Детерминировано по (сезон, ступень, слот): внутри окна событие стабильно
     (канон не дёргается), между окнами ротируется по пулу, между сезонами
     различается солью якоря.
+
+    Приоритет: AI cache > хардкод.
     """
-    pool = _HERETIC_EVENTS.get(stage) or _HERETIC_EVENTS[0]
+    ai_pool = get_heretic_event_from_cache(1, stage)
+    pool = list(ai_pool) if ai_pool and len(ai_pool) >= 3 else list(_HERETIC_EVENTS.get(stage, _HERETIC_EVENTS[0]))
     slot = max(0, run_day // 4)
     digest = hashlib.sha256(
         f"heretic:{anchor_key_value}:{stage}:{slot}".encode()
@@ -733,3 +741,221 @@ def heretic_prompt_block(anchor_key_value: str, stage: int, run_day: int) -> str
         "(деталь, реплика или жест самого Еретика), не пересказывай и не "
         "объясняй его мотивы напрямую."
     )
+
+
+# ── AI-генерация событий злодея и еретика ──
+
+_villain_events_cache: dict[str, list[str]] = {}
+_heretic_events_cache: dict[str, list[str]] = {}
+
+
+async def seed_villain_events(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует события злодея для каждой ступени (0-3)."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    inserted = 0
+    for stage in range(4):
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "villain_events",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == str(stage),
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = list(_VILLAIN_EVENTS.get(stage, _VILLAIN_EVENTS[0]))
+        if llm_caller:
+            try:
+                ai_pool = await _generate_villain_events_via_llm(stage, llm_caller)
+                if ai_pool and len(ai_pool) >= 3:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="villain_events",
+            season=season,
+            phase=str(stage),
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_villain_events_via_llm(stage: int, llm_caller) -> list[str] | None:
+    """Генерирует события злодея через LLM."""
+    _STAGE_DESC = {
+        0: "Администратор только пробует мир на прочность — приметы мелкие, бытовые",
+        1: "Его вмешательство стало явным — мир отвечает стае чужими решениями",
+        2: "Он обращается к стае напрямую — послания, инвентаризации, полушаги",
+        3: "Его ход сделан — план виден целиком, до финала сезона осталось дожить",
+    }
+
+    prompt = (
+        f"Создай 5 событий для NPC «Администратор» в текстовой RPG.\n\n"
+        f"Ступень сезона: {_STAGE_DESC.get(stage, stage)}\n\n"
+        f"Контекст: постапокалиптический лабиринт, стая из 5 собак, тёмная атмосфера.\n"
+        f"Каждое событие — 1-2 предложения, описывает действие Администратора.\n\n"
+        f"Верни JSON-массив из 5 строк:\n"
+        f'["событие 1", "событие 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=1000, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:5]
+
+    return None
+
+
+async def seed_heretic_events(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует события еретика для каждой ступени (0-3)."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    inserted = 0
+    for stage in range(4):
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "heretic_events",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == str(stage),
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = list(_HERETIC_EVENTS.get(stage, _HERETIC_EVENTS[0]))
+        if llm_caller:
+            try:
+                ai_pool = await _generate_heretic_events_via_llm(stage, llm_caller)
+                if ai_pool and len(ai_pool) >= 3:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="heretic_events",
+            season=season,
+            phase=str(stage),
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_heretic_events_via_llm(stage: int, llm_caller) -> list[str] | None:
+    """Генерирует события еретика через LLM."""
+    _STAGE_DESC = {
+        0: "Его имя ещё не звучит — мир полон примет, что правила здесь чьи-то",
+        1: "Еретик назвался и вводит свои законы — сама механика мира его почерк",
+        2: "Его прошлое догоняет — письма старой Стаи ставят под сомнение саму затею",
+        3: "Спор открыт — два плана, два коридора, и один Лай на двоих",
+    }
+
+    prompt = (
+        f"Создай 5 событий для NPC «Еретик» в текстовой RPG.\n\n"
+        f"Ступень сезона: {_STAGE_DESC.get(stage, stage)}\n\n"
+        f"Контекст: постапокалиптический лабиринт, стая из 5 собак, тёмная атмосфера.\n"
+        f"Каждое событие — 1-2 предложения, описывает действие Еретика.\n\n"
+        f"Верни JSON-массив из 5 строк:\n"
+        f'["событие 1", "событие 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=1000, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:5]
+
+    return None
+
+
+async def load_villain_events(session, season: int) -> None:
+    """Загружает события злодея из БД в кэш."""
+    global _villain_events_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    for stage in range(4):
+        key = f"villain:{season}:{stage}"
+        if key not in _villain_events_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "villain_events",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == str(stage),
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _villain_events_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass
+
+
+async def load_heretic_events(session, season: int) -> None:
+    """Загружает события еретика из БД в кэш."""
+    global _heretic_events_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    for stage in range(4):
+        key = f"heretic:{season}:{stage}"
+        if key not in _heretic_events_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "heretic_events",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == str(stage),
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _heretic_events_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass
+
+
+def get_villain_event_from_cache(season: int, stage: int) -> list[str] | None:
+    """Возвращает события злодея из кэша."""
+    key = f"villain:{season}:{stage}"
+    return _villain_events_cache.get(key)
+
+
+def get_heretic_event_from_cache(season: int, stage: int) -> list[str] | None:
+    """Возвращает события еретика из кэша."""
+    key = f"heretic:{season}:{stage}"
+    return _heretic_events_cache.get(key)

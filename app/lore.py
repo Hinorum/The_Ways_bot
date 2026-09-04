@@ -1896,6 +1896,125 @@ async def load_all_voice_examples(session, season: int) -> None:
                     pass
 
 
+# ── Voice banned arrays ──
+
+async def seed_voice_banned(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует banned arrays для voice cards каждого NPC."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    # NPC keys для banned arrays = character name keys
+    char_keys = ("Баркод", "Стежка", "Вектор", "Пиксель", "Безымянная")
+
+    inserted = 0
+    for npc_key in char_keys:
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "voice_banned",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = _DEFAULT_VOICE_BANNED.get(npc_key, ["..."])
+        if llm_caller:
+            try:
+                ai_pool = await _generate_voice_banned_via_llm(npc_key, llm_caller)
+                if ai_pool and len(ai_pool) >= 2:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="voice_banned",
+            season=season,
+            phase=npc_key,
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_voice_banned_via_llm(npc_key: str, llm_caller) -> list[str] | None:
+    """Генерирует banned array через LLM."""
+    style = NPC_VOICE_STYLE.get(npc_key, "нейтральный")
+
+    prompt = (
+        f"Создай список из 3 запрещённых стилей речи для NPC «{npc_key}».\n\n"
+        f"Стиль NPC: {style}\n\n"
+        f"Контекст: текстовая RPG, постапокалиптический лабиринт.\n"
+        f"Запреты — короткие фразы (2-5 слов), описывающие что NPC НЕ ДОЛЖЕН говорить.\n\n"
+        f"Верни JSON-массив из 3 строк:\n"
+        f'["запрет 1", "запрет 2", "запрет 3"]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.7, max_tokens=300, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:100] for s in response if isinstance(s, str) and len(s) > 3][:3]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:100] for s in items if isinstance(s, str) and len(s) > 3][:3]
+
+    return None
+
+
+_DEFAULT_VOICE_BANNED = {
+    "Баркод": ["точка в конце числа", "отказ от ставки", "округление"],
+    "Стежка": ["длинные предложения", "прямая правда", "спойлер"],
+    "Вектор": ["плавные фразы", "признание ошибки", "сомнение"],
+    "Пиксель": ["уверенные короткие фразы", "остановка", "разочарование"],
+    "Безымянная": ["длинные объяснения", "вопросы", "доверие"],
+}
+
+
+_voice_banned_cache: dict[str, list[str]] = {}
+
+
+def get_voice_banned_from_cache(season: int, npc_key: str) -> list[str] | None:
+    """Возвращает banned array из кэша."""
+    key = f"banned:{season}:{npc_key}"
+    return _voice_banned_cache.get(key)
+
+
+async def load_all_voice_banned(session, season: int) -> None:
+    """Загружает все banned arrays из БД в кэш."""
+    global _voice_banned_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    char_keys = ("Баркод", "Стежка", "Вектор", "Пиксель", "Безымянная")
+    for npc_key in char_keys:
+        key = f"banned:{season}:{npc_key}"
+        if key not in _voice_banned_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "voice_banned",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _voice_banned_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass
+
+
 async def seed_inner_thoughts(session, llm_caller=None, season: int = 1) -> int:
     """Генерирует inner thoughts для каждого NPC через LLM."""
     from sqlalchemy import select as sa_select, func as sa_func

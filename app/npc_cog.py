@@ -556,22 +556,23 @@ def build_voice_cards_from_profiles(profiles: dict[str, dict]) -> dict[str, dict
     """Строит _VOICE_CARDS из AI-профилей БД.
 
     Фолбэк на хардкод если профиль не найден.
-    Использует AI-сгенерированные examples из кэша.
+    Использует AI-сгенерированные examples и banned из кэша.
     """
     from app.story import _VOICE_CARDS
-    from app.lore import get_voice_examples_from_cache
+    from app.lore import get_voice_examples_from_cache, get_voice_banned_from_cache
 
     result = {}
     for npc_key, profile in profiles.items():
         speech_style = profile.get("speech_style", "")
-        # AI examples из кэша (сезон 1)
+        # AI examples и banned из кэша (сезон 1)
         ai_examples = get_voice_examples_from_cache(1, npc_key)
+        ai_banned = get_voice_banned_from_cache(1, npc_key)
         if npc_key in _VOICE_CARDS:
             if speech_style:
                 result[npc_key] = {
                     "pattern": speech_style,
                     "examples": ai_examples or _VOICE_CARDS[npc_key].get("examples", []),
-                    "banned": _VOICE_CARDS[npc_key].get("banned", []),
+                    "banned": ai_banned or _VOICE_CARDS[npc_key].get("banned", []),
                 }
             else:
                 result[npc_key] = _VOICE_CARDS[npc_key]
@@ -580,7 +581,7 @@ def build_voice_cards_from_profiles(profiles: dict[str, dict]) -> dict[str, dict
                 result[npc_key] = {
                     "pattern": speech_style,
                     "examples": ai_examples or [],
-                    "banned": [],
+                    "banned": ai_banned or [],
                 }
     return result
 
