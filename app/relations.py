@@ -127,6 +127,35 @@ def npc_focus_line(run_day: int, npc_titles: dict[str, str] | None = None) -> st
     )
 
 
+async def npc_focus_line_ai(
+    run_day: int,
+    relations: dict[str, int] | None = None,
+    recent_events: str = "",
+    npc_titles: dict[str, str] | None = None,
+) -> str | None:
+    """AI-версия npc_focus_line: генерирует динамическую реакцию NPC.
+
+    Фолбэк к статическому npc_focus_line при ошибке.
+    """
+    if run_day <= 0:
+        return None
+    arc, phase = divmod(max(1, run_day) - 1, 3)
+    keys = list(NPC_TITLES)
+    npc = keys[arc % len(keys)]
+    titles = npc_titles or NPC_TITLES
+    sentiment = (relations or {}).get(npc, 0)
+
+    want = await generate_npc_want(npc, sentiment, run_day)
+    if want is None:
+        return npc_focus_line(run_day, npc_titles)
+
+    phase_name = _FOCUS_PHASES[phase]
+    return (
+        f"ФОКУС ДНЯ [{phase_name}] — {titles.get(npc, npc)}: {want}. "
+        "Дай этому реплику или жест в сцене."
+    )
+
+
 async def get_npc_titles(session: AsyncSession | None = None) -> dict[str, str]:
     """Возвращает словарь {npc_key: display_name} из БД или хардкода."""
     if session is None:
@@ -211,6 +240,79 @@ async def apply_round_result(session: AsyncSession, winner_tag: str | None) -> b
 
 async def relations_block_for_session(session: AsyncSession) -> str | None:
     return relations_prompt_block(await load_relations(session))
+
+
+async def generate_npc_reaction(
+    npc_key: str,
+    sentiment: int,
+    recent_events: str = "",
+    recent_choices: str = "",
+) -> str | None:
+    """AI генерирует уникальную реакцию NPC на основе настроения и событий.
+
+    Возвращает 1-2 предложения от第三人称 или None при ошибке.
+    """
+    from app.story import _chat_completion
+
+    title = NPC_TITLES.get(npc_key, npc_key)
+    word = tone_word(sentiment)
+
+    prompt = (
+        f"NPC: {title}. Настроение к стае: {word} ({sentiment:+d}/3).\n"
+        f"Недавние события: {recent_events or 'нет'}\n"
+        f"Последние выборы стаи: {recent_choices or 'нет'}\n\n"
+        f"Напиши 1-2 предложения от третьего лица: как {title} сегодня "
+        "реагирует на стаю. Учти настроение. Без диалогов, только авторское "
+        "описание поведения или жеста."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=20,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 200 else text[:197] + "..."
+    except Exception:
+        return None
+
+
+async def generate_npc_want(
+    npc_key: str,
+    sentiment: int,
+    day_index: int,
+) -> str | None:
+    """AI генерирует сегодняшнюю хотелку NPC на основе контекста.
+
+    Возвращает строку-описание или None при ошибке.
+    """
+    from app.story import _chat_completion
+
+    title = NPC_TITLES.get(npc_key, npc_key)
+    word = tone_word(sentiment)
+
+    prompt = (
+        f"NPC: {title}. Отношение: {word} ({sentiment:+d}/3). День {day_index}.\n\n"
+        f"Напиши одну короткую хотелку или цель {title} на сегодня "
+        "(1 предложение, от первого лица «я» или без подлежащего). "
+        "Контекст: постапокалиптический лабиринт, стая собак-путешественников."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=20,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 120 else text[:117] + "..."
+    except Exception:
+        return None
 
 
 __all__ = [
