@@ -161,6 +161,32 @@ def check_tree_trigger(card_title: str) -> ConsequenceTree | None:
     return None
 
 
+async def try_dynamic_branch(
+    session: AsyncSession,
+    card_title: str,
+    card_tag: str,
+    card_description: str,
+    day_index: int,
+    recent_events: str = "",
+) -> ConsequenceBranch | None:
+    """Пытается создать AI-ветвь. При ошибке — фолбэк к хардкоду."""
+    data = await generate_dynamic_branch(
+        card_title, card_tag, card_description, day_index, recent_events,
+    )
+    if data is None:
+        return None
+    branch_key = f"dynamic_{day_index}_{card_tag}"
+    stages = data.get("stages", [])
+    first_text = stages[0]["text"] if stages else f"Последствия выбора «{card_title}»"
+    first_choices = stages[0].get("choices") if stages else None
+    return await create_branch_ai(
+        session, branch_key, day_index,
+        title=data.get("title", card_title),
+        stage_text=first_text,
+        choices=first_choices or {},
+    )
+
+
 def get_stage_text(tree: ConsequenceTree, stage_idx: int) -> str:
     """Возвращает текст стадии дерева."""
     if 0 <= stage_idx < len(tree.stages):
@@ -247,6 +273,58 @@ async def create_branch_ai(
     session.add(branch)
     await session.flush()
     return branch
+
+
+async def generate_dynamic_branch(
+    card_title: str,
+    card_tag: str,
+    card_description: str,
+    day_index: int,
+    recent_events: str = "",
+) -> dict | None:
+    """AI генерирует динамическую цепочку последствий на основе выбора стаи.
+
+    Возвращает dict с title, stages (список стадий) или None при ошибке.
+    Каждая стадия: {text, delay_days, auto_advance, choices: {tag: effect} | None}.
+    """
+    from app.story import _chat_completion
+
+    prompt = (
+        f"День {day_index}. Карта: «{card_title}» (тег: {card_tag}).\n"
+        f"Описание: {card_description}\n"
+        f"Недавние события: {recent_events or 'нет'}\n\n"
+        "Сгенерируй цепочку последствий этого выбора — 2-3 стадии, "
+        "которые развиваются через несколько дней. Каждая стадия — "
+        "короткая фраза (1-2 предложения) от третьего лица.\n"
+        "Первая стадия — немедленный эффект, auto_advance=true, delay_days=3-5.\n"
+        "Вторая стадия — выбор: care (мягко) или risk (силой).\n"
+        "Третья стадия (опционально) — финал, auto_advance=true.\n\n"
+        'Ответь ТОЛЬКО JSON: {"title": "...", "stages": [{"text": "...", '
+        '"delay_days": 4, "auto_advance": true, "choices": null}, '
+        '{"text": "...", "delay_days": 0, "auto_advance": false, '
+        '"choices": {"care": "effect", "risk": "effect"}}]}'
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=30,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        raw = str(payload["choices"][0]["message"]["content"]).strip()
+        import re
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group())
+        if "title" not in data or "stages" not in data:
+            return None
+        return data
+    except Exception:
+        return None
 
 
 async def advance_branch(
