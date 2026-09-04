@@ -87,13 +87,13 @@ async def boot_game(bot) -> None:
 
     # AI World Engine: seed NPC profiles, prologue beats, season arcs
     try:
-        from app.db import async_session
+        from app.db import SessionLocal
         from app.npc_cog import seed_npc_profiles
         from app.prologue import seed_prologue_beats
         from app.story_arc import seed_season_arcs
         from app.story import _chat_completion
 
-        async with async_session() as session:
+        async with SessionLocal() as session:
             npc_count = await seed_npc_profiles(session, llm_caller=_chat_completion)
             prologue_count = await seed_prologue_beats(session, llm_caller=_chat_completion, season=1)
             arc_count = await seed_season_arcs(session, llm_caller=_chat_completion, season=1)
