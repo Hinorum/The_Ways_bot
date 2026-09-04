@@ -45,6 +45,39 @@ from app.ton_utils import friendly_address, from_nano, normalize_address, to_nan
 
 logger = logging.getLogger(__name__)
 
+
+async def _http_get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict | None = None,
+    headers: dict | None = None,
+    max_retries: int = 1,
+    retry_delay: float = 1.0,
+) -> httpx.Response:
+    """HTTP GET с retry для 5xx ошибок."""
+    last_exc = None
+    for attempt in range(1 + max_retries):
+        try:
+            response = await client.get(url, params=params, headers=headers)
+            if response.status_code < 500 or attempt == max_retries:
+                return response
+            logger.warning(
+                "HTTP %d от %s (попытка %d/%d), повтор через %.1fs",
+                response.status_code, url, attempt + 1, 1 + max_retries, retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                raise
+            logger.warning(
+                "HTTP ошибка %s от %s (попытка %d/%d), повтор через %.1fs",
+                exc, url, attempt + 1, 1 + max_retries, retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+    raise last_exc  # type: ignore[misc]
+
 # Синглтон кошелька казначея: подключение к лайтсерверам дорогое, держим одно.
 _wallet_lock = asyncio.Lock()
 _provider = None
@@ -299,7 +332,7 @@ async def _markers_via_toncenter() -> set[str]:
     }
     headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
     async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(url, params=params, headers=headers)
+        response = await _http_get_with_retry(client, url, params=params, headers=headers)
         response.raise_for_status()
         items = response.json().get("transactions") or []
     markers: set[str] = set()
@@ -671,7 +704,7 @@ async def _tonapi_account_raw(address: str) -> dict:
     url = f"{settings.active_ton_api_base}/v2/accounts/{address}"
     headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
     async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(url, headers=headers)
+        response = await _http_get_with_retry(client, url, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -680,7 +713,7 @@ async def _toncenter_account(address: str) -> dict:
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/accountInformation"
     headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
     async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(url, params={"address": address}, headers=headers)
+        response = await _http_get_with_retry(client, url, params={"address": address}, headers=headers)
         response.raise_for_status()
         return response.json()
 

@@ -99,6 +99,9 @@ async def compensate_dispute(
         return "сумма должна быть числом в Gram"
     if amount <= 0:
         return "сумма должна быть положительной"
+    max_payout = getattr(settings, "max_payout_gram", 1000)
+    if from_nano(amount) > max_payout:
+        return f"сумма {from_nano(amount):.4g} Gram превышает лимит {max_payout} Gram — проверь число"
     session.add(
         Payout(
             round_id=d.round_id,

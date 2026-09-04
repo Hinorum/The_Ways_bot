@@ -14,7 +14,12 @@ def is_valid_ton_address(address: str) -> bool:
         try:
             normalized = candidate.replace("-", "+").replace("_", "/")
             decoded = base64.b64decode(normalized, validate=True)
-            return len(decoded) == 36
+            if len(decoded) != 36:
+                return False
+            # CRC16-XMODEM: байты 34-35 должны совпадать с контрольной суммой
+            expected_crc = _crc16_xmodem(decoded[:34])
+            actual_crc = int.from_bytes(decoded[34:36], "big")
+            return expected_crc == actual_crc
         except Exception:
             return False
     if len(candidate) == 66 and candidate[1] == ":":
