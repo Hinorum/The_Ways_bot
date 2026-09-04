@@ -264,8 +264,12 @@ def _get_dynamic_places(
             elif key in ("warm_hearth", "sanctuary", "false_trails"):
                 unlocked.add(key)
 
+    # Places: сначала из БД (AI), потом фолбэк на хардкод
+    cached_places = get_places_from_cache(season=1)
+    base_places = cached_places if cached_places and len(cached_places) >= 10 else _PLACES
+
     places = []
-    for p in _PLACES:
+    for p in base_places:
         scar_key = p.get("scar_key")
         if scar_key and scar_key in blocked:
             continue
@@ -275,7 +279,7 @@ def _get_dynamic_places(
         if scar_key in _UNLOCKED_PLACES:
             places.append(_UNLOCKED_PLACES[scar_key])
 
-    return places if places else _PLACES  # fallback к оригиналу
+    return places if places else base_places  # fallback к оригиналу
 
 # Заголовок, описание и последствие связаны намертво: карта называет то,
 # что делает, и последствие вытекает именно из этого действия. Никаких
@@ -953,31 +957,17 @@ def compose_chapter(
     # Детали собак меняются по фазе сезона: ранняя (1-10), средняя (11-20), поздняя (21+).
     def _dog_pads(day: int) -> tuple[str, ...]:
         phase = "early" if day <= 10 else "mid" if day <= 20 else "late"
-        barkod = {
-            "early": "Баркод-Следопыт провёл когтем по пыли черту и сел рядом: цифры сегодня подождут. Он считает не дни, а ставки — его глаза блестят, когда кто-то рискует.",
-            "mid": "Баркод-Следопыт сидит у порога и считает прохожих. Он считает всех — даже тех, кого нет. А ещё считает шансы:他知道概率今天对谁有利, но молчит — азартнее того, кто ставит.",
-            "late": "Баркод-Следопыт молчит и считает. Цифры уже не сходятся — он знает это, но молчит. Он давно перестал считать дни: он считает победы, и каждая проигранная — нож в бок.",
-        }
-        stezhka = {
-            "early": "Стежка-Разбойник обошла миски по кругу трижды и села ровно напротив середины — так ей спокойнее. Она знает то, что скрывает — и улыбается, когда стая не замечает.",
-            "mid": "Стежка-Разбойник замерла с поднятой мордой — она слышит то, чего ещё нет. Она слышит и молчит: правда для неё — оружие, а не дар.",
-            "late": "Стежка-Разбойник легла мордой к картам раньше всех. Она уже знает, какая тропа пахнет зимой. Но знание без правды — ложь, которую она носит как ошейник.",
-        }
-        vektor = {
-            "early": "Вектор-Варвар начал пересчитывать тропы вслух и сбился на второй: даже упрямство умеет молчать. Он стоит против ветра не потому, что сильный — а потому, что не умеет признать, что ветер прав.",
-            "mid": "Вектор-Варвар обошёл карты по кругу и не тронул ни одну: даже упрямство умеет ждать. Но ожидание — не мудрость: он ждёт, пока мир сдаётся, а не наоборот.",
-            "late": "Вектор-Варвар пересчитал всех и утвердительно кивнул: стая на месте, можно идти. Он прав, но прав по-своему — и чужая правда для него не существует.",
-        }
-        pixel = {
-            "early": "Пиксель-Оккультист ловит лапой цифровой дождь — мир нервничает не меньше стаи. Он ловит искры, как наркотик — каждая новая заставляет забыть о последней.",
-            "mid": "Пиксель-Оккультист поймал искру из лабиринта и принёс её в зубах — та потухла у миски. Он гоняется за каждым мигом, который можно поймать, — и теряет то, что уже держал.",
-            "late": "Пиксель-Оккультист заворожено следит за мерцанием счётчика — цифры танцуют, и он теперь знает, что они значат. Он стал частью цифрового мира, который не отпускает.",
-        }
-        nameless = {
-            "early": "Безымянная-Варлок вернулась с края поляны с чужим ошейником в зубах — пустым, но ещё тёплым. Она не доверяет ни одному имени — потому что имена лгут.",
-            "mid": "Безымянная-Варлок принесла из тумана косточку — не еду, а память о ком-то. Она помнит каждого, кто её предал — и не прощает ни одного.",
-            "late": "Безымянная-Варлок стоит у лабиринта и не входит: она слышит то, что стая ещё не услышала. Она ждёт, пока мир ошибётся — и тогда войдёт.",
-        }
+        # Dog pads: сначала из БД (AI), потом фолбэк на хардкод
+        def _pad(npc_key: str) -> str:
+            cached = get_dog_pad_from_cache(season=1, npc_key=npc_key, phase=phase)
+            if cached:
+                return cached
+            return _FALLBACK_DOG_PADS.get(npc_key, {}).get(phase, "...")
+        barkod = _pad("Баркод")
+        stezhka = _pad("Стежка")
+        vektor = _pad("Вектор")
+        pixel = _pad("Пиксель")
+        nameless = _pad("Безымянная")
         _EARLY_ATMOSPHERIC = (
             "Кабель под землёй дёрнулся — кто-то потянул за нить, которой ещё нет на карте.",
             "На пороге вырос иней в форме лапы. Утром его уже не было.",
@@ -1054,7 +1044,7 @@ def compose_chapter(
                 "mid": _MID_ATMOSPHERIC,
                 "late": _LATE_ATMOSPHERIC,
             }[phase]
-        return (barkod[phase], stezhka[phase], vektor[phase], pixel[phase], nameless[phase]) + atmospheric
+        return (barkod, stezhka, vektor, pixel, nameless) + atmospheric
 
     _floor_pads = _dog_pads(day_index)
     _phase = "early" if day_index <= 10 else "mid" if day_index <= 20 else "late"
@@ -1182,7 +1172,12 @@ def _echo(last: str | None, tags: list[str]) -> str:
             "Коридоры сегодня молчат иначе — в их тишине слышен чужой расчёт.",
         ),
     }
-    pool = tones[dominant]
+    # Echo tones: сначала из БД (AI), потом фолбэк на хардкод
+    cached_tones = get_echo_tones_from_cache(season=1, tone=dominant)
+    if cached_tones and len(cached_tones) >= 3:
+        pool = tuple(cached_tones)
+    else:
+        pool = tones[dominant]
     # Вариативность структуры: иногда deed в начале, иногда тон.
     rng = _rng(0, f"echo:{title}:{dominant}")
     variant = rng.randrange(5)
@@ -2167,3 +2162,517 @@ async def load_all_inner_thoughts(session, season: int) -> None:
                     _inner_thoughts_cache[key] = json.loads(row.content_json)
                 except Exception:
                     pass
+
+
+# ── AI-генерация DOG PADS, ECHO, WEATHER, FINALE, PLACES ──
+
+_DOG_PAD_KEYS = ("Баркод", "Стежка", "Вектор", "Пиксель", "Безымянная")
+_DOG_PAD_PHASES = ("early", "mid", "late")
+
+_DOG_PAD_STYLE = {
+    "Баркод": "счётчик, считает ставки и шансы, молчит когда считает",
+    "Стежка": "следопыт, чует запахи и тайны, знает то что скрывает",
+    "Вектор": "упрямый страж, стоит против ветра, говорит громко",
+    "Пиксель": "ловец искр, гоняется за каждым мигом, энергичный",
+    "Безымянная": "тихая тайна, не доверяет именам, ждёт пока мир ошибётся",
+}
+
+
+async def seed_dog_pads(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует dog pads для каждого NPC × фаза (15 записей)."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    inserted = 0
+    for npc_key in _DOG_PAD_KEYS:
+        for phase in _DOG_PAD_PHASES:
+            q = (
+                sa_select(sa_func.count())
+                .select_from(AIGeneratedPool)
+                .where(
+                    AIGeneratedPool.pool_type == "dog_pads",
+                    AIGeneratedPool.season == season,
+                    AIGeneratedPool.phase == f"{npc_key}:{phase}",
+                )
+            )
+            result = await session.execute(q)
+            if result.scalar() > 0:
+                continue
+
+            fallback = _FALLBACK_DOG_PADS.get(npc_key, {}).get(phase, "...")
+            pool = [fallback]
+            is_ai = False
+            if llm_caller:
+                try:
+                    ai_pool = await _generate_dog_pad_via_llm(npc_key, phase, llm_caller)
+                    if ai_pool and len(ai_pool) >= 1:
+                        pool = ai_pool
+                        is_ai = True
+                except Exception:
+                    pass
+
+            row = AIGeneratedPool(
+                pool_type="dog_pads",
+                season=season,
+                phase=f"{npc_key}:{phase}",
+                content_json=json.dumps(pool, ensure_ascii=False),
+                is_ai_generated=is_ai,
+            )
+            session.add(row)
+            inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_dog_pad_via_llm(npc_key: str, phase: str, llm_caller) -> list[str] | None:
+    """Генерирует dog pad через LLM."""
+    style = _DOG_PAD_STYLE.get(npc_key, "собака в лабиринте")
+    _PHASE_DESC = {
+        "early": "ранняя фаза — любопытство, осторожность, стaya только вошла",
+        "mid": "средняя фаза — напряжение растёт, мир ломается",
+        "late": "поздняя фаза — тишина, прощание, последние дни",
+    }
+
+    prompt = (
+        f"Создай 1 абзац (2-4 предложения) для NPC «{npc_key}» в текстовой RPG.\n\n"
+        f"Стиль NPC: {style}\n"
+        f"Фаза сезона: {_PHASE_DESC.get(phase, phase)}\n\n"
+        f"Контекст: постапокалиптический лабиринт, стая из 5 собак.\n"
+        f"Абзац описывает действие или состояние NPC в начале дня.\n\n"
+        f"Верни JSON-массив из 1 строки:\n"
+        f'["абзац"]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=500, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:1]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:1]
+
+    return None
+
+
+# Хардкод-фолбэк dog pads
+_FALLBACK_DOG_PADS = {
+    "Баркод": {
+        "early": "Баркод-Следопыт провёл когтем по пыли черту и сел рядом: цифры сегодня подождут. Он считает не дни, а ставки — его глаза блестят, когда кто-то рискует.",
+        "mid": "Баркод-Следопыт сидит у порога и считает прохожих. Он считает всех — даже тех, кого нет. А ещё считает шансы:他知道概率今天对谁有利, но молчит — азартнее того, кто ставит.",
+        "late": "Баркод-Следопыт молчит и считает. Цифры уже не сходятся — он знает это, но молчит. Он давно перестал считать дни: он считает победы, и каждая проигранная — нож в бок.",
+    },
+    "Стежка": {
+        "early": "Стежка-Разбойник обошла миски по кругу трижды и села ровно напротив середины — так ей спокойнее. Она знает то, что скрывает — и улыбается, когда стая не замечает.",
+        "mid": "Стежка-Разбойник замерла с поднятой мордой — она слышит то, чего ещё нет. Она слышит и молчит: правда для неё — оружие, а не дар.",
+        "late": "Стежка-Разбойник легла мордой к картам раньше всех. Она уже знает, какая тропа пахнет зимой. Но знание без правды — ложь, которую она носит как ошейник.",
+    },
+    "Вектор": {
+        "early": "Вектор-Варвар начал пересчитывать тропы вслух и сбился на второй: даже упрямство умеет молчать. Он стоит против ветра не потому, что сильный — а потому, что не умеет признать, что ветер прав.",
+        "mid": "Вектор-Варвар обошёл карты по кругу и не тронул ни одну: даже упрямство умеет ждать. Но ожидание — не мудрость: он ждёт, пока мир сдаётся, а не наоборот.",
+        "late": "Вектор-Варвар пересчитал всех и утвердительно кивнул: стая на месте, можно идти. Он прав, но прав по-своему — и чужая правда для него не существует.",
+    },
+    "Пиксель": {
+        "early": "Пиксель-Оккультист ловит лапой цифровой дождь — мир нервничает не меньше стаи. Он ловит искры, как наркотик — каждая новая заставляет забыть о последней.",
+        "mid": "Пиксель-Оккультист поймал искру из лабиринта и принёс её в зубах — та потухла у миски. Он гоняется за каждым мигом, который можно поймать, — и теряет то, что уже держал.",
+        "late": "Пиксель-Оккультист заворожено следит за мерцанием счётчика — цифры танцуют, и он теперь знает, что они значат. Он стал частью цифрового мира, который не отпускает.",
+    },
+    "Безымянная": {
+        "early": "Безымянная-Варлок вернулась с края поляны с чужим ошейником в зубах — пустым, но ещё тёплым. Она не доверяет ни одному имени — потому что имена лгут.",
+        "mid": "Безымянная-Варлок принесла из тумана косточку — не еду, а память о ком-то. Она помнит каждого, кто её предал — и не прощает ни одного.",
+        "late": "Безымянная-Варлок стоит у лабиринта и не входит: она слышит то, что стая ещё не услышала. Она ждёт, пока мир ошибётся — и тогда войдёт.",
+    },
+}
+
+_dog_pads_cache: dict[str, list[str]] = {}
+
+
+def get_dog_pad_from_cache(season: int, npc_key: str, phase: str) -> str | None:
+    """Возвращает dog pad из кэша."""
+    key = f"dogpad:{season}:{npc_key}:{phase}"
+    pads = _dog_pads_cache.get(key)
+    return pads[0] if pads else None
+
+
+async def load_all_dog_pads(session, season: int) -> None:
+    """Загружает все dog pads из БД в кэш."""
+    global _dog_pads_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    for npc_key in _DOG_PAD_KEYS:
+        for phase in _DOG_PAD_PHASES:
+            key = f"dogpad:{season}:{npc_key}:{phase}"
+            if key not in _dog_pads_cache:
+                q = sa_select(AIGeneratedPool).where(
+                    AIGeneratedPool.pool_type == "dog_pads",
+                    AIGeneratedPool.season == season,
+                    AIGeneratedPool.phase == f"{npc_key}:{phase}",
+                ).limit(1)
+                result = await session.execute(q)
+                row = result.scalar_one_or_none()
+                if row:
+                    try:
+                        _dog_pads_cache[key] = json.loads(row.content_json)
+                    except Exception:
+                        pass
+
+
+# ── ECHO tones ──
+
+async def seed_echo_tones(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует echo tones для каждого тона (risk/care/cunning)."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    inserted = 0
+    for tone in ("risk", "care", "cunning"):
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "echo_tones",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == tone,
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = list(_FALLBACK_ECHO_TONES[tone])
+        is_ai = False
+        if llm_caller:
+            try:
+                ai_pool = await _generate_echo_tones_via_llm(tone, llm_caller)
+                if ai_pool and len(ai_pool) >= 3:
+                    pool = ai_pool
+                    is_ai = True
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="echo_tones",
+            season=season,
+            phase=tone,
+            content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_echo_tones_via_llm(tone: str, llm_caller) -> list[str] | None:
+    """Генерирует echo tones через LLM."""
+    _TONE_DESC = {
+        "risk": "риск — лабиринт становится резче, стены гудят, мир дёргается",
+        "care": "забота — лабиринт становится тише, миски теплее, стая кучнее",
+        "cunning": "хитрость — лабиринт становится хитрее, карты путаются, тропы изгибаются",
+    }
+
+    prompt = (
+        f"Создай 5 атмосферных строк для текстовой RPG.\n\n"
+        f"Тон дня: {_TONE_DESC.get(tone, tone)}\n\n"
+        f"Контекст: постапокалиптический лабиринт, стая из 5 собак.\n"
+        f"Каждая строка — короткое описание того, как мир реагирует на выбор стаи.\n\n"
+        f"Верни JSON-массив из 5 строк:\n"
+        f'["строка 1", "строка 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=500, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:300] for s in response if isinstance(s, str) and len(s) > 10][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:300] for s in items if isinstance(s, str) and len(s) > 10][:5]
+
+    return None
+
+
+_FALLBACK_ECHO_TONES = {
+    "risk": [
+        "Лабиринт стал резче: стены гудят громче, чем вчера.",
+        "Коридоры сегодня нервничают — стая снова выбрала огонь.",
+        "Мир дёрнулся: что-то в лабиринте пересчитало стаю заново.",
+        "Воздух зашевелился — стая чувствует это шерстью: мир стал тоньше.",
+        "Сеть вздрогнула. Стены лабиринта реагируют на каждого, кто выбирает риск.",
+    ],
+    "care": [
+        "Лабиринт стал тише: стая помнит вчерашний выбор и держится кучнее.",
+        "Миски сегодня теплее обычного — мир запомнил вчерашнее.",
+        "Стая стала чуть ближе друг к другу. Мир это заметил.",
+        "В канале повисла тишина — та самая, после которой легче дышать.",
+        "Коридоры сегодня спокойны. Видимо, мир решил дать стае отдохнуть.",
+    ],
+    "cunning": [
+        "Лабиринт стал хитрее: ветки реальности путаются на ровном месте.",
+        "Архив сегодня перелистнул лишнюю страницу — стая это заметила.",
+        "Карты изменили формулировки сами собой. Кто-то переигрывает правила.",
+        "Мир стал извилистее: тропа, которой вчера не было, уже протороптана.",
+        "Коридоры сегодня молчат иначе — в их тишине слышен чужой расчёт.",
+    ],
+}
+
+_echo_tones_cache: dict[str, list[str]] = {}
+
+
+def get_echo_tones_from_cache(season: int, tone: str) -> list[str] | None:
+    """Возвращает echo tones из кэша."""
+    key = f"echo:{season}:{tone}"
+    return _echo_tones_cache.get(key)
+
+
+async def load_all_echo_tones(session, season: int) -> None:
+    """Загружает все echo tones из БД в кэш."""
+    global _echo_tones_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    for tone in ("risk", "care", "cunning"):
+        key = f"echo:{season}:{tone}"
+        if key not in _echo_tones_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "echo_tones",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == tone,
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _echo_tones_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass
+
+
+# ── WEATHER pool ──
+
+async def seed_weather_pool(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует weather pool."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    q = (
+        sa_select(sa_func.count())
+        .select_from(AIGeneratedPool)
+        .where(
+            AIGeneratedPool.pool_type == "weather_pool",
+            AIGeneratedPool.season == season,
+        )
+    )
+    result = await session.execute(q)
+    if result.scalar() > 0:
+        return 0
+
+    pool = list(_FALLBACK_WEATHER_POOL)
+    is_ai = False
+    if llm_caller:
+        try:
+            ai_pool = await _generate_weather_via_llm(llm_caller)
+            if ai_pool and len(ai_pool) >= 3:
+                pool = ai_pool
+                is_ai = True
+        except Exception:
+            pass
+
+    row = AIGeneratedPool(
+        pool_type="weather_pool",
+        season=season,
+        phase="",
+        content_json=json.dumps(pool, ensure_ascii=False),
+        is_ai_generated=is_ai,
+    )
+    session.add(row)
+    await session.commit()
+    return 1
+
+
+async def _generate_weather_via_llm(llm_caller) -> list[str] | None:
+    """Генерирует weather pool через LLM."""
+    prompt = (
+        "Создай 5 аномальных погодных описаний для текстовой RPG.\n\n"
+        "Контекст: постапокалиптический лабиринт, стая из 5 собак.\n"
+        "Каждая строка — короткая аномалия-погода (1 предложение).\n\n"
+        "Верни JSON-массив из 5 строк:\n"
+        '["аномалия 1", "аномалия 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=500, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 10][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 10][:5]
+
+    return None
+
+
+_FALLBACK_WEATHER_POOL = (
+    "Сегодня тени идут против ветра — мир глючит красиво.",
+    "Полдень наступил на час раньше; архив списал это на погоду.",
+    "Все порталы сегодня одного оттенка. Так не бывает — и вот бывает.",
+    "Дождь идёт только над картами выбора, не задевая миски.",
+    "Эхо чужого дня прошло по стае вторым слоем: все на миг заговорили чужими голосами.",
+)
+
+_weather_cache: list[str] | None = None
+
+
+def get_weather_from_cache(season: int) -> list[str] | None:
+    """Возвращает weather pool из кэша."""
+    return _weather_cache
+
+
+async def load_weather_pool(session, season: int) -> None:
+    """Загружает weather pool из БД в кэш."""
+    global _weather_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    if _weather_cache is not None:
+        return
+
+    q = sa_select(AIGeneratedPool).where(
+        AIGeneratedPool.pool_type == "weather_pool",
+        AIGeneratedPool.season == season,
+    ).limit(1)
+    result = await session.execute(q)
+    row = result.scalar_one_or_none()
+    if row:
+        try:
+            _weather_cache = json.loads(row.content_json)
+        except Exception:
+            pass
+
+
+# ── PLACES ──
+
+async def seed_places(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует локации."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+
+    inserted = 0
+    for i, place in enumerate(_PLACES):
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "places",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == str(i),
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = [place]
+        is_ai = False
+        if llm_caller:
+            try:
+                ai_place = await _generate_place_via_llm(i, llm_caller)
+                if ai_place:
+                    pool = ai_place
+                    is_ai = True
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="places",
+            season=season,
+            phase=str(i),
+            content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_place_via_llm(index: int, llm_caller) -> list[dict] | None:
+    """Генерирует локацию через LLM."""
+    prompt = (
+        f"Создай 1 локацию для текстовой RPG (номер {index}).\n\n"
+        f"Контекст: постапокалиптический лабиринт, стая из 5 собак.\n"
+        f"Локация должна быть странной, атмосферной, запоминающейся.\n\n"
+        f"Верни JSON:\n"
+        f'{{"to": "куда ведёт (1 предложение на русском)", "scene": "image prompt (English, 5-10 words)"}}'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=300, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, dict) and "to" in response and "scene" in response:
+        return [{"to": str(response["to"])[:200], "scene": str(response["scene"])[:200], "scar_key": None}]
+
+    return None
+
+
+_places_cache: list[dict] | None = None
+
+
+def get_places_from_cache(season: int) -> list[dict] | None:
+    """Возвращает places из кэша."""
+    return _places_cache
+
+
+async def load_places(session, season: int) -> None:
+    """Загружает places из БД в кэш."""
+    global _places_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+
+    if _places_cache is not None:
+        return
+
+    q = (
+        sa_select(AIGeneratedPool)
+        .where(
+            AIGeneratedPool.pool_type == "places",
+            AIGeneratedPool.season == season,
+        )
+        .order_by(AIGeneratedPool.phase)
+    )
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    if rows:
+        places = []
+        for row in rows:
+            try:
+                data = json.loads(row.content_json)
+                if data:
+                    places.append(data[0] if isinstance(data, list) and data else data)
+            except Exception:
+                pass
+        if places:
+            _places_cache = places

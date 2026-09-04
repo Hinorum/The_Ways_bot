@@ -91,19 +91,35 @@ async def _regenerate_pool_row(row, llm_caller) -> list | None:
         _generate_voice_examples_via_llm,
         _generate_voice_banned_via_llm,
         _generate_inner_thoughts_via_llm,
+        _generate_dog_pad_via_llm,
+        _generate_echo_tones_via_llm,
+        _generate_weather_via_llm,
+        _generate_place_via_llm,
     )
     from app.season import (
         _generate_villain_events_via_llm,
         _generate_heretic_events_via_llm,
     )
 
+    def _parse_phase(phase_str: str):
+        """Parse phase string for dog_pads (npc_key:phase) or plain phase."""
+        if ":" in phase_str:
+            return phase_str.split(":", 1)
+        return phase_str, None
+
+    phase_main, phase_sub = _parse_phase(row.phase)
+
     generators = {
-        "atmospheric": lambda: _generate_atmospheric_via_llm(row.phase, llm_caller),
-        "voice_examples": lambda: _generate_voice_examples_via_llm(row.phase, llm_caller),
-        "voice_banned": lambda: _generate_voice_banned_via_llm(row.phase, llm_caller),
-        "inner_thoughts": lambda: _generate_inner_thoughts_via_llm(row.phase, llm_caller),
-        "villain_events": lambda: _generate_villain_events_via_llm(int(row.phase), llm_caller),
-        "heretic_events": lambda: _generate_heretic_events_via_llm(int(row.phase), llm_caller),
+        "atmospheric": lambda: _generate_atmospheric_via_llm(phase_main, llm_caller),
+        "voice_examples": lambda: _generate_voice_examples_via_llm(phase_main, llm_caller),
+        "voice_banned": lambda: _generate_voice_banned_via_llm(phase_main, llm_caller),
+        "inner_thoughts": lambda: _generate_inner_thoughts_via_llm(phase_main, llm_caller),
+        "dog_pads": lambda: _generate_dog_pad_via_llm(phase_main, phase_sub, llm_caller),
+        "echo_tones": lambda: _generate_echo_tones_via_llm(phase_main, llm_caller),
+        "weather_pool": lambda: _generate_weather_via_llm(llm_caller),
+        "places": lambda: _generate_place_via_llm(int(phase_main), llm_caller),
+        "villain_events": lambda: _generate_villain_events_via_llm(int(phase_main), llm_caller),
+        "heretic_events": lambda: _generate_heretic_events_via_llm(int(phase_main), llm_caller),
     }
 
     min_items = {
@@ -111,6 +127,10 @@ async def _regenerate_pool_row(row, llm_caller) -> list | None:
         "voice_examples": 3,
         "voice_banned": 2,
         "inner_thoughts": 3,
+        "dog_pads": 1,
+        "echo_tones": 3,
+        "weather_pool": 3,
+        "places": 1,
         "villain_events": 3,
         "heretic_events": 3,
     }

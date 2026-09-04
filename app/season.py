@@ -407,7 +407,11 @@ def milestone_line(run_day: int, total: int) -> str | None:
     if run_day % 10 != 0:
         return None
     rng = _rng(f"weather:{run_day}:{total}")
-    return _WEATHER_POOL[rng.randrange(len(_WEATHER_POOL))]
+    # Weather pool: сначала из БД (AI), потом фолбэк
+    from app.lore import get_weather_from_cache
+    cached = get_weather_from_cache(1)
+    pool = cached if cached and len(cached) >= 3 else _WEATHER_POOL
+    return pool[rng.randrange(len(pool))]
 
 
 def act_line_short(run_day: int, total: int, season: int | None = None) -> str:

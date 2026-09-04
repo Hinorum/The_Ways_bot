@@ -922,14 +922,22 @@ async def _plan_and_render(
         npc_profiles = await load_all_npc_profiles(session)
     except Exception:
         pass
-    # AI-атмосферные пэды из БД для compose_chapter
+    # AI-кэши из БД
     try:
-        from app.lore import load_all_atmospheric, load_all_voice_examples, load_all_voice_banned, load_all_inner_thoughts
+        from app.lore import (
+            load_all_atmospheric, load_all_voice_examples, load_all_voice_banned,
+            load_all_inner_thoughts, load_all_dog_pads, load_all_echo_tones,
+            load_weather_pool, load_places,
+        )
         from app.season import load_villain_events, load_heretic_events
         await load_all_atmospheric(session, season=1)
         await load_all_voice_examples(session, season=1)
         await load_all_voice_banned(session, season=1)
         await load_all_inner_thoughts(session, season=1)
+        await load_all_dog_pads(session, season=1)
+        await load_all_echo_tones(session, season=1)
+        await load_weather_pool(session, season=1)
+        await load_places(session, season=1)
         await load_villain_events(session, season=1)
         await load_heretic_events(session, season=1)
     except Exception:

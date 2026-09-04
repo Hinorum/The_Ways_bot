@@ -97,23 +97,40 @@ async def boot_game(bot) -> None:
             npc_count = await seed_npc_profiles(session, llm_caller=_chat_completion)
             prologue_count = await seed_prologue_beats(session, llm_caller=_chat_completion, season=1)
             arc_count = await seed_season_arcs(session, llm_caller=_chat_completion, season=1)
-            from app.lore import seed_atmospheric_pools, load_all_atmospheric, seed_voice_examples, load_all_voice_examples, seed_inner_thoughts, load_all_inner_thoughts, seed_voice_banned, load_all_voice_banned
+            from app.lore import (
+                seed_atmospheric_pools, load_all_atmospheric,
+                seed_voice_examples, load_all_voice_examples,
+                seed_inner_thoughts, load_all_inner_thoughts,
+                seed_voice_banned, load_all_voice_banned,
+                seed_dog_pads, load_all_dog_pads,
+                seed_echo_tones, load_all_echo_tones,
+                seed_weather_pool, load_weather_pool,
+                seed_places, load_places,
+            )
             from app.season import seed_villain_events, seed_heretic_events, load_villain_events, load_heretic_events
             atm_count = await seed_atmospheric_pools(session, llm_caller=_chat_completion, season=1)
             voice_count = await seed_voice_examples(session, llm_caller=_chat_completion, season=1)
             banned_count = await seed_voice_banned(session, llm_caller=_chat_completion, season=1)
             thoughts_count = await seed_inner_thoughts(session, llm_caller=_chat_completion, season=1)
+            dogpad_count = await seed_dog_pads(session, llm_caller=_chat_completion, season=1)
+            echo_count = await seed_echo_tones(session, llm_caller=_chat_completion, season=1)
+            weather_count = await seed_weather_pool(session, llm_caller=_chat_completion, season=1)
+            places_count = await seed_places(session, llm_caller=_chat_completion, season=1)
             villain_count = await seed_villain_events(session, llm_caller=_chat_completion, season=1)
             heretic_count = await seed_heretic_events(session, llm_caller=_chat_completion, season=1)
             await load_all_atmospheric(session, season=1)
             await load_all_voice_examples(session, season=1)
             await load_all_voice_banned(session, season=1)
             await load_all_inner_thoughts(session, season=1)
+            await load_all_dog_pads(session, season=1)
+            await load_all_echo_tones(session, season=1)
+            await load_weather_pool(session, season=1)
+            await load_places(session, season=1)
             await load_villain_events(session, season=1)
             await load_heretic_events(session, season=1)
             log.info(
-                "AI World Engine: %d NPC, %d prologue, %d arcs, %d atm, %d voice, %d banned, %d thoughts, %d villain, %d heretic",
-                npc_count, prologue_count, arc_count, atm_count, voice_count, banned_count, thoughts_count, villain_count, heretic_count,
+                "AI World Engine: %d NPC, %d prologue, %d arcs, %d atm, %d voice, %d banned, %d thoughts, %d dogpad, %d echo, %d weather, %d places, %d villain, %d heretic",
+                npc_count, prologue_count, arc_count, atm_count, voice_count, banned_count, thoughts_count, dogpad_count, echo_count, weather_count, places_count, villain_count, heretic_count,
             )
             # Auto-regenerate: замена хардкод-фолбэков на AI-данные
             try:
