@@ -124,6 +124,39 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
     return surfaced
 
 
+async def generate_chain_phrase_ai(
+    echo_title: str,
+    echo_kind: str,
+    child_gen: int,
+) -> str | None:
+    """AI генерирует уникальную фразу продолжения эхо-цепочки.
+
+    Возвращает строку или None при ошибке (фолбэк к хардкоду).
+    """
+    from app.story import _chat_completion
+
+    prompt = (
+        f"Эхо-цепочка: «{echo_title}» (тип: {echo_kind}).\n"
+        f"Поколение: {child_gen}-е.\n\n"
+        "Напиши одну фразу (1 предложение, 10-30 слов) о том, как это эхо "
+        "отозвалось в лабиринте. Стиль: тёмная метафора, лаконичный. "
+        "Без кавычек, без номера поколения."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=15,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 150 else text[:147] + "..."
+    except Exception:
+        return None
+
+
 async def echo_chain_depth(session: AsyncSession, echo_id: int) -> int:
     """Count how deep the echo chain goes from this echo.
 
