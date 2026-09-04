@@ -19,7 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("payouts", sa.Column("last_error", sa.String(length=200), nullable=True))
+    from alembic import op
+    import sqlalchemy as sa
+
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    cols = {c["name"] for c in insp.get_columns("payouts")}
+    if "last_error" not in cols:
+        op.add_column("payouts", sa.Column("last_error", sa.String(length=200), nullable=True))
 
 
 def downgrade() -> None:

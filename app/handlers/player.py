@@ -389,15 +389,20 @@ def _canon_text(beats) -> tuple[str, bool]:
 
 
 async def _chronicle(session, player_id: int, limit: int = 7) -> list[str]:
-    """Личная хроника сезона: последние дни игрока — путь и его исход.
+    """Личная хроника сезона: последние дни игрока — путь, исход и последствие.
 
     Голоса и итоги уже лежат в базе; хроника просто собирает их в биографию.
     """
-    from app.models import Card
+    from app.models import Card, Round
 
     rows = (
         await session.execute(
-            select(Round.day_index, Card.title, Vote.card_position == Round.winner_card)
+            select(
+                Round.day_index, Card.title, Card.tag,
+                Vote.card_position == Round.winner_card,
+                Round.winner_card,
+                Round.chapter_title,
+            )
             .join(Vote, Vote.round_id == Round.id)
             .join(Card, (Card.round_id == Round.id) & (Card.position == Vote.card_position))
             .where(Vote.player_id == player_id, Round.status == RoundStatus.CLOSED)
@@ -405,10 +410,12 @@ async def _chronicle(session, player_id: int, limit: int = 7) -> list[str]:
             .limit(limit)
         )
     ).all()
-    return [
-        f"Д{day} · {title} {'🏆' if won else '·'}"
-        for day, title, won in rows
-    ]
+    lines = []
+    for day, title, tag, won, winner_card, chapter in rows:
+        tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(tag or "", "·")
+        status = "🏆" if won else ("❌" if winner_card is not None else "·")
+        lines.append(f"  {tag_emoji} Д{day} · «{title}» {status}")
+    return lines
 
 
 async def _score_text(user) -> str:
@@ -466,7 +473,7 @@ async def _score_text(user) -> str:
             tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(item["tag"], "❓")
             text += f"\n  {tag_emoji} День {item['day']}: «{item['title']}»"
     if chronicle:
-        text += "\n\n📜 Твоя хроника:\n" + "\n".join(chronicle)
+        text += "\n\n📜 Дневник стаи:\n" + "\n".join(chronicle)
     return text
 
 

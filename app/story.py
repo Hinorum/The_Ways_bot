@@ -646,6 +646,87 @@ def _pack_silhouettes(
     return layer
 
 
+def _draw_stars(
+    size: tuple[int, int], rng: random.Random
+) -> Image.Image:
+    """Россыпь звёзд на небе: яркие точки с лёгким свечением."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = size
+    sky_end = int(h * 0.55)
+    for _ in range(rng.randint(40, 80)):
+        x = rng.randint(0, w - 1)
+        y = rng.randint(0, sky_end)
+        brightness = rng.randint(140, 255)
+        alpha = rng.randint(60, 200)
+        r = rng.choice([1, 1, 1, 2])
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(brightness, brightness, brightness, alpha))
+        if r >= 2 and rng.random() < 0.3:
+            glow_r = r * 3
+            draw.ellipse(
+                (x - glow_r, y - glow_r, x + glow_r, y + glow_r),
+                fill=(brightness, brightness, brightness, alpha // 5),
+            )
+    return layer
+
+
+def _draw_moon(
+    size: tuple[int, int], rng: random.Random, accent: tuple
+) -> Image.Image:
+    """Тонкий серп или полная луна с акцентным свечением."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = size
+    mx = rng.randint(int(w * 0.65), int(w * 0.9))
+    my = rng.randint(int(h * 0.06), int(h * 0.22))
+    mr = max(12, min(w, h) // rng.randint(14, 22))
+    moon_color = (
+        min(255, accent[0] + 60),
+        min(255, accent[1] + 60),
+        min(255, accent[2] + 80),
+    )
+    draw.ellipse((mx - mr, my - mr, mx + mr, my + mr), fill=(*moon_color, 200))
+    dark = tuple(max(0, c - 80) for c in moon_color)
+    phase_offset = rng.randint(int(mr * 0.3), int(mr * 0.7))
+    draw.ellipse(
+        (mx - mr + phase_offset, my - mr - 2, mx + mr + phase_offset, my + mr - 2),
+        fill=(*dark, 220),
+    )
+    glow_r = int(mr * 2.5)
+    glow = Image.new("RGBA", size, (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    gdraw.ellipse(
+        (mx - glow_r, my - glow_r, mx + glow_r, my + glow_r),
+        fill=(*moon_color, 18),
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(max(4, mr // 2)))
+    layer = Image.alpha_composite(layer, glow)
+    return layer
+
+
+def _draw_particles(
+    size: tuple[int, int], rng: random.Random, accent: tuple
+) -> Image.Image:
+    """Летящие частицы (искры / светляки / пепел): маленькие яркие точки."""
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = size
+    secondary = (
+        min(255, accent[0] + 40),
+        min(255, accent[1] + 40),
+        min(255, accent[2] + 50),
+    )
+    for _ in range(rng.randint(12, 28)):
+        x = rng.randint(int(w * 0.05), int(w * 0.95))
+        y = rng.randint(int(h * 0.25), int(h * 0.65))
+        color = accent if rng.random() < 0.5 else secondary
+        alpha = rng.randint(50, 160)
+        r = rng.choice([1, 1, 2])
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=(*color, alpha))
+    layer = layer.filter(ImageFilter.GaussianBlur(1))
+    return layer
+
+
 def _abstract_scene(
     size: tuple[int, int],
     seed: str,
@@ -653,11 +734,17 @@ def _abstract_scene(
     accent: tuple,
     rings_center: tuple[float, float],
 ) -> Image.Image:
-    """«Минималистичная тёмная сказка»: градиент неба, свечение портала,
-    хребты в дымке и силуэт стаи на гребне. Без единой буквы — текст дня
-    живёт в подписях Telegram, картинка остаётся картинкой."""
+    """«Минималистичная тёмная сказка»: звёздное небо с луной, градиент,
+    свечение портала, хребты в дымке, стая на гребне и летящие частицы.
+    Без единой буквы — текст дня живёт в подписях Telegram."""
     rng = random.Random(seed)
-    image = _gradient(size, base, tuple(max(c - 26, 0) for c in base))
+    image = _gradient(size, base, tuple(max(c - 26, 0) for c in base)).convert("RGBA")
+
+    # Звёзды на небе.
+    image = Image.alpha_composite(image, _draw_stars(size, rng))
+
+    # Луна.
+    image = Image.alpha_composite(image, _draw_moon(size, rng, accent))
 
     # Туманные пятна глубины.
     glow = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -675,7 +762,7 @@ def _abstract_scene(
         alpha = rng.randint(36, 84)
         draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(*color, alpha))
     glow = glow.filter(ImageFilter.GaussianBlur(min(size) // 8))
-    image = Image.alpha_composite(image.convert("RGBA"), glow)
+    image = Image.alpha_composite(image, glow)
 
     # Портал: концентрические кольца со светящимся ядром.
     rings = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -714,6 +801,9 @@ def _abstract_scene(
     # Стая на переднем плане.
     image = Image.alpha_composite(image, _pack_silhouettes(size, rng, base))
 
+    # Летящие частицы.
+    image = Image.alpha_composite(image, _draw_particles(size, rng, accent))
+
     # Виньетка.
     vignette = Image.new("L", size, 0)
     vdraw = ImageDraw.Draw(vignette)
@@ -726,7 +816,6 @@ def _abstract_scene(
     image = Image.composite(image, dark, vignette)
 
     result = image.convert("RGB").filter(ImageFilter.GaussianBlur(0.4))
-    # Плёночное зерно: лёгкий шум поверх всего кадра.
     grain = Image.effect_noise(size, 16).convert("RGB")
     return Image.blend(result, grain, 0.06)
 
@@ -752,6 +841,7 @@ def render_cover(path: Path, title: str, body: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     scene = _abstract_scene((1280, 720), f"{title}|cover", (17, 14, 13), (214, 118, 64), (0.5, 0.48))
     _save_image(scene, path)
+    logger.info("Story: PIL-заглушка обложки сохранена: %s", path.name)
 
 
 async def _fetch_gemini_image(
@@ -845,9 +935,9 @@ async def fetch_free_image(
     # Щедрые таймауты: бесплатная очередь flux иногда держит запрос минуту.
     long, mid = settings.image_timeout_seconds, max(45, settings.image_timeout_seconds - 25)
     plans = [
-        ("flux", long, 1),
+        ("flux", long, 2),
         ("sana", mid, 2),
-        ("turbo", 45, 2),
+        ("turbo", 60, 3),
     ]
     for model, seconds, attempts in plans:
         for attempt in range(1, attempts + 1):
@@ -889,9 +979,8 @@ async def fetch_free_image(
                             "Pollinations %s: 429 (retry-after %s) — пауза и повтор",
                             model, retry_after or "—",
                         )
-                        # Короткая пауза и повтор той же модели: мимолётный троттл
-                        # не должен перекидывать кадр на соседнюю модель зря.
-                        await asyncio.sleep(min(max(5, cool), 20))
+                        pause = min(max(3, cool // 4), 15)
+                        await asyncio.sleep(pause)
                         continue
                     if response.status_code != 200:
                         logger.warning("Pollinations %s: HTTP %d (попытка %d)", model, response.status_code, attempt)
@@ -938,7 +1027,8 @@ async def fetch_day_image(
     Каждое изображение проходит quality gate (Laplacian variance) и dedup."""
     from app.art_director import check_image_quality
 
-    min_variance = 100.0  # Минимальная дисперсия Лапласиана
+    min_variance = 60.0  # Минимальная дисперсия Лапласиана (снижена для надёжности)
+    logger.info("Story: start fetch_day_image (prompt=%d chars, seed=%s)", len(prompt), seed)
 
     for outer in range(3):
         # Gemini: 2 попытки с backoff
@@ -982,6 +1072,7 @@ async def fetch_day_image(
             else:
                 logger.warning("Pollinations (short): изображение размытое (variance=%.2f)", variance)
 
+    logger.warning("Story: все провайдеры кадра исчерпаны (3 итерации) — будет PIL-заглушка")
     return False
 
 
@@ -1332,13 +1423,19 @@ def _build_story_prompt(
             )
     # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
+    _gepa_active = False
     try:
         from app.narrative_ai import get_active_gene
         _gene = get_active_gene()
         if _gene is not None:
             _gepa_block = _gene.to_prompt_block() + "\n"
+            _gepa_active = True
+            logger.info("GEPA: ген применяется day=%d gen=%d tone='%s' fitness=%.3f",
+                        day_index, _gene.generation, _gene.system_tone[:30], _gene.fitness)
     except Exception:
         pass
+    if not _gepa_active:
+        logger.info("GEPA: ген не активен day=%d — используется базовый промпт", day_index)
     head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
@@ -1663,10 +1760,12 @@ async def _free_story_llm(
                         _base, _candidate_texts,
                         rounds=3, seed=f"sa:{day_index}:{attempt}",
                     )
+                    _old_temp = _current_temp
                     _current_temp = _sa_result.temperature
                     logger.info(
-                        "SA для sealed дня %d: temp=%.2f → %.2f (попытка %d)",
-                        day_index, settings.llm_temperature, _current_temp, attempt,
+                        "SA для sealed дня %d: temp=%.2f → %.2f coherence=%.3f → %.3f (попытка %d)",
+                        day_index, _old_temp, _current_temp,
+                        _base.coherence_score, _sa_result.coherence_score, attempt,
                     )
                 logger.info("Глава дня сгенерирована моделью %s (попытка %d)", used_model, attempt)
                 return data

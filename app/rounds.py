@@ -643,7 +643,6 @@ async def _plan_and_render(
 
     # Проверяем смерть стаи
     if check_death(pack_needs):
-        from app.multi_layered_choices import format_partner_block, format_oath_block
         return {
             "title": "Конец",
             "text": "Стая погибла. Мир стих.",
