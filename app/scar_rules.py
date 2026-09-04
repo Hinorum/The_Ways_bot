@@ -83,6 +83,41 @@ SCAR_RULES: list[ScarRule] = [
 ]
 
 
+async def generate_scar_description_ai(
+    scar_key: str,
+    trigger_tag: str,
+    day_index: int,
+) -> str | None:
+    """AI генерирует уникальное описание шрама на основе контекста.
+
+    Возвращает строку или None при ошибке (фолбэк к статичному описанию).
+    """
+    from app.story import _chat_completion
+
+    tag_names = {"risk": "риск", "care": "забота", "cunning": "хитрость"}
+    tag_name = tag_names.get(trigger_tag, trigger_tag)
+
+    prompt = (
+        f"День {day_index}. Шрам мира: {scar_key}. Тег: {tag_name}.\n\n"
+        "Напиши одно предложение (10-30 слов) — описание того, как этот шрам "
+        "изменил мир лабиринта. Стиль: тёмная метафора, без чисел. "
+        "Без кавычек, просто текст."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=15,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 150 else text[:147] + "..."
+    except Exception:
+        return None
+
+
 def check_streak_for_scar(
     history_tags: list[str], rule: ScarRule, current_day: int
 ) -> ScarRule | None:
