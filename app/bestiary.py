@@ -241,16 +241,15 @@ async def note_round(
     except Exception:
         pass
 
-    # AI-генерация описаний для NPC
+    # AI-генерация описаний для ВСЕХ существ
     ai_generated: dict[str, str] = {}
     if llm_caller and (story_context or choices_context):
         for beast_key, _ in wanted:
-            if beast_key in _NPC_BEAST_KEYS:
-                ai_text = await _generate_ai_entry(
-                    beast_key, story_context, choices_context, llm_caller
-                )
-                if ai_text:
-                    ai_generated[beast_key] = ai_text
+            ai_text = await _generate_ai_entry(
+                beast_key, story_context, choices_context, llm_caller
+            )
+            if ai_text:
+                ai_generated[beast_key] = ai_text
 
     created = 0
     for beast_key, description in wanted:
