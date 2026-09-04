@@ -30,6 +30,45 @@ ECHO_TAILS: dict[str, str] = {
 }
 
 
+async def generate_echo_tail_ai(calling_key: str) -> str | None:
+    """AI генерирует уникальный хвост личного эха для призвания.
+
+    Возвращает строку или None при ошибке (фолбэк к ECHO_TAILS).
+    """
+    from app.story import _chat_completion
+
+    titles = {
+        "ranger": "Следопыт",
+        "paladin": "Палладин",
+        "rogue": "Разбойник",
+        "cleric": "Жрец",
+        "bard": "Бард",
+        "occultist": "Оккультист",
+        "warlock": "Варлок",
+    }
+    title = titles.get(calling_key, calling_key)
+
+    prompt = (
+        f"Призвание: {title} ({calling_key}).\n\n"
+        "Напиши одну фразу-хвост личного эха (1 предложение, 10-25 слов) — "
+        "метафору из личного дневника стаи. Стиль: тихий, атмосферный, "
+        "без кавычек, просто текст."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=15,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 100 else text[:97] + "..."
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class Calling:
     key: str
