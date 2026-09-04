@@ -853,3 +853,19 @@ class SeasonArc(Base):
     teaser_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of teasers
     guest: Mapped[str] = mapped_column(Text, default="")  # Гость этапа
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AIGeneratedPool(Base):
+    """Пул AI-сгенерированного контента: атмосферные пэды, голоса, мысли.
+
+    Хранит сгенерированный контент по типу и сезону.
+    """
+
+    __tablename__ = "ai_generated_pools"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pool_type: Mapped[str] = mapped_column(String(32), index=True)  # atmospheric, voice_examples, inner_thoughts
+    season: Mapped[int] = mapped_column(Integer, index=True)
+    phase: Mapped[str] = mapped_column(String(16), default="")  # early/mid/late или npc_key
+    content_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of strings
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

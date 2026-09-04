@@ -922,6 +922,14 @@ async def _plan_and_render(
         npc_profiles = await load_all_npc_profiles(session)
     except Exception:
         pass
+    # AI-атмосферные пэды из БД для compose_chapter
+    try:
+        from app.lore import load_all_atmospheric, load_all_voice_examples, load_all_inner_thoughts
+        await load_all_atmospheric(session, season=1)
+        await load_all_voice_examples(session, season=1)
+        await load_all_inner_thoughts(session, season=1)
+    except Exception:
+        pass
     chapter = await generate_chapter(
         day_index, beats, rule,
         echoes=echoes if "echoes" in guests else [],

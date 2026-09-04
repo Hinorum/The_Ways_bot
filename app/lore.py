@@ -1044,11 +1044,16 @@ def compose_chapter(
             "Воздух стал тяжёлым — стая дышала, как будто воздух стал гуще.",
             "Горячий след на полу тянулся к лабиринту — но лабиринт был холодным.",
         )
-        atmospheric = {
-            "early": _EARLY_ATMOSPHERIC,
-            "mid": _MID_ATMOSPHERIC,
-            "late": _LATE_ATMOSPHERIC,
-        }[phase]
+        # Атмосферные пэды: сначала из БД (AI), потом фолбэк на хардкод
+        db_atm = get_atmospheric_from_cache(season=1, phase=phase)
+        if db_atm and len(db_atm) >= 10:
+            atmospheric = tuple(db_atm)
+        else:
+            atmospheric = {
+                "early": _EARLY_ATMOSPHERIC,
+                "mid": _MID_ATMOSPHERIC,
+                "late": _LATE_ATMOSPHERIC,
+            }[phase]
         return (barkod[phase], stezhka[phase], vektor[phase], pixel[phase], nameless[phase]) + atmospheric
 
     _floor_pads = _dog_pads(day_index)
@@ -1590,3 +1595,444 @@ def _cards(
         ]
     rng.shuffle(cards)
     return cards
+
+
+# ── AI-генерация атмосферных падов и voice examples ──
+
+async def seed_atmospheric_pools(session, llm_caller=None, season: int = 1) -> int:
+    """Заполняет AIGeneratedPool начальными данными: атмосферные пэды, voice examples.
+
+    Если передан llm_caller — генерирует через LLM.
+    Иначе — использует хардкод как фолбэк.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+    import json
+
+    inserted = 0
+
+    # 1. Атмосферные пэды (early/mid/late)
+    _ATMOSPHERIC_POOLS = {
+        "early": list(_EARLY_ATMOSPHERIC),
+        "mid": list(_MID_ATMOSPHERIC),
+        "late": list(_LATE_ATMOSPHERIC),
+    }
+    for phase, fallback_pool in _ATMOSPHERIC_POOLS.items():
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "atmospheric",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == phase,
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = fallback_pool
+        if llm_caller:
+            try:
+                ai_pool = await _generate_atmospheric_via_llm(phase, llm_caller)
+                if ai_pool and len(ai_pool) >= 10:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="atmospheric",
+            season=season,
+            phase=phase,
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_atmospheric_via_llm(phase: str, llm_caller) -> list[str] | None:
+    """Генерирует атмосферные пэды через LLM."""
+
+    _PHASE_DESC = {
+        "early": "ранняя фаза сезона — стая только вошла в лабиринт, любопытство, осторожность",
+        "mid": "средняя фаза — стая углубилась, напряжение растёт, мир начинает ломаться",
+        "late": "поздняя фаза — мир на грани, тишина, прощание, последние дни",
+    }
+
+    prompt = (
+        f"Создай 20 атмосферных строк для текстовой RPG в мире постапокалиптического лабиринта.\n\n"
+        f"Фаза: {_PHASE_DESC.get(phase, phase)}\n\n"
+        f"Контекст: Стая из 5 собак живёт в лабиринте. Каждая строка — короткая "
+        f"атмосферная деталь (1-2 предложения), которая добавляется в главу дня.\n\n"
+        f"Верни JSON-массив из 20 строк:\n"
+        f'["строка 1", "строка 2", ...]\n\n'
+        f"Стиль: тёмный, атмосферный, метафоричный. Каждая строка —独立ная деталь."
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.9, max_tokens=2000, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 10][:20]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 10][:20]
+
+    return None
+
+
+async def load_atmospheric_from_db(session, season: int, phase: str) -> list[str] | None:
+    """Загружает атмосферные пэды из БД."""
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+    import json
+
+    q = sa_select(AIGeneratedPool).where(
+        AIGeneratedPool.pool_type == "atmospheric",
+        AIGeneratedPool.season == season,
+        AIGeneratedPool.phase == phase,
+    ).limit(1)
+    result = await session.execute(q)
+    row = result.scalar_one_or_none()
+    if not row:
+        return None
+    try:
+        return json.loads(row.content_json)
+    except Exception:
+        return None
+
+
+# Кэш атмосферных падов из БД
+_atmospheric_cache: dict[str, list[str]] = {}
+
+
+async def load_all_atmospheric(session, season: int) -> None:
+    """Загружает все атмосферные пэды из БД в кэш."""
+    global _atmospheric_cache
+    for phase in ("early", "mid", "late"):
+        key = f"{season}:{phase}"
+        if key not in _atmospheric_cache:
+            pads = await load_atmospheric_from_db(session, season, phase)
+            if pads:
+                _atmospheric_cache[key] = pads
+
+
+def get_atmospheric_from_cache(season: int, phase: str) -> list[str] | None:
+    """Возвращает атмосферные пэды из кэша."""
+    key = f"{season}:{phase}"
+    return _atmospheric_cache.get(key)
+
+
+# ── AI-генерация voice examples и inner thoughts ──
+
+NPC_KEYS = ("Баркод", "Стежка", "Вектор", "Пиксель", "Безымянная")
+
+NPC_VOICE_STYLE = {
+    "Баркод": "сухой, технический, считает всё в процентах и вероятностях",
+    "Стежка": "тихая, хищная, говорит коротко, часто намекает",
+    "Вектор": "прямой, громкий, говорит громче чем нужно, простыми словами",
+    "Пиксель": "энергичный, метафоричный, сравнивает всё с кодом и цифрами",
+    "Безымянная": "безэмоциональная, загадочная, говорит как будто шепчет",
+}
+
+THOUGHT_STYLE = {
+    "liner": "стоит ли доверять пути впереди",
+    "journal": "что записано, то правда?",
+    "master": "когда действовать, а когда ждать",
+    "heretic": "какой закон нарушить сегодня",
+}
+
+
+async def seed_voice_examples(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует voice examples для каждого NPC через LLM."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+    import json
+
+    inserted = 0
+    for npc_key in NPC_KEYS:
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "voice_examples",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = _DEFAULT_VOICE_EXAMPLES.get(npc_key, ["..."])
+        if llm_caller:
+            try:
+                ai_pool = await _generate_voice_examples_via_llm(npc_key, llm_caller)
+                if ai_pool and len(ai_pool) >= 3:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="voice_examples",
+            season=season,
+            phase=npc_key,
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_voice_examples_via_llm(npc_key: str, llm_caller) -> list[str] | None:
+    """Генерирует voice examples через LLM."""
+    style = NPC_VOICE_STYLE.get(npc_key, "нейтральный")
+
+    prompt = (
+        f"Создай 5 примеров реплик для NPC «{npc_key}» в текстовой RPG.\n\n"
+        f"Стиль: {style}\n\n"
+        f"Контекст: постапокалиптический лабиринт, собаки-аватары, тёмная атмосфера.\n"
+        f"Каждая реплика — 1-2 предложения, от первого лица.\n\n"
+        f"Верни JSON-массив из 5 строк:\n"
+        f'["реплика 1", "реплика 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=500, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 5][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 5][:5]
+
+    return None
+
+
+_DEFAULT_VOICE_EXAMPLES = {
+    "Баркод": [
+        "Модуль42. Вероятность: [%] пустая. Жду доказательств.",
+        "Шанс [X]%. Остальное — шум.",
+        "Данные устарели. Нужна свежая выборка.",
+        "Риск [%] неоправдан. Но я считаю.",
+        "Вероятность успеха: [%]. Вероятность провала: [%]. Действуем.",
+    ],
+    "Стежка": [
+        "Тихо. Кто-то слышит.",
+        "Она знает то, что скрывает.",
+        "Правда — оружие. Не метафора.",
+        "Ложь пахнет гнилью. Это пахнет правдой.",
+        "Молчи. Смотри. Жди.",
+    ],
+    "Вектор": [
+        "Я не боюсь. Я упрямый. Разница.",
+        "Стена? Пойду напролом.",
+        "Если стена не падает — значит, стена неправильная.",
+        "Давай. Сейчас. Все.",
+        "Я не спрашиваю разрешения.",
+    ],
+    "Пиксель": [
+        "Мир дрожит. Я ловлю каждую дрожь.",
+        "Цифры танцуют. Я знаю их язык.",
+        "Каждый пиксель — история.",
+        "Лабиринт кодирует. Я декодирую.",
+        "Искра — не огонь. Это память.",
+    ],
+    "Безымянная": [
+        "Имён нет. Есть только голоса.",
+        "Я не имя. Я эхо.",
+        "Тот, кто говорит — лжёт. Я молчу.",
+        "Память — яд. Но без неё слепой.",
+        "Я жду, пока мир ошибётся.",
+    ],
+}
+
+
+_voice_examples_cache: dict[str, list[str]] = {}
+
+
+def get_voice_examples_from_cache(season: int, npc_key: str) -> list[str] | None:
+    """Возвращает voice examples из кэша."""
+    key = f"voice:{season}:{npc_key}"
+    return _voice_examples_cache.get(key)
+
+
+async def load_all_voice_examples(session, season: int) -> None:
+    """Загружает все voice examples из БД в кэш."""
+    global _voice_examples_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+    import json
+
+    for npc_key in NPC_KEYS:
+        key = f"voice:{season}:{npc_key}"
+        if key not in _voice_examples_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "voice_examples",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _voice_examples_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass
+
+
+async def seed_inner_thoughts(session, llm_caller=None, season: int = 1) -> int:
+    """Генерирует inner thoughts для каждого NPC через LLM."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import AIGeneratedPool
+    import json
+
+    # NPC keys для inner thoughts = role keys (liner/journal/master/heretic)
+    role_keys = ("liner", "journal", "master", "heretic")
+
+    inserted = 0
+    for npc_key in role_keys:
+        q = (
+            sa_select(sa_func.count())
+            .select_from(AIGeneratedPool)
+            .where(
+                AIGeneratedPool.pool_type == "inner_thoughts",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            )
+        )
+        result = await session.execute(q)
+        if result.scalar() > 0:
+            continue
+
+        pool = _DEFAULT_INNER_THOUGHTS.get(npc_key, ["..."])
+        if llm_caller:
+            try:
+                ai_pool = await _generate_inner_thoughts_via_llm(npc_key, llm_caller)
+                if ai_pool and len(ai_pool) >= 3:
+                    pool = ai_pool
+            except Exception:
+                pass
+
+        row = AIGeneratedPool(
+            pool_type="inner_thoughts",
+            season=season,
+            phase=npc_key,
+            content_json=json.dumps(pool, ensure_ascii=False),
+        )
+        session.add(row)
+        inserted += 1
+
+    await session.commit()
+    return inserted
+
+
+async def _generate_inner_thoughts_via_llm(npc_key: str, llm_caller) -> list[str] | None:
+    """Генерирует inner thoughts через LLM."""
+    style = THOUGHT_STYLE.get(npc_key, "стоит ли доверять")
+
+    prompt = (
+        f"Создай 5 внутренних мыслей игрока при взаимодействии с NPC «{npc_key}».\n\n"
+        f"Тема мыслей: {style}\n\n"
+        f"Контекст: текстовая RPG, постапокалиптический лабиринт.\n"
+        f"Каждая мысль — короткая фраза (5-15 слов), от первого лица.\n\n"
+        f"Верни JSON-массив из 5 строк:\n"
+        f'["мысль 1", "мысль 2", ...]'
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    result = await llm_caller(messages, temperature=0.8, max_tokens=500, want_json=True)
+
+    if not result:
+        return None
+
+    response = result[0] if isinstance(result, tuple) else result
+    if isinstance(response, list):
+        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 5][:5]
+    if isinstance(response, dict) and "strings" in response:
+        items = response["strings"]
+        if isinstance(items, list):
+            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 5][:5]
+
+    return None
+
+
+_DEFAULT_INNER_THOUGHTS = {
+    "liner": [
+        "Стая идёт, но видят ли они ловушки?",
+        "Мне нужно быть осторожнее. Один шаг — и мы все упадём.",
+        "Доверие ещё не потеряно, но оно хрупкое.",
+        "Тропа передо мной ясна, за мной — только верные.",
+        "Стая отдаляется. Я чувствую это в каждом голосовании.",
+    ],
+    "journal": [
+        "Данные говорят одно, но сердце стаи — другое.",
+        "Мне нужно аккуратнее интерпретировать записи.",
+        "Дневник должен оставаться нейтральным.",
+        "Каждый голос — запись в дневнике.",
+        "Записи искажаются. Кто-то пытается изменить историю?",
+    ],
+    "master": [
+        "Стаю нужно укрепить. Слишком много рисков.",
+        "Я вижу слабости. Но говорить прямо — значит напугать.",
+        "Дипломатия важнее силы. Пока.",
+        "Стая ослабевает. Пора действовать решительнее.",
+        "Они не понимают, что лабиринт — не игра.",
+    ],
+    "heretic": [
+        "Стая на грани. Одно неверное слово — и меня изгонят.",
+        "Истина должна подаваться дозированно.",
+        "Провокация — искусство. Нужно знать меру.",
+        "Стая скатывается в conformity. Пора напомнить им о свободе.",
+        "Законы лабиринта — иллюзия. Но стая в них верит.",
+    ],
+}
+
+
+_inner_thoughts_cache: dict[str, list[str]] = {}
+
+
+def get_inner_thoughts_from_cache(season: int, npc_key: str) -> list[str] | None:
+    """Возвращает inner thoughts из кэша."""
+    key = f"thoughts:{season}:{npc_key}"
+    return _inner_thoughts_cache.get(key)
+
+
+async def load_all_inner_thoughts(session, season: int) -> None:
+    """Загружает все inner thoughts из БД в кэш."""
+    global _inner_thoughts_cache
+    from sqlalchemy import select as sa_select
+    from app.models import AIGeneratedPool
+    import json
+
+    role_keys = ("liner", "journal", "master", "heretic")
+    for npc_key in role_keys:
+        key = f"thoughts:{season}:{npc_key}"
+        if key not in _inner_thoughts_cache:
+            q = sa_select(AIGeneratedPool).where(
+                AIGeneratedPool.pool_type == "inner_thoughts",
+                AIGeneratedPool.season == season,
+                AIGeneratedPool.phase == npc_key,
+            ).limit(1)
+            result = await session.execute(q)
+            row = result.scalar_one_or_none()
+            if row:
+                try:
+                    _inner_thoughts_cache[key] = json.loads(row.content_json)
+                except Exception:
+                    pass

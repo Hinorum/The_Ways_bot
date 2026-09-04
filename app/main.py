@@ -97,9 +97,16 @@ async def boot_game(bot) -> None:
             npc_count = await seed_npc_profiles(session, llm_caller=_chat_completion)
             prologue_count = await seed_prologue_beats(session, llm_caller=_chat_completion, season=1)
             arc_count = await seed_season_arcs(session, llm_caller=_chat_completion, season=1)
+            from app.lore import seed_atmospheric_pools, load_all_atmospheric, seed_voice_examples, load_all_voice_examples, seed_inner_thoughts, load_all_inner_thoughts
+            atm_count = await seed_atmospheric_pools(session, llm_caller=_chat_completion, season=1)
+            voice_count = await seed_voice_examples(session, llm_caller=_chat_completion, season=1)
+            thoughts_count = await seed_inner_thoughts(session, llm_caller=_chat_completion, season=1)
+            await load_all_atmospheric(session, season=1)
+            await load_all_voice_examples(session, season=1)
+            await load_all_inner_thoughts(session, season=1)
             log.info(
-                "AI World Engine: seeded %d NPC profiles, %d prologue beats, %d season arcs",
-                npc_count, prologue_count, arc_count,
+                "AI World Engine: seeded %d NPC profiles, %d prologue beats, %d season arcs, %d atm pools, %d voice examples, %d inner thoughts",
+                npc_count, prologue_count, arc_count, atm_count, voice_count, thoughts_count,
             )
     except Exception:
         log.exception("AI World Engine: seeding failed — using hardcoded fallbacks")

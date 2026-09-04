@@ -211,10 +211,24 @@ _ACTIONS = {
 }
 
 
-def _pick_thought(name: str, tone: str, seed: int) -> str:
-    """Детерминированный выбор внутреннего монолога."""
-    import random
+def _pick_thought(name: str, tone: str, seed: int, override: list[str] | None = None) -> str:
+    """Детерминированный выбор внутреннего монолога.
 
+    Сначала из БД (AI), потом хардкод.
+    """
+    import random
+    from app.lore import get_inner_thoughts_from_cache
+
+    # Приоритет: thought_pool_override > AI cache > хардкод
+    if override and len(override) > 0:
+        return override[seed % len(override)]
+
+    # AI-мысли из БД
+    ai_thoughts = get_inner_thoughts_from_cache(1, name)
+    if ai_thoughts and len(ai_thoughts) > 0:
+        return ai_thoughts[seed % len(ai_thoughts)]
+
+    # Фолбэк на хардкод
     thoughts = _INNER_THOUGHTS.get(name, {}).get(tone, _INNER_THOUGHTS.get(name, {}).get("cautious", ["..."]))
     return thoughts[seed % len(thoughts)]
 
@@ -246,7 +260,7 @@ def generate_npc_cog(
     raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
     mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
 
-    inner_thought = _pick_thought(name, mood, day_index)
+    inner_thought = _pick_thought(name, mood, day_index, thought_pool_override)
     motivation = motive_override or _MOTIVATIONS.get(name, {}).get(mood, "Наблюдать за стаей")
     action_hint = _pick_action(name, mood, day_index)
 
@@ -542,28 +556,30 @@ def build_voice_cards_from_profiles(profiles: dict[str, dict]) -> dict[str, dict
     """Строит _VOICE_CARDS из AI-профилей БД.
 
     Фолбэк на хардкод если профиль не найден.
+    Использует AI-сгенерированные examples из кэша.
     """
     from app.story import _VOICE_CARDS
+    from app.lore import get_voice_examples_from_cache
 
     result = {}
     for npc_key, profile in profiles.items():
         speech_style = profile.get("speech_style", "")
+        # AI examples из кэша (сезон 1)
+        ai_examples = get_voice_examples_from_cache(1, npc_key)
         if npc_key in _VOICE_CARDS:
-            # Используем AI-данные из БД если есть
             if speech_style:
                 result[npc_key] = {
                     "pattern": speech_style,
-                    "examples": _VOICE_CARDS[npc_key].get("examples", []),
+                    "examples": ai_examples or _VOICE_CARDS[npc_key].get("examples", []),
                     "banned": _VOICE_CARDS[npc_key].get("banned", []),
                 }
             else:
                 result[npc_key] = _VOICE_CARDS[npc_key]
         else:
-            # NPC не в хардкоде — создаём из AI
             if speech_style:
                 result[npc_key] = {
                     "pattern": speech_style,
-                    "examples": [],
+                    "examples": ai_examples or [],
                     "banned": [],
                 }
     return result
