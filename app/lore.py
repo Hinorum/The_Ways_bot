@@ -1632,11 +1632,13 @@ async def seed_atmospheric_pools(session, llm_caller=None, season: int = 1) -> i
             continue
 
         pool = fallback_pool
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_atmospheric_via_llm(phase, llm_caller)
                 if ai_pool and len(ai_pool) >= 10:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -1645,6 +1647,7 @@ async def seed_atmospheric_pools(session, llm_caller=None, season: int = 1) -> i
             season=season,
             phase=phase,
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1
@@ -1773,11 +1776,13 @@ async def seed_voice_examples(session, llm_caller=None, season: int = 1) -> int:
             continue
 
         pool = _DEFAULT_VOICE_EXAMPLES.get(npc_key, ["..."])
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_voice_examples_via_llm(npc_key, llm_caller)
                 if ai_pool and len(ai_pool) >= 3:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -1786,6 +1791,7 @@ async def seed_voice_examples(session, llm_caller=None, season: int = 1) -> int:
             season=season,
             phase=npc_key,
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1
@@ -1922,11 +1928,13 @@ async def seed_voice_banned(session, llm_caller=None, season: int = 1) -> int:
             continue
 
         pool = _DEFAULT_VOICE_BANNED.get(npc_key, ["..."])
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_voice_banned_via_llm(npc_key, llm_caller)
                 if ai_pool and len(ai_pool) >= 2:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -1935,6 +1943,7 @@ async def seed_voice_banned(session, llm_caller=None, season: int = 1) -> int:
             season=season,
             phase=npc_key,
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1
@@ -2040,11 +2049,13 @@ async def seed_inner_thoughts(session, llm_caller=None, season: int = 1) -> int:
             continue
 
         pool = _DEFAULT_INNER_THOUGHTS.get(npc_key, ["..."])
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_inner_thoughts_via_llm(npc_key, llm_caller)
                 if ai_pool and len(ai_pool) >= 3:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -2053,6 +2064,7 @@ async def seed_inner_thoughts(session, llm_caller=None, season: int = 1) -> int:
             season=season,
             phase=npc_key,
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1

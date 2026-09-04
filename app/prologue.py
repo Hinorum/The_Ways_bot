@@ -150,12 +150,14 @@ async def seed_prologue_beats(session, llm_caller=None, season: int = 1) -> int:
         # Если есть LLM — генерируем через AI
         title = beat_data["title"]
         block = beat_data["block"]
+        is_ai = False
         if llm_caller:
             try:
                 ai_beat = await _generate_prologue_beat_via_llm(day_index, season, llm_caller)
                 if ai_beat:
                     title = ai_beat["title"]
                     block = ai_beat["block"]
+                    is_ai = True
             except Exception:
                 pass  # Используем фолбэк
 
@@ -164,6 +166,7 @@ async def seed_prologue_beats(session, llm_caller=None, season: int = 1) -> int:
             day_index=day_index,
             title=title,
             block=block,
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1

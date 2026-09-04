@@ -422,11 +422,13 @@ async def seed_npc_profiles(session: "AsyncSession", llm_caller=None) -> int:
 
         # Если есть LLM — генерируем через AI
         profile_data = fallback
+        is_ai = False
         if llm_caller:
             try:
                 ai_profile = await _generate_npc_profile_via_llm(npc_key, llm_caller)
                 if ai_profile:
                     profile_data = ai_profile
+                    is_ai = True
             except Exception:
                 pass  # Используем фолбэк
 
@@ -437,6 +439,7 @@ async def seed_npc_profiles(session: "AsyncSession", llm_caller=None) -> int:
             speech_style=profile_data.get("speech_style", ""),
             appearance=profile_data.get("appearance", ""),
             default_mood=profile_data.get("default_mood", "neutral"),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1

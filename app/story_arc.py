@@ -409,6 +409,7 @@ async def seed_season_arcs(session, llm_caller=None, season: int = 1) -> int:
         whisper = list(stage.get("whisper", ()))
         teaser = list(stage.get("teaser", ()))
         guest = stage.get("guest", "")
+        is_ai = False
 
         if llm_caller:
             try:
@@ -421,6 +422,7 @@ async def seed_season_arcs(session, llm_caller=None, season: int = 1) -> int:
                     whisper = ai_stage.get("whisper", whisper)
                     teaser = ai_stage.get("teaser", teaser)
                     guest = ai_stage.get("guest", guest)
+                    is_ai = True
             except Exception:
                 pass  # Используем фолбэк
 
@@ -434,6 +436,7 @@ async def seed_season_arcs(session, llm_caller=None, season: int = 1) -> int:
             whisper_json=json.dumps(whisper, ensure_ascii=False),
             teaser_json=json.dumps(teaser, ensure_ascii=False),
             guest=guest,
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1

@@ -770,11 +770,13 @@ async def seed_villain_events(session, llm_caller=None, season: int = 1) -> int:
             continue
 
         pool = list(_VILLAIN_EVENTS.get(stage, _VILLAIN_EVENTS[0]))
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_villain_events_via_llm(stage, llm_caller)
                 if ai_pool and len(ai_pool) >= 3:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -783,6 +785,7 @@ async def seed_villain_events(session, llm_caller=None, season: int = 1) -> int:
             season=season,
             phase=str(stage),
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1
@@ -847,11 +850,13 @@ async def seed_heretic_events(session, llm_caller=None, season: int = 1) -> int:
             continue
 
         pool = list(_HERETIC_EVENTS.get(stage, _HERETIC_EVENTS[0]))
+        is_ai = False
         if llm_caller:
             try:
                 ai_pool = await _generate_heretic_events_via_llm(stage, llm_caller)
                 if ai_pool and len(ai_pool) >= 3:
                     pool = ai_pool
+                    is_ai = True
             except Exception:
                 pass
 
@@ -860,6 +865,7 @@ async def seed_heretic_events(session, llm_caller=None, season: int = 1) -> int:
             season=season,
             phase=str(stage),
             content_json=json.dumps(pool, ensure_ascii=False),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1

@@ -115,6 +115,14 @@ async def boot_game(bot) -> None:
                 "AI World Engine: %d NPC, %d prologue, %d arcs, %d atm, %d voice, %d banned, %d thoughts, %d villain, %d heretic",
                 npc_count, prologue_count, arc_count, atm_count, voice_count, banned_count, thoughts_count, villain_count, heretic_count,
             )
+            # Auto-regenerate: замена хардкод-фолбэков на AI-данные
+            try:
+                from app.ai_regenerate import regenerate_all
+                regen = await regenerate_all(session, _chat_completion, season=1)
+                if regen:
+                    log.info("AI Regeneration: %s", regen)
+            except Exception:
+                log.exception("AI Regeneration failed")
     except Exception:
         log.exception("AI World Engine: seeding failed — using hardcoded fallbacks")
 
