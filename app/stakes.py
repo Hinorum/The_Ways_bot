@@ -216,10 +216,8 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     что при параллельном вызове (tick + ton-settle) только один поток пройдёт
     дальше. Идемпотентность — по флагу round.payouts_finalized.
     """
-    import logging as _log
-    _logger = _log.getLogger(__name__)
     if round_row.status != RoundStatus.CLOSED:
-        _logger.debug("finalize_day_payouts: round %s не CLOSED (%s) — пропуск", round_row.id, round_row.status)
+        logger.debug("finalize_day_payouts: round %s не CLOSED (%s) — пропуск", round_row.id, round_row.status)
         return 0
     network = current_network()
     claim = await session.execute(
@@ -228,9 +226,9 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         .values(payouts_finalized=True)
     )
     if claim.rowcount == 0:
-        _logger.info("finalize_day_payouts: round %s уже финализирован или claim не прошёл", round_row.id)
+        logger.info("finalize_day_payouts: round %s уже финализирован или claim не прошёл", round_row.id)
         return 0
-    _logger.info("finalize_day_payouts: round %s claim прошёл, ищу ставки (network=%s)", round_row.id, network)
+    logger.info("finalize_day_payouts: round %s claim прошёл, ищу ставки (network=%s)", round_row.id, network)
 
     scope = [Stake.round_id == round_row.id, Stake.network == network]
     confirmed = list(
@@ -245,7 +243,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         .scalars()
         .all()
     )
-    _logger.info("finalize_day_payouts: round %s confirmed=%d stuck=%d", round_row.id, len(confirmed), len(stuck))
+    logger.info("finalize_day_payouts: round %s confirmed=%d stuck=%d", round_row.id, len(confirmed), len(stuck))
 
     # Pre-load кошельков всех игроков одним запросом (eliminate N+1).
     all_player_ids = {s.player_id for s in confirmed + stuck}
@@ -257,6 +255,27 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         wallet_map = {pid: addr for pid, addr in players_result.all()}
 
     def add_payout(stake: Stake, kind: str, amount: int) -> int:
+        # Guard: максимальная сумма выплаты
+        max_nano = to_nano(settings.max_payout_gram) if settings.max_payout_gram > 0 else 0
+        if max_nano > 0 and amount > max_nano:
+            logger.error(
+                "add_payout: сумма %d нанотонов превышает максимум %d (%s грам) — "
+                "выплата помечена failed",
+                amount, max_nano, settings.max_payout_gram,
+            )
+            session.add(
+                Payout(
+                    round_id=round_row.id,
+                    player_id=stake.player_id,
+                    kind=kind,
+                    amount_nanotons=amount,
+                    dest_address=wallet_map.get(stake.player_id) or "",
+                    network=network,
+                    status=PayoutStatus.FAILED.value,
+                    last_error=f"amount {from_nano(amount):.4f} exceeds max {settings.max_payout_gram}",
+                )
+            )
+            return 0
         session.add(
             Payout(
                 round_id=round_row.id,
@@ -398,7 +417,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         if refund > 0:
             created += add_payout(stake, "refund", refund)
 
-    _logger.info("finalize_day_payouts: round %s создано выплат: %d (pot=%d нанотонов)", round_row.id, created, pot)
+    logger.info("finalize_day_payouts: round %s создано выплат: %d (pot=%d нанотонов)", round_row.id, created, pot)
     await session.commit()
     return created
 

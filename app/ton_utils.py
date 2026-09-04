@@ -84,13 +84,3 @@ def to_nano(amount_ton: float) -> int:
 
 def from_nano(amount_nanotons: int) -> float:
     return amount_nanotons / NANO
-
-
-def wallet_trust(address: str) -> dict:
-    """Заготовка анти-сибил проверки: возраст кошелька и активность.
-
-    На этапе активации TON здесь будет запрос к tonapi
-    (/v2/accounts/{address}/history) с оценкой: свежий пустой кошелёк —
-    пониженное доверие (уменьшенный лимит ставки или ручная проверка).
-    """
-    return {"address": normalize_address(address), "age_days": None, "trusted": True}
