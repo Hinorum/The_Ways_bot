@@ -162,14 +162,39 @@ _VOICE_CARDS: dict[str, dict[str, str | list[str]]] = {
     },
 }
 
+# Кэш AI-профилей NPC из БД (загружается один раз за сессию)
+_npc_profiles_cache: dict[str, dict] | None = None
 
-def _voice_cards_for(text: str) -> str:
-    """Инжектит voice cards для персонажей, упомянутых в тексте."""
+
+async def _load_npc_profiles_for_prompt(session) -> dict[str, dict]:
+    """Загружает AI-профили NPC из БД с кэшированием."""
+    global _npc_profiles_cache
+    if _npc_profiles_cache is not None:
+        return _npc_profiles_cache
+    try:
+        from app.npc_cog import load_all_npc_profiles
+        _npc_profiles_cache = await load_all_npc_profiles(session)
+    except Exception:
+        _npc_profiles_cache = {}
+    return _npc_profiles_cache
+
+
+def _voice_cards_for(text: str, db_profiles: dict[str, dict] | None = None) -> str:
+    """Инжектит voice cards для персонажей, упомянутых в тексте.
+
+    Использует AI-профили из БД если есть, иначе — хардкод.
+    """
     low = (text or "").lower()
+    # Строим voice cards из БД если есть
+    if db_profiles:
+        from app.npc_cog import build_voice_cards_from_profiles
+        voice_cards = build_voice_cards_from_profiles(db_profiles)
+    else:
+        voice_cards = _VOICE_CARDS
     blocks = []
-    for char_key, card in _VOICE_CARDS.items():
+    for char_key, card in voice_cards.items():
         if char_key in low:
-            examples = " | ".join(str(e) for e in card["examples"][:3])
+            examples = " | ".join(str(e) for e in card.get("examples", [])[:3])
             banned = card.get("banned", [])[:3]
             suffix = ""
             if banned:
@@ -1099,6 +1124,7 @@ async def generate_chapter(
     dynamic_rules_block: str | None = None,
     needs_block: str | None = None,
     characters_block: str | None = None,
+    npc_profiles: dict[str, dict] | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -1124,6 +1150,7 @@ async def generate_chapter(
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
         characters_block=characters_block,
+        npc_profiles=npc_profiles,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1318,8 +1345,11 @@ def _build_story_prompt(
     dynamic_rules_block: str | None = None,
     needs_block: str | None = None,
     characters_block: str | None = None,
+    npc_profiles: dict[str, dict] | None = None,
 ) -> str:
-    """Промпт главы дня. Чистая функция — покрывается тестами без сети."""
+    """Промпт главы дня. Чистая функция — покрывается тестами без сети.
+    npc_profiles: AI-профили NPC из БД (опционально).
+    """
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
     law_line = ""
     if win_rule is not None:
@@ -1386,7 +1416,8 @@ def _build_story_prompt(
     # Voice cards: инжектим конкретные примеры речи для персонажей в сцене
     voice_block = _voice_cards_for(
         f"{previous_beats} {season_text} {villain_text} {echo_block} "
-        f"{alignment_block} {focus_line} {repeat_block}"
+        f"{alignment_block} {focus_line} {repeat_block}",
+        db_profiles=npc_profiles,
     )
     # Witness filter: не все NPC знают о прошлых событиях
     witness_block = witness_filter(previous_beats, history)
@@ -1595,6 +1626,7 @@ async def _free_story_llm(
     dynamic_rules_block: str | None = None,
     needs_block: str | None = None,
     characters_block: str | None = None,
+    npc_profiles: dict[str, dict] | None = None,
 ) -> dict | None:
     # AI-генерация описаний шрамов (до сборки промпта)
     scar_descriptions_override = None
@@ -1624,6 +1656,7 @@ async def _free_story_llm(
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
         characters_block=characters_block,
+        npc_profiles=npc_profiles,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (

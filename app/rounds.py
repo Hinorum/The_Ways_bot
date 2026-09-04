@@ -915,6 +915,13 @@ async def _plan_and_render(
     # Банк повторов: формулировки и места последних дней — модель не должна
     # дублировать их дословно (литературный де-дуп, окно 7 дней).
     repeat_block = await recent_repeats_block(session, day_index)
+    # AI-профили NPC из БД для voice cards
+    npc_profiles = None
+    try:
+        from app.npc_cog import load_all_npc_profiles
+        npc_profiles = await load_all_npc_profiles(session)
+    except Exception:
+        pass
     chapter = await generate_chapter(
         day_index, beats, rule,
         echoes=echoes if "echoes" in guests else [],
@@ -932,6 +939,7 @@ async def _plan_and_render(
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
         characters_block=characters_block,
+        npc_profiles=npc_profiles,
         is_expanded=day_index == 1 or twist,
     )
 

@@ -493,6 +493,82 @@ async def get_npc_names(session: "AsyncSession") -> dict[str, str]:
     return {row.npc_key: row.name for row in rows}
 
 
+async def load_all_npc_profiles(session: "AsyncSession") -> dict[str, dict]:
+    """Загружает все профили NPC из БД. Возвращает {npc_key: profile_dict}."""
+    from sqlalchemy import select as sa_select
+    from app.models import NPCProfile
+
+    q = sa_select(NPCProfile)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    return {
+        row.npc_key: {
+            "name": row.name,
+            "personality": row.personality,
+            "speech_style": row.speech_style,
+            "appearance": row.appearance,
+            "default_mood": row.default_mood,
+        }
+        for row in rows
+    }
+
+
+def build_npc_micro_prompts(profiles: dict[str, dict]) -> dict[str, str]:
+    """Строит CHARACTER_MICRO_PROMPTS из AI-профилей БД.
+
+    Фолбэк на хардкод если профиль не найден.
+    """
+    from app.story import CHARACTER_MICRO_PROMPTS
+
+    result = {}
+    for npc_key, profile in profiles.items():
+        if npc_key in CHARACTER_MICRO_PROMPTS:
+            # Используем AI-данные из БД
+            personality = profile.get("personality", "")
+            name = profile.get("name", npc_key)
+            if personality:
+                result[npc_key] = f"{name} — {personality}"
+            else:
+                result[npc_key] = CHARACTER_MICRO_PROMPTS[npc_key]
+        else:
+            # NPC не в хардкоде — используем полностью AI
+            name = profile.get("name", npc_key)
+            personality = profile.get("personality", "")
+            result[npc_key] = f"{name} — {personality}" if personality else name
+    return result
+
+
+def build_voice_cards_from_profiles(profiles: dict[str, dict]) -> dict[str, dict]:
+    """Строит _VOICE_CARDS из AI-профилей БД.
+
+    Фолбэк на хардкод если профиль не найден.
+    """
+    from app.story import _VOICE_CARDS
+
+    result = {}
+    for npc_key, profile in profiles.items():
+        speech_style = profile.get("speech_style", "")
+        if npc_key in _VOICE_CARDS:
+            # Используем AI-данные из БД если есть
+            if speech_style:
+                result[npc_key] = {
+                    "pattern": speech_style,
+                    "examples": _VOICE_CARDS[npc_key].get("examples", []),
+                    "banned": _VOICE_CARDS[npc_key].get("banned", []),
+                }
+            else:
+                result[npc_key] = _VOICE_CARDS[npc_key]
+        else:
+            # NPC не в хардкоде — создаём из AI
+            if speech_style:
+                result[npc_key] = {
+                    "pattern": speech_style,
+                    "examples": [],
+                    "banned": [],
+                }
+    return result
+
+
 def npc_cogs_block(
     cogs: list[NPCCogResult],
     max_lines: int = 8,

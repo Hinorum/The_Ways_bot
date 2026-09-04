@@ -226,9 +226,10 @@ _STAGE_SPAN_BY_INDEX: dict[int, tuple[float, float]] = {
 }
 
 
-def arc_stage(run_day: int, total: int) -> dict:
+def arc_stage(run_day: int, total: int, stages: list[dict] | None = None) -> dict:
     idx = arc_stage_index(run_day, total)
-    return next(s for s in _ARC_STAGES if s["index"] == idx)
+    source = stages if stages else _ARC_STAGES
+    return next(s for s in source if s["index"] == idx)
 
 
 def _rng(seed_key: str, run_day: int) -> random.Random:
@@ -275,8 +276,8 @@ def sign_for(run_day: int, total: int) -> tuple[str, str] | None:
     return f"№{num}", pool[rng.randrange(len(pool))]
 
 
-def _stage_label(run_day: int, total: int) -> dict:
-    stage = arc_stage(run_day, total)
+def _stage_label(run_day: int, total: int, stages: list[dict] | None = None) -> dict:
+    stage = arc_stage(run_day, total, stages=stages)
     sign = sign_for(run_day, total)
     return stage, sign
 
@@ -286,15 +287,19 @@ def arc_block(
     total: int,
     run_key: str = "",
     previous_season_summary: str | None = None,
+    db_arc_stages: list[dict] | None = None,
 ) -> str:
     """Блок арки для season_block (идёт в промпт главы и в офлайн-сборку).
 
     Структурный токен ЭТАП=N стабилен и парсится offline-сборкой лора;
     остальное — повествование для Ведущего. Детерминирован по дню/забегу.
+    db_arc_stages: AI-сгенерированные этапы из БД (опционально).
     """
     if total <= 1:
         return ""
-    stage, sign = _stage_label(run_day, total)
+    # Используем AI-этапы из БД если есть, иначе — хардкод
+    stages = db_arc_stages if db_arc_stages else list(_ARC_STAGES)
+    stage, sign = _stage_label(run_day, total, stages=stages)
     mission = mission_for(run_day, total, run_key)
     lines = [
         f"АРКА МЕСЯЦА | ЭТАП={stage['index']} | {stage['name']} | день {run_day} из {total}.",
