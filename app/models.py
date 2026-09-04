@@ -50,6 +50,11 @@ class PayoutStatus(str, enum.Enum):
     DISMISSED = "dismissed"
 
 
+# Valid status values for CHECK constraints
+STAKE_STATUSES = {"pending", "confirmed", "rejected", "refunded"}
+PAYOUT_STATUSES = {"pending", "sending", "sent", "failed", "dismissed"}
+
+
 RULE_PHRASES = {
     WinRule.MAJORITY: "побеждает карта, собравшая больше всех голосов",
     WinRule.MINORITY: "побеждает карта, собравшая меньше всех голосов",
@@ -279,16 +284,14 @@ class Stake(Base):
     tx_hash: Mapped[str] = mapped_column(String(80), unique=True)
     memo: Mapped[str] = mapped_column(String(64), default="")
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
-    status: Mapped[str] = mapped_column(
-        Enum(StakeStatus, values_callable=lambda e: [x.value for x in e]),
-        default=StakeStatus.PENDING.value,
-    )
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("round_id", "player_id", name="uq_stake_round_player"),
         CheckConstraint("amount_nanotons > 0", name="ck_stake_positive_amount"),
+        CheckConstraint("status IN ('pending', 'confirmed', 'rejected', 'refunded')", name="ck_stake_valid_status"),
     )
 
 
@@ -310,10 +313,7 @@ class Payout(Base):
     dest_address: Mapped[str] = mapped_column(String(80))
     tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
-    status: Mapped[str] = mapped_column(
-        Enum(PayoutStatus, values_callable=lambda e: [x.value for x in e]),
-        default=PayoutStatus.PENDING.value,
-    )
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     # Причина последней неудачи отправки: видно в /payouts и алертах админу,
     # диагноз не требует раскопок логов сервиса.
@@ -330,6 +330,7 @@ class Payout(Base):
 
     __table_args__ = (
         CheckConstraint("amount_nanotons > 0", name="ck_payout_positive_amount"),
+        CheckConstraint("status IN ('pending', 'sending', 'sent', 'failed', 'dismissed')", name="ck_payout_valid_status"),
     )
 
 
