@@ -268,7 +268,12 @@ def flip_margin(counts: dict[int, int], win_rule, winner_card: int | None) -> tu
     return None
 
 
-def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, multiplier: float | None = None) -> str:
+def format_results(
+    round_row: Round,
+    path_stakes: dict[int, int] | None = None,
+    multiplier: float | None = None,
+    reveal_override: str | None = None,
+) -> str:
     import json
     from app.style import result_mark
 
@@ -276,7 +281,10 @@ def format_results(round_row: Round, path_stakes: dict[int, int] | None = None, 
     counts = {int(key): int(value) for key, value in raw.items()}
     names = {card.position: _tg_escape(card.title) for card in round_row.cards}
     mark_key = str(getattr(round_row, "id", round_row.day_index))
-    reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
+    if reveal_override:
+        reveal = reveal_override
+    else:
+        reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     lines = [
         f"{result_mark(mark_key)} День {round_row.day_index} закрыт",
         f"📖 Страница {round_row.day_index}: {reveal}.",

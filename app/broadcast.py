@@ -365,7 +365,24 @@ async def results_body(finished: Round, session=None) -> str:
         except Exception:
             pass
 
-    text = format_results(finished, path_stakes, multiplier)
+    # AI-генерация фразы раскрытия
+    reveal_phrase = None
+    try:
+        from app.tally import generate_reveal_phrase_ai
+        import json as _json
+        _raw = _json.loads(finished.vote_counts_json or "{}")
+        _counts = {int(k): int(v) for k, v in _raw.items()}
+        reveal_phrase = await generate_reveal_phrase_ai(
+            _counts,
+            getattr(finished, "win_rule", None),
+            finished.winner_card,
+            finished.day_index,
+            chapter_title=getattr(finished, "chapter_title", ""),
+        )
+    except Exception:
+        pass
+
+    text = format_results(finished, path_stakes, multiplier, reveal_override=reveal_phrase)
     round_id = getattr(finished, "id", None)
     if round_id is not None and economics_stats is not None:
         try:
@@ -809,7 +826,14 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
                 )
             ).all()
             for pid, calling in calling_rows:
-                tail = echo_tail(calling)
+                # AI-генерация хвоста эхо с фолбэком к статичному
+                try:
+                    from app.callings import generate_echo_tail_ai
+                    tail = await generate_echo_tail_ai(calling)
+                except Exception:
+                    tail = None
+                if tail is None:
+                    tail = echo_tail(calling)
                 if tail:
                     tail_map[pid] = tail
             # Без призвания окраску даёт След (если уже проявился).

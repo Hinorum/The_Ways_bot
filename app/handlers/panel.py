@@ -65,11 +65,6 @@ _PANEL_FOOTER = (
 
 async def _admin_panel_text(session=None) -> str:
     """Сводка состояния игры + подсказки по командам, одним сообщением."""
-    from app.ops import snapshot
-    from app.ops import is_game_paused as _paused_flag
-    from app.ops import paused_reason as _pause_reason
-    from app.season import act_line_short, get_cached_anchor, run_position
-
     _own_session = session is None
     if _own_session:
         session = SessionLocal()

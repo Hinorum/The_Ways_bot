@@ -310,7 +310,6 @@ async def cmd_incoming(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
-    from app.models import Income
 
     async with SessionLocal() as session:
         rows = (

@@ -93,20 +93,23 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
             child_gen = parent_gen + 1
             gen_tag = f"[gen:{child_gen}]"
             chain_rng = random.Random(f"chain:{echo.id}:{day_index}")
-            chain_phrases = {
-                2: (
-                    "Теперь это примета мира, которую трудно не заметить.",
-                    "Лабиринт подхватил след — теперь он звучит громче.",
-                    "Эхо отозвалось в соседнем коридоре и вернулось иным.",
-                ),
-                3: (
-                    "Третий рубеж пройден — мир запомнил этот путь навсегда.",
-                    "Лабиринт прошептал имя следа. Теперь он — часть канона.",
-                    "Глубина хватила: это уже не след, а тропа, которую не стереть.",
-                ),
-            }
-            phrases = chain_phrases.get(child_gen, chain_phrases[3])
-            phrase = chain_rng.choice(phrases)
+            # AI-генерация фразы цепочки с фолбэком к хардкоду
+            phrase = await generate_chain_phrase_ai(echo.title, echo.kind, child_gen)
+            if phrase is None:
+                chain_phrases = {
+                    2: (
+                        "Теперь это примета мира, которую трудно не заметить.",
+                        "Лабиринт подхватил след — теперь он звучит громче.",
+                        "Эхо отозвалось в соседнем коридоре и вернулось иным.",
+                    ),
+                    3: (
+                        "Третий рубеж пройден — мир запомнил этот путь навсегда.",
+                        "Лабиринт прошептал имя следа. Теперь он — часть канона.",
+                        "Глубина хватила: это уже не след, а тропа, которую не стереть.",
+                    ),
+                }
+                phrases = chain_phrases.get(child_gen, chain_phrases[3])
+                phrase = chain_rng.choice(phrases)
             base_desc = _GEN_RE.sub("", echo.description).strip()
             child_title = f"{echo.title}: след {child_gen}го поколения"[:160]
             session.add(

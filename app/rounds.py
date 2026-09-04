@@ -772,6 +772,23 @@ async def _plan_and_render(
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
+    # AI-реакции NPC: уникальные описания поведения
+    try:
+        from app.relations import generate_npc_reaction
+        npc_reactions = []
+        for npc_key, sentiment in npc_sentiments.items():
+            if sentiment != 0:
+                reaction = await generate_npc_reaction(
+                    npc_key, sentiment,
+                    recent_events=story_context if 'story_context' in dir() else "",
+                    recent_choices=choices_context if 'choices_context' in dir() else "",
+                )
+                if reaction:
+                    npc_reactions.append(reaction)
+        if npc_reactions:
+            sblock = f"{sblock}\nРеакции NPC: " + " ".join(npc_reactions)
+    except Exception:
+        pass
     # ── NPC chain-of-thought ──
     # Внутренний монолог NPC перед действием: по sentinent-ам дня.
     try:
@@ -872,13 +889,19 @@ async def _plan_and_render(
     order_axis, moral_axis = anchor_axes(anchor)
     # Фокус-день NPC (каждый третий день забега).
     try:
-        from app.relations import npc_focus_line, get_npc_titles
+        from app.relations import npc_focus_line_ai, get_npc_titles
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
         npc_titles = await get_npc_titles(session)
         focus_line = (
-            npc_focus_line(run_day_now, npc_titles=npc_titles) if "focus" in guests else None
+            await npc_focus_line_ai(
+                run_day_now,
+                relations=npc_sentiments,
+                npc_titles=npc_titles,
+            )
+            if "focus" in guests
+            else None
         )
     except Exception:
         focus_line = None

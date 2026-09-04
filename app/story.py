@@ -1312,6 +1312,7 @@ def _build_story_prompt(
     repeat_block: str | None = None,
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
+    scar_descriptions_override: dict[str, str] | None = None,
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
@@ -1407,12 +1408,15 @@ def _build_story_prompt(
             "scorched_earth": "слишком много мостов сожжено — земля выжжена",
             "fresh_wound": "свежая рана — мир помнит боль",
             "warm_hearth": "стая создала тёплый очаг — место, куда хочется возвращаться",
-            "sanctuary": "стая стала домом для других — святилище",
+            "sanctuary": "стaya стала домом для других — святилище",
             "gentle_breath": "мягкое дыхание — мир стал теплее",
             "labyrinth_doubt": "сомнение лабиринта — коридоры дублируются",
             "false_trails": "ложные тропы — хитрость открыла новые коридоры",
             "whisper_of_trick": "шёпот обмана — кто-то считает дни иначе",
         }
+        # Используем AI-описания, если переданы
+        if scar_descriptions_override:
+            scar_descriptions.update(scar_descriptions_override)
         scar_lines = [f"- {scar_descriptions.get(k, k)}" for k in active_scar_keys if k in scar_descriptions]
         if scar_lines:
             scar_text = (
@@ -1592,6 +1596,19 @@ async def _free_story_llm(
     needs_block: str | None = None,
     characters_block: str | None = None,
 ) -> dict | None:
+    # AI-генерация описаний шрамов (до сборки промпта)
+    scar_descriptions_override = None
+    if active_scar_keys:
+        try:
+            from app.scar_rules import generate_scar_description_ai
+            scar_descriptions_override = {}
+            for k in active_scar_keys:
+                ai_desc = await generate_scar_description_ai(k, "care", day_index)
+                if ai_desc:
+                    scar_descriptions_override[k] = ai_desc
+        except Exception:
+            pass
+
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,
         season_block=season_block, places_block=places_block,
@@ -1601,6 +1618,7 @@ async def _free_story_llm(
         repeat_block=repeat_block,
         is_expanded=is_expanded,
         active_scar_keys=active_scar_keys,
+        scar_descriptions_override=scar_descriptions_override,
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,

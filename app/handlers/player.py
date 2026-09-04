@@ -453,6 +453,15 @@ async def _score_text(user) -> str:
     from app.streaks import streak_text, path_legacy
 
     streak_info = streak_text(player)
+    # AI-генерация нарратива стрика
+    try:
+        from app.streaks import generate_streak_narrative_ai, title_for_streak
+        _cur_title = title_for_streak(player.current_streak)
+        _ai_narrative = await generate_streak_narrative_ai(_cur_title.key, player.current_streak)
+        if _ai_narrative:
+            streak_info += f"\n{_ai_narrative}"
+    except Exception:
+        pass
     legacy = await path_legacy(session, limit=3)
 
     text = (

@@ -47,7 +47,6 @@ RULE_MASKS = {
     WinRule.MINORITY: ("Одинокий Волк", "ночь, когда право пути у отставшего"),
     WinRule.MEDIAN: ("Середняк", "ночь существа, живущего между крайностями"),
 }
-SEALED_MASK = ("Слепая Яма", "день, где закон запечатан до темноты")
 
 
 class Player(Base):
@@ -611,38 +610,6 @@ class ConsequenceBranch(Base):
     stage_text: Mapped[str] = mapped_column(Text, default="")  # Текущая стадия
     choices_json: Mapped[str] = mapped_column(Text, default="{}")  # {tag: description}
     resolution: Mapped[str] = mapped_column(Text, default="")  # Как разрешается
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class WeeklyVote(Base):
-    """Недельное голосование за NPC-партнёра.
-
-    Каждую неделю стaya голосует за одного из 5 NPC-партнёров.
-    Победивший NPC даёт пассивный бонус на неделю.
-    """
-
-    __tablename__ = "weekly_votes"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    week_number: Mapped[int] = mapped_column(Integer, index=True)
-    player_id: Mapped[int] = mapped_column(Integer, index=True)
-    partner_key: Mapped[str] = mapped_column(String(32))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class MonthlyOath(Base):
-    """Месячная клятва стаи.
-
-    Раз в месяц стая голосует за клятву. Выполнение даёт награду,
-    невыполнение — штраф. Клятва отслеживается через статистику месяца.
-    """
-
-    __tablename__ = "monthly_oaths"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    month_number: Mapped[int] = mapped_column(Integer, index=True)
-    player_id: Mapped[int] = mapped_column(Integer, index=True)
-    oath_key: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
