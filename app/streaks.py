@@ -37,6 +37,47 @@ TITLES: tuple[Title, ...] = (
 )
 
 
+async def generate_streak_narrative_ai(calling_key: str, streak: int) -> str | None:
+    """AI генерирует уникальную фразу достижения на основе титула и стрика.
+
+    Возвращает строку или None при ошибке (фолбэк к статичным описаниям).
+    """
+    from app.story import _chat_completion
+
+    titles = {
+        "novice": "Щенок",
+        "tracking": "Следопыт",
+        "scout": "Разведчик",
+        "ranger": "Следопыт Стаи",
+        "oracle": "Оракул",
+        "sage": "Мудрец",
+        "elder": "Старейшина",
+        "legend": "Легенда Стаи",
+        "prophet": "Пророк",
+    }
+    title = titles.get(calling_key, calling_key)
+
+    prompt = (
+        f"Титул: {title} ({calling_key}). Серия: {streak} верных путей.\n\n"
+        "Напиши одну фразу-достижение (1 предложение, 15-30 слов) — "
+        "метафору из личного дневника стаи. Стиль: торжественный, "
+        "без кавычек, просто текст."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=15,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 150 else text[:147] + "..."
+    except Exception:
+        return None
+
+
 def title_for_streak(streak: int) -> Title:
     """Возвращает титул по текущему стрику."""
     result = TITLES[0]
