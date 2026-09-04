@@ -173,6 +173,52 @@ def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) ->
     return phrases[rng.randrange(len(phrases))]
 
 
+async def generate_reveal_phrase_ai(
+    counts: dict[int, int],
+    win_rule,
+    winner_card: int | None,
+    day_index: int,
+    chapter_title: str = "",
+) -> str | None:
+    """AI генерирует уникальную фразу раскрытия на основе реальных голосов.
+
+    Возвращает строку или None при ошибке (фолбэк к _reveal_phrase).
+    """
+    from app.story import _chat_completion
+
+    total = sum(counts.values())
+    if total == 0 or winner_card is None:
+        return None
+
+    rule_name = {
+        "majority": "большинство",
+        "minority": "меньшинство",
+        "median": "середина",
+    }.get(str(win_rule.value) if hasattr(win_rule, "value") else str(win_rule), "закон дня")
+
+    prompt = (
+        f"День {day_index}. Закон: {rule_name}.\n"
+        f"Глава: «{chapter_title}»\n"
+        f"Голоса: {counts}. Всего: {total}. Победил путь {winner_card}.\n\n"
+        "Напиши одну фразу-раскрытие (1 предложение) — драматический момент, "
+        "когда стая узнаёт, как проголосовала. Стиль: тёмная метафора, "
+        "без чисел и статистики, только эмоция. 15-40 слов."
+    )
+
+    result = await _chat_completion(
+        [{"role": "user", "content": prompt}],
+        timeout=20,
+    )
+    if result is None:
+        return None
+    payload, _used_model = result
+    try:
+        text = str(payload["choices"][0]["message"]["content"]).strip()
+        return text if len(text) < 200 else text[:197] + "..."
+    except Exception:
+        return None
+
+
 _FLIP_SEARCH_CAP = 15  # отрыв больше этого уже не «на волоске» — строку не пишем
 
 
