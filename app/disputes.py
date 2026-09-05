@@ -88,6 +88,8 @@ async def compensate_dispute(
     d = await session.get(Dispute, dispute_id)
     if d is None:
         return "нет такого спора"
+    if d.status != "open":
+        return f"спор уже закрыт ({d.status}) — компенсация невозможна"
     if d.player_id is None:
         return "у спора нет игрока — компенсировать некому"
     player = await session.get(Player, d.player_id)

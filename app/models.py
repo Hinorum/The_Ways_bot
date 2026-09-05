@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -293,6 +294,7 @@ class Stake(Base):
         UniqueConstraint("round_id", "player_id", name="uq_stake_round_player"),
         CheckConstraint("amount_nanotons > 0", name="ck_stake_positive_amount"),
         CheckConstraint("status IN ('pending', 'confirmed', 'rejected', 'refunded')", name="ck_stake_valid_status"),
+        Index("ix_stake_network_round_status", "network", "round_id", "status"),
     )
 
 
@@ -332,6 +334,8 @@ class Payout(Base):
     __table_args__ = (
         CheckConstraint("amount_nanotons > 0", name="ck_payout_positive_amount"),
         CheckConstraint("status IN ('pending', 'sending', 'sent', 'failed', 'dismissed')", name="ck_payout_valid_status"),
+        Index("ix_payout_dispatch", "status", "network", "dest_address"),
+        Index("ix_payout_alert", "status", "network", "alerted"),
     )
 
 

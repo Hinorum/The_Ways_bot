@@ -787,7 +787,12 @@ async def confirm_aged_pending(bot: Bot | None = None) -> int:
     now = datetime.now(timezone.utc)
     async with SessionLocal() as session:
         rows = (
-            (await session.execute(select(Stake).where(Stake.status == "pending")))
+            (await session.execute(
+                select(Stake).where(
+                    Stake.status == "pending",
+                    Stake.network == current_network(),
+                )
+            ))
             .scalars()
             .all()
         )
@@ -1045,8 +1050,9 @@ async def _collect_transfers(since: int) -> tuple[list[Transfer], bool, str]:
     if fallback_complete:
         return merged, True, "toncenter"
     logger.error(
-        "ОБА индексатора тестнета недоступны: переводы не читаются! "
-        "Проверь TonAPI/Toncenter или перезапусти сервис."
+        "ОБА индексатора (%s) недоступны: переводы не читаются! "
+        "Проверь TonAPI/Toncenter или перезапусти сервис.",
+        "testnet" if settings.is_testnet else "mainnet",
     )
     return merged, False, "none"
 
