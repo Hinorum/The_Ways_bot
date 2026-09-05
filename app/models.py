@@ -281,7 +281,7 @@ class Stake(Base):
     round_id: Mapped[int] = mapped_column(ForeignKey("rounds.id"), index=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
     amount_nanotons: Mapped[int] = mapped_column(BigInteger)
-    tx_hash: Mapped[str] = mapped_column(String(80), unique=True)
+    tx_hash: Mapped[str] = mapped_column(String(80))
     memo: Mapped[str] = mapped_column(String(64), default="")
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
     status: Mapped[str] = mapped_column(String(16), default="pending")
@@ -289,6 +289,7 @@ class Stake(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("tx_hash", "network", name="uq_stake_tx_network"),
         UniqueConstraint("round_id", "player_id", name="uq_stake_round_player"),
         CheckConstraint("amount_nanotons > 0", name="ck_stake_positive_amount"),
         CheckConstraint("status IN ('pending', 'confirmed', 'rejected', 'refunded')", name="ck_stake_valid_status"),

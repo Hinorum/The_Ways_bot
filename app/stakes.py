@@ -138,7 +138,9 @@ async def register_stake(
     # ставки агрессору, а тот собирал бы с них лидерборд и копилки.
     if player.wallet_verify_code:
         return "wallet_unverified"
-    duplicate = await session.execute(select(Stake.id).where(Stake.tx_hash == tx_hash))
+    duplicate = await session.execute(
+        select(Stake.id).where(Stake.tx_hash == tx_hash, Stake.network == current_network())
+    )
     if duplicate.scalar_one_or_none() is not None:
         return "duplicate_tx"
     existing = await session.execute(
