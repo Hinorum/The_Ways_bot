@@ -519,7 +519,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 transfer,
                 None,
                 comment=PAUSE_REFUND_COMMENT,
-                ledger_result=f"paused:{'refund_queued'}",
+                ledger_result="paused",
                 ledger_player_id=player_id,
             )
             if player is not None and result == "refund_queued":
@@ -785,21 +785,20 @@ async def confirm_aged_pending(bot: Bot | None = None) -> int:
     """
     confirmed = 0
     now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=settings.stake_confirm_seconds)
     async with SessionLocal() as session:
         rows = (
             (await session.execute(
                 select(Stake).where(
                     Stake.status == "pending",
                     Stake.network == current_network(),
+                    Stake.created_at <= cutoff,
                 )
             ))
             .scalars()
             .all()
         )
         for stake in rows:
-            created = stake.created_at if stake.created_at.tzinfo else stake.created_at.replace(tzinfo=timezone.utc)
-            if now - created < timedelta(seconds=settings.stake_confirm_seconds):
-                continue
             round_row = await session.get(Round, stake.round_id)
             if round_row is None or round_row.status != RoundStatus.OPEN:
                 continue

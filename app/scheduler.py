@@ -19,6 +19,7 @@ from app.rounds import (
     close_voting,
     ensure_current_round,
     finish_tally,
+    get_active_round,
     get_latest_round,
     utc_aware,
 )
