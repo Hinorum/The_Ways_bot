@@ -597,10 +597,11 @@ async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> i
         # Работаем только строками, что реально забрали мы: сама рассылка
         # (claimed). Строки другой копии диспетчера в эту сессию НЕ трогаем.
         payouts = [p for p in payouts if p.id in claimed_ids]
-        # Сверка с историей нужна только для повторов: свежая выплата
-        # (attempts == 0) вещаться ещё не могла. Один проход истории на цикл.
+        # Сверка с историей: если комментарий уже есть среди недавних
+        # исходящих казначея — перевод ушёл в прошлом цикле (краш между
+        # вещанием и коммитом). Повторная отправка задвоила бы платёж.
         markers: set[str] = set()
-        if any(payout.attempts > 1 for payout in payouts):
+        if payouts:
             markers = await fetch_broadcast_markers()
         for payout in payouts:
             # Свободный комментарий (возвраты при паузе) либо служебное memo

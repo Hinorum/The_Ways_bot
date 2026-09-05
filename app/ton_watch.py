@@ -1122,8 +1122,8 @@ async def watch_once(bot: Bot | None = None) -> None:
                 transfer.utime,
             )
         except Exception as exc:
-            logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
-            break
+            logger.warning("Перевод %s не обработан: %s (продолжаем остаток пачки)", transfer.tx_hash[:16], exc)
+            continue
         processed_through = max(processed_through, transfer.utime)
         if i % 50 == 49:
             await asyncio.sleep(0.05)

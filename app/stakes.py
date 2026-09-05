@@ -178,6 +178,7 @@ async def register_stake(
         previous.memo = memo[:64]
         previous.network = current_network()
         previous.created_at = datetime.now(timezone.utc)
+        previous.confirmed_at = None
         await session.commit()
         return reason or "ok"
     session.add(
