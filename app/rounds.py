@@ -596,13 +596,16 @@ def guest_blocks_for(day_index: int) -> set[str]:
 
 
 async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
-    """Выполнить DB-функцию; при ошибке — rollback сессии и fallback на default."""
+    """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше.
+
+    НЕ делаем rollback здесь: rollback expiry убивает ORM-объекты, загруженные
+    до ошибки (MissingGreenlet при обращении к ним). Rollback — на уровне tick().
+    """
     try:
         return await fn(*args, **kwargs)
     except Exception:
-        logger.exception("DIAG: %s FAILED — rollback", label)
-        await session.rollback()
-        return None
+        logger.exception("DIAG: %s FAILED", label)
+        raise
 
 
 async def _plan_and_render(
@@ -626,7 +629,7 @@ async def _plan_and_render(
     from app.scar_rules import load_active_scars, process_round_scars
     from app.lore import tags_from_beats
 
-    active_scars = await _safe_db(session, "load_active_scars", load_active_scars, session, day_index) or []
+    active_scars = await _safe_db(session, "load_active_scars", load_active_scars, session, day_index)
     active_scar_keys = {s.scar_key for s in active_scars}
 
     # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
@@ -635,20 +638,20 @@ async def _plan_and_render(
     if history_tags:
         # Вчерашний тег = тег победившей карты за вчерашний день
         yesterday_winner_tag = history_tags[-1] if history_tags else None
-        new_scars = await _safe_db(session, "process_round_scars", process_round_scars, session, yesterday_winner_tag, history_tags, day_index) or []
+        new_scars = await _safe_db(session, "process_round_scars", process_round_scars, session, yesterday_winner_tag, history_tags, day_index)
         for scar in new_scars:
             active_scar_keys.add(scar.scar_key)
 
     # Эмоциональный профиль: обработка от вчерашнего выбора
     from app.emotional_state import process_round_emotions, emotion_block_for_prompt
 
-    emotion_profile = await _safe_db(session, "process_round_emotions", process_round_emotions, session, yesterday_winner_tag, day_index) or {}
+    emotion_profile = await _safe_db(session, "process_round_emotions", process_round_emotions, session, yesterday_winner_tag, day_index)
     emotion_block = emotion_block_for_prompt(emotion_profile)
 
     # Потребности стаи: голод, жажда, здоровье
     from app.pack_state import process_round_needs, get_needs_block, check_death
 
-    pack_needs = await _safe_db(session, "process_round_needs", process_round_needs, session, yesterday_winner_tag, day_index) or {}
+    pack_needs = await _safe_db(session, "process_round_needs", process_round_needs, session, yesterday_winner_tag, day_index)
     needs_block = get_needs_block(pack_needs)
 
     # Проверяем смерть стаи
@@ -668,7 +671,7 @@ async def _plan_and_render(
         CONSEQUENCE_TREES,
     )
 
-    active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index) or []
+    active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index)
     branches_block = format_active_branches(active_branches)
 
     # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
@@ -678,9 +681,8 @@ async def _plan_and_render(
         for tree in CONSEQUENCE_TREES.values():
             if tree.trigger_card in last_beat and tree.key not in existing_keys:
                 new_branch = await _safe_db(session, "create_branch", create_branch, session, tree, day_index)
-                if new_branch:
-                    active_branches.append(new_branch)
-                    existing_keys.add(tree.key)
+                active_branches.append(new_branch)
+                existing_keys.add(tree.key)
         branches_block = format_active_branches(active_branches)
 
     # Динамические правила: определяем активные переопределения
@@ -703,10 +705,10 @@ async def _plan_and_render(
         season_block as build_season_block,
     )
 
-    anchor = await _safe_db(session, "get_run_anchor", get_run_anchor, session) or {}
+    anchor = await _safe_db(session, "get_run_anchor", get_run_anchor, session)
     guests = guest_blocks_for(day_index)
-    key = anchor.get("key", "")
-    balance = await _safe_db(session, "season_tag_balance", season_tag_balance, session, key) or 0
+    key = anchor["key"]
+    balance = await _safe_db(session, "season_tag_balance", season_tag_balance, session, key)
     prev_summary = None
     if day_index <= 2:
         prev_summary = await _safe_db(session, "previous_season_summary", previous_season_summary, session, key)
@@ -775,8 +777,8 @@ async def _plan_and_render(
     from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
     try:
-        npc_sentiments = await _safe_db(session, "load_relations", load_relations, session) or {}
-        npc_titles = await _safe_db(session, "get_npc_titles", get_npc_titles, session) or []
+        npc_sentiments = await _safe_db(session, "load_relations", load_relations, session)
+        npc_titles = await _safe_db(session, "get_npc_titles", get_npc_titles, session)
         relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
@@ -863,7 +865,7 @@ async def _plan_and_render(
     twist = season_midpoint(run_day_now, total_now)
 
     # DDA: сложность зависит от engagement прошлого дня.
-    prev_counts, prev_stakes, prev_voters = await _safe_db(session, "_previous_round_stats", _previous_round_stats, session) or ({0: 1, 1: 1, 2: 1}, 0, 10)
+    prev_counts, prev_stakes, prev_voters = await _safe_db(session, "_previous_round_stats", _previous_round_stats, session)
     from app.difficulty import compute_difficulty_metrics, select_win_rule
 
     prev_metrics = compute_difficulty_metrics(
@@ -902,7 +904,7 @@ async def _plan_and_render(
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
-        npc_titles = await _safe_db(session, "get_npc_titles (focus)", get_npc_titles, session) or []
+        npc_titles = await _safe_db(session, "get_npc_titles (focus)", get_npc_titles, session)
         focus_line = (
             await npc_focus_line_ai(
                 run_day_now,
