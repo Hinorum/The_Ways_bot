@@ -1,94 +1,63 @@
-"""Cloudflare R2 (S3-совместимый) для хранения сгенерированных картинок.
+"""Imgbb — бесплатное хранилище картинок (без карты, без кредитки).
 
-Картинки загружаются в R2 при генерации и отдаются по публичному URL.
+Картинки загружаются при генерации и отдаются по публичному URL.
 Telegram поддерживает send_photo(url=...) — FSInputFile не нужен.
 
-Если R2 не настроен — возвращаем None и callers фолбэчатся на локальный диск.
+Если IMGBB_API_KEY не задан — возвращаем None и callers фолбэчатся на локальный диск.
+
+Регистрация: https://api.imgbb.com/ → бесплатный API key (мгновенно).
 """
 
 from __future__ import annotations
 
-import io
+import base64
 import logging
-import mimetypes
 from pathlib import Path
 
-import boto3
-from botocore.config import Config
+import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_client = None
-
-
-def _get_client():
-    global _client
-    if _client is not None:
-        return _client
-    if not settings.r2_account_id or not settings.r2_access_key_id:
-        return None
-    _client = boto3.client(
-        "s3",
-        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=settings.r2_access_key_id,
-        aws_secret_access_key=settings.r2_secret_access_key,
-        config=Config(
-            retries={"max_attempts": 3, "mode": "adaptive"},
-            signature_version="s3v4",
-        ),
-    )
-    return _client
+IMGBB_API = "https://api.imgbb.com/1/upload"
 
 
 def is_configured() -> bool:
-    return bool(settings.r2_account_id and settings.r2_access_key_id and settings.r2_bucket_name)
+    return bool(settings.imgbb_api_key)
 
 
-def _public_url(key: str) -> str:
-    base = settings.r2_public_url.rstrip("/")
-    return f"{base}/{key}"
-
-
-async def upload_image(data: bytes, key: str, content_type: str = "image/jpeg") -> str | None:
-    """Upload bytes to R2, return public URL or None on failure."""
-    client = _get_client()
-    if client is None:
+async def upload_bytes(data: bytes, name: str = "cover") -> str | None:
+    """Upload raw bytes to imgbb, return public URL or None on failure."""
+    if not is_configured():
         return None
     try:
-        client.put_object(
-            Bucket=settings.r2_bucket_name,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
-            CacheControl="public, max-age=86400",
-        )
-        return _public_url(key)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                IMGBB_API,
+                data={
+                    "key": settings.imgbb_api_key,
+                    "image": base64.b64encode(data).decode(),
+                    "name": name,
+                },
+            )
+            if resp.status_code == 200:
+                url = resp.json().get("data", {}).get("url")
+                if url:
+                    return url
+            logger.warning("imgbb upload failed: HTTP %d", resp.status_code)
     except Exception:
-        logger.exception("R2 upload failed: %s", key)
-        return None
+        logger.exception("imgbb upload exception")
+    return None
 
 
-async def upload_file(path: Path, key: str) -> str | None:
-    """Upload a local file to R2, return public URL or None on failure."""
-    client = _get_client()
-    if client is None:
+async def upload_file(path: Path, name: str = "cover") -> str | None:
+    """Upload a local file to imgbb, return public URL or None on failure."""
+    if not is_configured():
         return None
-    ct = mimetypes.guess_type(str(path))[0] or "image/jpeg"
     try:
-        client.upload_file(
-            str(path),
-            settings.r2_bucket_name,
-            key,
-            ExtraArgs={"ContentType": ct, "CacheControl": "public, max-age=86400"},
-        )
-        return _public_url(key)
+        data = path.read_bytes()
+        return await upload_bytes(data, name=name)
     except Exception:
-        logger.exception("R2 upload_file failed: %s", key)
+        logger.exception("imgbb upload_file failed: %s", path)
         return None
-
-
-def make_key(*parts: str) -> str:
-    """Build a deterministic R2 object key from path parts."""
-    return "/".join(p.strip("/") for p in parts if p)

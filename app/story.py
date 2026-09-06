@@ -579,13 +579,12 @@ def _save_image(image: Image.Image, path: Path) -> None:
 
 
 async def _upload_cloud(path: Path) -> str | None:
-    """Upload a local image to R2 cloud storage, return public URL or None."""
-    from app.cloud_storage import is_configured, upload_file, make_key
+    """Upload a local image to cloud storage, return public URL or None."""
+    from app.cloud_storage import is_configured, upload_file
     if not is_configured():
         return None
-    media_root = str(Path(settings.media_dir)).rstrip("./")
-    key = make_key(media_root, str(path))
-    return await upload_file(path, key)
+    name = path.stem  # e.g. "day42_cover"
+    return await upload_file(path, name=name)
 
 
 # Потолок промпта для Pollinations: сверхдлинные урлы модель возвращает 400.
