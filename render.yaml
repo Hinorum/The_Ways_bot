@@ -96,3 +96,15 @@ services:
         value: "0.1"
       - key: SEALED_DAY_EVERY
         value: "10"
+      # Cloudflare R2 — persistent image storage (survives deploys).
+      # Set these in Render Dashboard → Environment.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false

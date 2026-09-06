@@ -196,8 +196,14 @@ def _card_media(card) -> InputMediaPhoto:
 
 def _cover_media(round_row: Round) -> InputMediaPhoto:
     """Обложка дня: сюжет главы. Пропавший файл рисуется локально на месте."""
-    if round_row.cover_path:
-        path = Path(round_row.cover_path)
+    cover = round_row.cover_path or ""
+    if cover.startswith("http"):
+        return InputMediaPhoto(
+            media=cover,
+            caption=f"{day_mark(str(round_row.id))} {round_row.chapter_title[:1000]}",
+        )
+    if cover:
+        path = Path(cover)
     else:
         path = Path(settings.media_dir) / f"day{round_row.day_index}_cover.jpg"
     if not path.exists():

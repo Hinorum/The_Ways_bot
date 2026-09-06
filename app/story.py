@@ -578,6 +578,16 @@ def _save_image(image: Image.Image, path: Path) -> None:
         image.save(path, "PNG", optimize=True)
 
 
+async def _upload_cloud(path: Path) -> str | None:
+    """Upload a local image to R2 cloud storage, return public URL or None."""
+    from app.cloud_storage import is_configured, upload_file, make_key
+    if not is_configured():
+        return None
+    media_root = str(Path(settings.media_dir)).rstrip("./")
+    key = make_key(media_root, str(path))
+    return await upload_file(path, key)
+
+
 # Потолок промпта для Pollinations: сверхдлинные урлы модель возвращает 400.
 _PROMPT_CAP_CHARS = 1200
 

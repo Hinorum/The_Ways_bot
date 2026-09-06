@@ -1079,6 +1079,14 @@ async def _plan_and_render(
     if not fetched_cover:
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
         await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
+    # Cloud storage: загружаем облку в R2 и подменяем локальный путь на URL.
+    try:
+        from app.story import _upload_cloud
+        cloud_url = await _upload_cloud(cover_path)
+        if cloud_url:
+            cover_path = Path(cloud_url)
+    except Exception:
+        logger.debug("Cloud upload обложки пропущен")
     # Стартовый кадр мира: один раз на забег (день 1). Падение молчит —
     # пост дня не зависит от него, файл переиспользуется /start и анонсами.
     if day_index == 1:
