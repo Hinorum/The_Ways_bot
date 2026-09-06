@@ -368,6 +368,7 @@ async def _previous_round_stats(
     Возвращает (vote_counts, total_stakes_nanotons, player_count).
     Если предыдущего дня нет — дефолты (3, 0, 10).
     """
+    print("DIAG-PRS: ENTER _previous_round_stats", flush=True)
     from app.models import Stake, Vote
 
     beat_row = (
@@ -610,14 +611,8 @@ async def _plan_and_render(
     day_index: int,
     opens_hint: datetime | None = None,
 ) -> dict:
-    """Тяжёлая половина создания дня: глава, библия арта и обложка.
-
-    Всё сетевое и медленное — здесь. Результат — лёгкий JSON-payload,
-    который материализуется в раунд за миллисекунды. Глава собирается
-    ОДИН раз на день и сразу с известным каноном («вчера» уже закрыт),
-    поэтому итог вчерашнего выбора вплетён в начало — без прегенерации
-    веток и без перерисовки обложки.
-    """
+    """Тяжёлая половина создания дня: глава, библия арта и обложка."""
+    print(f"DIAG-PR: ENTER day_index={day_index}", flush=True)
     beats = await _safe_db(session, "previous_beats", previous_beats, session)
     echoes = await _safe_db(session, "collect_due_echoes", collect_due_echoes, session, day_index)
     salt = secrets.token_hex(16)
@@ -723,6 +718,8 @@ async def _plan_and_render(
         db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
         db_season_arc = await load_season_arc_from_db(session, season=season_num)
     except Exception:
+        print("DIAG-PR: prologue/arc DB query failed — rolling back", flush=True)
+        await session.rollback()
         pass
 
     sblock = build_season_block(
@@ -743,6 +740,8 @@ async def _plan_and_render(
     try:
         callings_block = await callings_prompt_block(session)
     except Exception:
+        print("DIAG-PR: callings_prompt_block failed — rolling back", flush=True)
+        await session.rollback()
         pass
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
@@ -824,6 +823,8 @@ async def _plan_and_render(
         for block in plugin_blocks:
             sblock = f"{sblock}\n{block}"
     except Exception:
+        print("DIAG-PR: plugin blocks failed — rolling back", flush=True)
+        await session.rollback()
         logger.debug("Plugin prompt blocks не собраны", exc_info=True)
     # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
     from app.season import midpoint_day as season_midpoint
