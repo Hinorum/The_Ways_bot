@@ -179,6 +179,11 @@ async def init_db() -> None:
             await _run_pg_migration_sql(_WATCHER_TYPE_FIX)
         except Exception as exc:
             logger.warning("PG watcher_state TYPE fix failed: %s", exc)
+
+        # Phase 3: nuke the entire connection pool after init_db.
+        # Any connections that may have been poisoned by failed migrations
+        # are destroyed. Subsequent sessions get fresh connections.
+        await engine.dispose()
     elif settings.async_database_url.startswith("sqlite"):
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
