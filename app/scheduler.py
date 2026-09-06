@@ -552,6 +552,7 @@ async def tick(bot: Bot | None = None) -> None:
                     asyncio.create_task(_announce_results_job(finished.id))
                     asyncio.create_task(_finalize_new_day_job(finished.id))
         except Exception:
+            print("DIAG: tick FAILED — rolling back", flush=True)
             logger.exception("Тик: ошибка — откатываю сессию")
             await session.rollback()
 
@@ -574,6 +575,7 @@ async def _announce_results_job(finished_id: int) -> None:
                 return
             await announce_results(_bot, finished)
     except Exception:
+        print(f"DIAG: _announce_results_job FAILED (id={finished_id})", flush=True)
         logger.exception("Итоги дня %s не разосланы (не мешает тику)", finished_id)
 
 
@@ -650,6 +652,7 @@ async def _finalize_new_day_job(finished_id: int) -> None:
         if settings.personal_echo:
             asyncio.create_task(_personal_echo_job(finished_id))
     except Exception:
+        print(f"DIAG: _finalize_new_day_job FAILED (id={finished_id})", flush=True)
         logger.exception("Доработка дня %s упала (итоги уже ушли отдельно)", finished_id)
 
 

@@ -596,14 +596,11 @@ def guest_blocks_for(day_index: int) -> set[str]:
 
 
 async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
-    """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше.
-
-    НЕ делаем rollback здесь: rollback expiry убивает ORM-объекты, загруженные
-    до ошибки (MissingGreenlet при обращении к ним). Rollback — на уровне tick().
-    """
+    """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше."""
     try:
         return await fn(*args, **kwargs)
     except Exception:
+        print(f"DIAG: {label} FAILED", flush=True)
         logger.exception("DIAG: %s FAILED", label)
         raise
 
