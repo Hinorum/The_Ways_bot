@@ -595,6 +595,16 @@ def guest_blocks_for(day_index: int) -> set[str]:
     return {_GUEST_POOL[first], _GUEST_POOL[second]}
 
 
+async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
+    """Выполнить DB-функцию; при ошибке — rollback сессии и fallback на default."""
+    try:
+        return await fn(*args, **kwargs)
+    except Exception:
+        logger.exception("DIAG: %s FAILED — rollback", label)
+        await session.rollback()
+        return None
+
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -608,20 +618,15 @@ async def _plan_and_render(
     поэтому итог вчерашнего выбора вплетён в начало — без прегенерации
     веток и без перерисовки обложки.
     """
-    try:
-        beats = await previous_beats(session)
-    except Exception:
-        logger.exception("DIAG: previous_beats FAILED (day_index=%s)", day_index)
-        await session.rollback()
-        raise
-    echoes = await collect_due_echoes(session, day_index)
+    beats = await _safe_db(session, "previous_beats", previous_beats, session)
+    echoes = await _safe_db(session, "collect_due_echoes", collect_due_echoes, session, day_index)
     salt = secrets.token_hex(16)
 
     # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
     from app.scar_rules import load_active_scars, process_round_scars
     from app.lore import tags_from_beats
 
-    active_scars = await load_active_scars(session, day_index)
+    active_scars = await _safe_db(session, "load_active_scars", load_active_scars, session, day_index) or []
     active_scar_keys = {s.scar_key for s in active_scars}
 
     # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
@@ -630,20 +635,20 @@ async def _plan_and_render(
     if history_tags:
         # Вчерашний тег = тег победившей карты за вчерашний день
         yesterday_winner_tag = history_tags[-1] if history_tags else None
-        new_scars = await process_round_scars(session, yesterday_winner_tag, history_tags, day_index)
+        new_scars = await _safe_db(session, "process_round_scars", process_round_scars, session, yesterday_winner_tag, history_tags, day_index) or []
         for scar in new_scars:
             active_scar_keys.add(scar.scar_key)
 
     # Эмоциональный профиль: обработка от вчерашнего выбора
     from app.emotional_state import process_round_emotions, emotion_block_for_prompt
 
-    emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
+    emotion_profile = await _safe_db(session, "process_round_emotions", process_round_emotions, session, yesterday_winner_tag, day_index) or {}
     emotion_block = emotion_block_for_prompt(emotion_profile)
 
     # Потребности стаи: голод, жажда, здоровье
     from app.pack_state import process_round_needs, get_needs_block, check_death
 
-    pack_needs = await process_round_needs(session, yesterday_winner_tag, day_index)
+    pack_needs = await _safe_db(session, "process_round_needs", process_round_needs, session, yesterday_winner_tag, day_index) or {}
     needs_block = get_needs_block(pack_needs)
 
     # Проверяем смерть стаи
@@ -663,7 +668,7 @@ async def _plan_and_render(
         CONSEQUENCE_TREES,
     )
 
-    active_branches = await load_active_branches(session, day_index)
+    active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index) or []
     branches_block = format_active_branches(active_branches)
 
     # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
@@ -672,9 +677,10 @@ async def _plan_and_render(
         existing_keys = {b.branch_key for b in active_branches}
         for tree in CONSEQUENCE_TREES.values():
             if tree.trigger_card in last_beat and tree.key not in existing_keys:
-                new_branch = await create_branch(session, tree, day_index)
-                active_branches.append(new_branch)
-                existing_keys.add(tree.key)
+                new_branch = await _safe_db(session, "create_branch", create_branch, session, tree, day_index)
+                if new_branch:
+                    active_branches.append(new_branch)
+                    existing_keys.add(tree.key)
         branches_block = format_active_branches(active_branches)
 
     # Динамические правила: определяем активные переопределения
@@ -697,13 +703,13 @@ async def _plan_and_render(
         season_block as build_season_block,
     )
 
-    anchor = await get_run_anchor(session)
+    anchor = await _safe_db(session, "get_run_anchor", get_run_anchor, session) or {}
     guests = guest_blocks_for(day_index)
-    key = anchor["key"]
-    balance = await season_tag_balance(session, key)
+    key = anchor.get("key", "")
+    balance = await _safe_db(session, "season_tag_balance", season_tag_balance, session, key) or 0
     prev_summary = None
     if day_index <= 2:
-        prev_summary = await previous_season_summary(session, key)
+        prev_summary = await _safe_db(session, "previous_season_summary", previous_season_summary, session, key)
 
     # Load AI-generated prologue beats and season arc from DB
     db_prologue_beats = None
@@ -729,7 +735,7 @@ async def _plan_and_render(
         db_season_arc=db_season_arc,
     )
     places_block = (
-        await places_memory_block(session) if "places" in guests else None
+        await _safe_db(session, "places_memory_block", places_memory_block, session) if "places" in guests else None
     )
     # Призвания стаи: Ведущий может показать их одним касанием в сцене.
     from app.callings import callings_prompt_block
@@ -769,8 +775,8 @@ async def _plan_and_render(
     from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
     try:
-        npc_sentiments = await load_relations(session)
-        npc_titles = await get_npc_titles(session)
+        npc_sentiments = await _safe_db(session, "load_relations", load_relations, session) or {}
+        npc_titles = await _safe_db(session, "get_npc_titles", get_npc_titles, session) or []
         relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
@@ -857,7 +863,7 @@ async def _plan_and_render(
     twist = season_midpoint(run_day_now, total_now)
 
     # DDA: сложность зависит от engagement прошлого дня.
-    prev_counts, prev_stakes, prev_voters = await _previous_round_stats(session)
+    prev_counts, prev_stakes, prev_voters = await _safe_db(session, "_previous_round_stats", _previous_round_stats, session) or ({0: 1, 1: 1, 2: 1}, 0, 10)
     from app.difficulty import compute_difficulty_metrics, select_win_rule
 
     prev_metrics = compute_difficulty_metrics(
@@ -880,12 +886,10 @@ async def _plan_and_render(
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
-    canon_rows = await session.execute(
-        select(StoryBeat).order_by(StoryBeat.day_index.asc())
-    )
+    canon_rows_result = await _safe_db(session, "canon_rows", lambda s: s.execute(select(StoryBeat).order_by(StoryBeat.day_index.asc())), session)
     canon = [
         f"{beat.winning_title}: {beat.winning_text}"
-        for beat in canon_rows.scalars()
+        for beat in (canon_rows_result.scalars() if canon_rows_result else [])
     ]
     query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
     distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
@@ -898,7 +902,7 @@ async def _plan_and_render(
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
-        npc_titles = await get_npc_titles(session)
+        npc_titles = await _safe_db(session, "get_npc_titles (focus)", get_npc_titles, session) or []
         focus_line = (
             await npc_focus_line_ai(
                 run_day_now,
