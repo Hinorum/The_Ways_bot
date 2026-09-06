@@ -130,6 +130,10 @@ _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE payouts ALTER COLUMN round_id DROP NOT NULL",
     "UPDATE rounds SET status = lower(status) WHERE status = upper(status)",
     "UPDATE rounds SET win_rule = lower(win_rule) WHERE win_rule = upper(win_rule)",
+    "ALTER TABLE ai_generated_pools ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE npc_profiles ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE prologue_beats ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE season_arcs ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 _WATCHER_TYPE_FIX = """
