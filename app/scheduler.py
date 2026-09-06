@@ -495,8 +495,13 @@ async def tick(bot: Bot | None = None) -> None:
         if await is_game_paused(session):
             return
     async with SessionLocal() as session:
-        previous = await get_latest_round(session)
-        current = await ensure_current_round(session)
+        try:
+            previous = await get_latest_round(session)
+            current = await ensure_current_round(session)
+        except Exception:
+            logger.exception("Тик: ensure_current_round упал — откатываю сессию")
+            await session.rollback()
+            return
 
         # Самолечение: дни, застрявшие не-закрытыми позади актуального
         # (сбой доставки анонса, гонка /advance), дочитываются сами —
@@ -509,6 +514,7 @@ async def tick(bot: Bot | None = None) -> None:
                 logger.warning("Вылечено застрявших дней: %d", healed)
         except Exception:
             logger.exception("Лечение застрявших дней упало (не мешает тику)")
+            await session.rollback()
 
         # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
         from app.rounds import get_run_anchor, refresh_round_pot_cache
@@ -517,11 +523,13 @@ async def tick(bot: Bot | None = None) -> None:
             await get_run_anchor(session)
         except Exception:
             logger.exception("Якорь забега не прочитан (кэш останется прежним)")
+            await session.rollback()
         if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
             try:
                 await refresh_round_pot_cache(session, current)
             except Exception:
                 logger.exception("Банк дня не обновлён (кэш останется прежним)")
+                await session.rollback()
 
         # Первый запуск или только что созданный день — анонсим без итогов.
         # claim_announcement гарантирует ровно один пост на день, даже если

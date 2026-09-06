@@ -608,7 +608,12 @@ async def _plan_and_render(
     поэтому итог вчерашнего выбора вплетён в начало — без прегенерации
     веток и без перерисовки обложки.
     """
-    beats = await previous_beats(session)
+    try:
+        beats = await previous_beats(session)
+    except Exception:
+        logger.exception("DIAG: previous_beats FAILED (day_index=%s)", day_index)
+        await session.rollback()
+        raise
     echoes = await collect_due_echoes(session, day_index)
     salt = secrets.token_hex(16)
 
@@ -1457,24 +1462,44 @@ async def create_next_round_detailed(
     детерминированно: если тик уже создал N+1, возвращаем его, а не эскалируем
     в N+2 (иначе «двойной день» — прыжок вперёд и потерянные итоги N+1).
     """
-    latest = await get_latest_round(session)
+    try:
+        latest = await get_latest_round(session)
+    except Exception:
+        logger.exception("DIAG: get_latest_round (1st) FAILED")
+        await session.rollback()
+        raise
     target_day = (
         base_day_index + 1
         if base_day_index is not None
         else (1 if latest is None else latest.day_index + 1)
     )
     # Ранний выход из гонки: нужный день уже открыт — отдаём его без рендера.
-    already = (
-        await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
-    ).scalar_one_or_none()
+    try:
+        already = (
+            await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
+        ).scalar_one_or_none()
+    except Exception:
+        logger.exception("DIAG: Round.day_index query FAILED (target_day=%s)", target_day)
+        await session.rollback()
+        raise
     if already is not None:
         return already, False
     # Остатки старой двофазной прегенерации (до релиза инлайн-дней) — чистим,
     # чтобы открытый сегодня день не перезаписался заготовкой вчерашней ночи.
-    stale = await session.get(PreparedDay, target_day)
+    try:
+        stale = await session.get(PreparedDay, target_day)
+    except Exception:
+        logger.exception("DIAG: get PreparedDay (target_day=%s) FAILED", target_day)
+        await session.rollback()
+        raise
     if stale is not None:
         await session.delete(stale)
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception:
+            logger.exception("DIAG: commit after stale PreparedDay delete FAILED")
+            await session.rollback()
+            raise
 
     day_index = target_day
     opens_hint = (
