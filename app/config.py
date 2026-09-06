@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/the_way.db"
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"
+    # Cloudflare R2 (S3-совместимый) для хранения картинок.
+    # Если задан — картинки загружаются в R2 и served по URL.
+    # Если не задан — fallback на локальный диск (теряется при деплое).
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_public_url: str = ""  # https://pub-xxx.r2.dev — публичный домен
     use_free_images: bool = True
     # Токен Pollinations (pollinations.ai → auth): поднимает лимиты анонимного
     # tier'а — без него общий IP Render регулярно ловит 429 на весь день.
