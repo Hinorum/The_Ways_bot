@@ -164,7 +164,7 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
             from app.council import page_for_run_day
 
             council_page = page_for_run_day(run_day)
-            candidates = _day_candidates(session, round_id)
+            candidates = await _day_candidates(session, round_id)
             text = (
                 council_page
                 if council_page is not None
