@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import postgres_connect_args, settings
@@ -26,6 +26,18 @@ engine = create_async_engine(
         else postgres_connect_args(settings.database_url)
     ),
 )
+
+# Safety net: if a connection is returned to the pool with a failed
+# transaction (InFailedSQLTransactionError), roll it back so the next
+# session doesn't inherit the poison.
+if settings.async_database_url.startswith("postgresql"):
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _reset_on_checkout(dbapi_conn, connection_record, connection_proxy):
+        try:
+            dbapi_conn.rollback()
+        except Exception:
+            pass
+
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 _SQLITE_COLUMN_DDL = {
@@ -135,46 +147,39 @@ END $$;
 """
 
 
-async def _run_pg_migration_sql(conn, sql: str) -> None:
-    """Execute one DDL statement in its own savepoint.
+async def _run_pg_migration_sql(sql: str) -> None:
+    """Execute one DDL statement in its own transaction.
 
-    If the statement fails the savepoint is rolled back but the outer
-    transaction stays healthy so the next migration can proceed.
+    If the statement fails the transaction is rolled back completely
+    (no poison leaks to other connections in the pool).
     """
-    await conn.begin_nested()
-    try:
+    async with engine.begin() as conn:
         await conn.execute(text(sql))
-    except Exception:
-        await conn.rollback_to_savepoint()
-        raise
 
 
 async def init_db() -> None:
     Path("data").mkdir(exist_ok=True)
 
+    # Phase 1: schema + create_all in one transaction (fast, must succeed).
     async with engine.begin() as conn:
         if conn.dialect.name == "postgresql":
-            # Render мог подсунуть свежую или чужую Postgres, где в search_path
-            # нет схемы (DROP/RESET базы): без неё create_all падает
-            # «no schema has been selected to create in». Гарантируем, что
-            # public существует и является схемой этого подключения.
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
             await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
 
-        if conn.dialect.name == "postgresql":
-            for sql in _PG_MIGRATIONS:
-                try:
-                    await _run_pg_migration_sql(conn, sql)
-                except Exception as exc:
-                    logger.warning("PG migration failed (non-fatal): %s — %s", sql[:80], exc)
+    if settings.async_database_url.startswith("postgresql"):
+        # Phase 2: each migration in its own transaction.
+        # If one fails the transaction is rolled back cleanly — no poison.
+        for sql in _PG_MIGRATIONS:
             try:
-                await _run_pg_migration_sql(conn, _WATCHER_TYPE_FIX)
+                await _run_pg_migration_sql(sql)
             except Exception as exc:
-                logger.warning("PG watcher_state TYPE fix failed: %s", exc)
-
-        elif conn.dialect.name == "sqlite":
-            # WAL: читатели не блокируют писателя и наоборот — фоновые задачи
-            # (диспетчер выплат, преген) перестают ронять тик «database is locked».
+                logger.warning("PG migration failed (non-fatal): %s — %s", sql[:80], exc)
+        try:
+            await _run_pg_migration_sql(_WATCHER_TYPE_FIX)
+        except Exception as exc:
+            logger.warning("PG watcher_state TYPE fix failed: %s", exc)
+    elif settings.async_database_url.startswith("sqlite"):
+        async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.run_sync(_ensure_sqlite_columns)
