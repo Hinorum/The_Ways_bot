@@ -277,6 +277,7 @@ async def generate_npc_reaction(
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 200 else text[:197] + "..."
     except Exception:
+        logger.warning("generate_npc_reaction: не удалось разобрать ответ %s", _used_model)
         return None
 
 
@@ -312,6 +313,7 @@ async def generate_npc_want(
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 120 else text[:117] + "..."
     except Exception:
+        logger.warning("generate_npc_want: не удалось разобрать ответ %s", _used_model)
         return None
 
 

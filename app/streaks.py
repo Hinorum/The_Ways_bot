@@ -75,6 +75,7 @@ async def generate_streak_narrative_ai(calling_key: str, streak: int) -> str | N
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 150 else text[:147] + "..."
     except Exception:
+        logger.warning("generate_streak_narrative_ai: не удалось разобрать ответ %s", _used_model)
         return None
 
 

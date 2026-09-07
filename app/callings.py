@@ -66,6 +66,7 @@ async def generate_echo_tail_ai(calling_key: str) -> str | None:
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 100 else text[:97] + "..."
     except Exception:
+        logger.warning("generate_echo_tail_ai: не удалось разобрать ответ %s", _used_model)
         return None
 
 

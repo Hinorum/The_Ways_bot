@@ -796,7 +796,7 @@ async def _plan_and_render(
         if npc_reactions:
             sblock = f"{sblock}\nРеакции NPC: " + " ".join(npc_reactions)
     except Exception:
-        pass
+        logger.warning("NPC реакции дня %s не собраны", day_index, exc_info=True)
     # ── NPC chain-of-thought ──
     # Внутренний монолог NPC перед действием: по sentinent-ам дня.
     try:
@@ -912,6 +912,7 @@ async def _plan_and_render(
             else None
         )
     except Exception:
+        logger.warning("NPC focus line дня %s не сгенерирована", day_index, exc_info=True)
         focus_line = None
     # AI World Engine: блок персонажей для промпта
     characters_block = ""
@@ -919,7 +920,7 @@ async def _plan_and_render(
         from app.story import _build_dynamic_character_block
         characters_block = await _build_dynamic_character_block(session)
     except Exception:
-        pass
+        logger.debug("Dynamic character block не собран", exc_info=True)
     # Банк повторов: формулировки и места последних дней — модель не должна
     # дублировать их дословно (литературный де-дуп, окно 7 дней).
     repeat_block = await recent_repeats_block(session, day_index)

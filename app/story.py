@@ -1481,7 +1481,7 @@ def _build_story_prompt(
             logger.info("GEPA: ген применяется day=%d gen=%d tone='%s' fitness=%.3f",
                         day_index, _gene.generation, _gene.system_tone[:30], _gene.fitness)
     except Exception:
-        pass
+        logger.debug("GEPA: ген не загружен", exc_info=True)
     if not _gepa_active:
         logger.info("GEPA: ген не активен day=%d — используется базовый промпт", day_index)
     head = (
@@ -1652,7 +1652,7 @@ async def _free_story_llm(
                 if ai_desc:
                     scar_descriptions_override[k] = ai_desc
         except Exception:
-            pass
+            logger.warning("AI-описания шрамов для дня %s не сгенерированы", day_index, exc_info=True)
 
     prompt = _build_story_prompt(
         day_index, previous_beats, win_rule, echoes, distant_echoes,

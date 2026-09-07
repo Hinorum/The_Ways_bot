@@ -115,6 +115,7 @@ async def generate_scar_description_ai(
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 150 else text[:147] + "..."
     except Exception:
+        logger.warning("generate_scar_description_ai: не удалось разобрать ответ %s", _used_model)
         return None
 
 
