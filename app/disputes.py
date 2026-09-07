@@ -88,23 +88,22 @@ async def compensate_dispute(
     d = await session.get(Dispute, dispute_id)
     if d is None:
         return "нет такого спора"
+    if d.status != "open":
+        return f"спор уже закрыт ({d.status}) — компенсация невозможна"
     if d.player_id is None:
         return "у спора нет игрока — компенсировать некому"
     player = await session.get(Player, d.player_id)
     if player is None or not player.wallet_address:
         return "у игрока не привязан кошелёк — компенсация невозможна"
-    if not player.wallet_verified:
-        return "кошелёк игрока не подтверждён (нет bv:<код>) — компенсация невозможна"
     try:
         amount = to_nano(float(str(amount_gram).replace(",", ".")))
     except (ValueError, TypeError):
         return "сумма должна быть числом в Gram"
     if amount <= 0:
         return "сумма должна быть положительной"
-    # Guard: максимальная сумма выплаты
-    max_nano = to_nano(settings.max_payout_gram) if settings.max_payout_gram > 0 else 0
-    if max_nano > 0 and amount > max_nano:
-        return f"сумма {from_nano(amount):.4f} Gram превышает максимум {settings.max_payout_gram} Gram"
+    max_payout = getattr(settings, "max_payout_gram", 1000)
+    if from_nano(amount) > max_payout:
+        return f"сумма {from_nano(amount):.4g} Gram превышает лимит {max_payout} Gram — проверь число"
     session.add(
         Payout(
             round_id=d.round_id,

@@ -19,6 +19,7 @@ from app.rounds import (
     close_voting,
     ensure_current_round,
     finish_tally,
+    get_active_round,
     get_latest_round,
     utc_aware,
 )
@@ -163,7 +164,7 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
             from app.council import page_for_run_day
 
             council_page = page_for_run_day(run_day)
-            candidates = _day_candidates(session, round_id)
+            candidates = await _day_candidates(session, round_id)
             text = (
                 council_page
                 if council_page is not None
@@ -494,90 +495,65 @@ async def tick(bot: Bot | None = None) -> None:
         if await is_game_paused(session):
             return
     async with SessionLocal() as session:
-        previous = await get_latest_round(session)
-        current = await ensure_current_round(session)
-
-        # Самолечение: дни, застрявшие не-закрытыми позади актуального
-        # (сбой доставки анонса, гонка /advance), дочитываются сами —
-        # подсчёт и канон завершаются, ставки уходят в очередь выплат.
         try:
+            previous = await get_latest_round(session)
+            current = await ensure_current_round(session)
+
+            # Самолечение: дни, застрявшие не-закрытыми позади актуального
             from app.rounds import heal_stale_rounds
 
             healed = await heal_stale_rounds(session)
             if healed:
                 logger.warning("Вылечено застрявших дней: %d", healed)
-        except Exception:
-            logger.exception("Лечение застрявших дней упало (не мешает тику)")
 
-        # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
-        from app.rounds import get_run_anchor, refresh_round_pot_cache
+            # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
+            from app.rounds import get_run_anchor, refresh_round_pot_cache
 
-        try:
             await get_run_anchor(session)
-        except Exception:
-            logger.exception("Якорь забега не прочитан (кэш останется прежним)")
-        if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
-            try:
+            if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
                 await refresh_round_pot_cache(session, current)
-            except Exception:
-                logger.exception("Банк дня не обновлён (кэш останется прежним)")
 
-        # Первый запуск или только что созданный день — анонсим без итогов.
-        # claim_announcement гарантирует ровно один пост на день, даже если
-        # после деплоя секунду работают два процесса.
-        if previous is None or current.id > previous.id:
-            if await claim_announcement(session, current):
-                await announce_new_day(bot, current)
+            # Первый запуск или только что созданный день — анонсим без итогов.
+            if previous is None or current.id > previous.id:
+                if await claim_announcement(session, current):
+                    await announce_new_day(bot, current)
 
-        now = _now()
-        if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
-            # БЕСШОВНОЕ ЗАКРЫТИЕ: подсчёт мгновенный — не выходим из тика,
-            # а проваливаемся дальше к финализации в этом же проходе.
-            await close_voting(session, current)
-        # Вечерний привал: один раз за день, в настраиваемый час (прайм-тайм).
-        if (
-            current.status == RoundStatus.OPEN
-            and now.hour == settings.whisper_hour_utc % 24
-        ):
-            from app.models import WatcherState
+            now = _now()
+            if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
+                await close_voting(session, current)
+            # Вечерний привал: один раз за день, в настраиваемый час (прайм-тайм).
+            if (
+                current.status == RoundStatus.OPEN
+                and now.hour == settings.whisper_hour_utc % 24
+            ):
+                from app.models import WatcherState
 
-            marker = f"micro_event:{current.id}"
-            async with SessionLocal() as session:
-                already = await session.get(WatcherState, marker)
-            if already is None:
-                asyncio.create_task(_micro_event_job(current.id, current.day_index))
-        if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
-            # ЛЕГАСИ-окно (старые раунды с часом подсчёта): следующий день
-            # откроется синхронной генерацией в финализации. Новая сетка
-            # проходит здесь насквозь мгновенно.
-            # Тизер ожидания: раз за день, сразу после закрытия голосования.
-            from app.models import WatcherState
+                marker = f"micro_event:{current.id}"
+                async with SessionLocal() as inner_session:
+                    already = await inner_session.get(WatcherState, marker)
+                if already is None:
+                    asyncio.create_task(_micro_event_job(current.id, current.day_index))
+            if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
+                from app.models import WatcherState
 
-            marker = f"teaser:{current.id}"
-            async with SessionLocal() as session:
-                already = await session.get(WatcherState, marker)
-            if already is None:
-                asyncio.create_task(_teaser_job(current.id))
-        if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
-            finished, closed_here = await finish_tally(session, current)
-            if closed_here:
-                await award_points(session, finished)
-                # Финализуем всегда, а не только при включённом TON:
-                # если флаг погасили посреди дня со ставками, долг игрокам
-                # должен остаться видимым (очередь+алерты), а не исчезнуть.
-                from app.stakes import finalize_day_payouts
+                marker = f"teaser:{current.id}"
+                async with SessionLocal() as inner_session:
+                    already = await inner_session.get(WatcherState, marker)
+                if already is None:
+                    asyncio.create_task(_teaser_job(current.id))
+            if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
+                finished, closed_here = await finish_tally(session, current)
+                if closed_here:
+                    await award_points(session, finished)
+                    from app.stakes import finalize_day_payouts
 
-                await finalize_day_payouts(session, finished)
-                # Вознаграждения победителям: мгновенный пинок диспетчера,
-                # деньги уходят в течение пары минут после итогов.
-                asyncio.create_task(_payout_dispatch_job())
-                # ИТОГИ СРАЗУ: быстрый пост (только БД), без нейро-эпилога и
-                # без ожидания нового дня — пользователи видят результат немедленно.
-                asyncio.create_task(_announce_results_job(finished.id))
-                # Тяжёлая часть уходит в фон: эпилог (нейро) → обложка →
-                # материализация нового дня → пост дня → личные эха.
-                # Новый день откроется «чуть позже», когда будет готов контент.
-                asyncio.create_task(_finalize_new_day_job(finished.id))
+                    await finalize_day_payouts(session, finished)
+                    asyncio.create_task(_payout_dispatch_job())
+                    asyncio.create_task(_announce_results_job(finished.id))
+                    asyncio.create_task(_finalize_new_day_job(finished.id))
+        except Exception:
+            logger.exception("DIAG: tick FAILED — rolling back")
+            await session.rollback()
 
 
 async def _announce_results_job(finished_id: int) -> None:
@@ -598,7 +574,7 @@ async def _announce_results_job(finished_id: int) -> None:
                 return
             await announce_results(_bot, finished)
     except Exception:
-        logger.exception("Итоги дня %s не разосланы (не мешает тику)", finished_id)
+        logger.exception("DIAG: _announce_results_job FAILED (id=%s)", finished_id)
 
 
 async def _finalize_new_day_job(finished_id: int) -> None:
@@ -674,7 +650,7 @@ async def _finalize_new_day_job(finished_id: int) -> None:
         if settings.personal_echo:
             asyncio.create_task(_personal_echo_job(finished_id))
     except Exception:
-        logger.exception("Доработка дня %s упала (итоги уже ушли отдельно)", finished_id)
+        logger.exception("DIAG: _finalize_new_day_job FAILED (id=%s)", finished_id)
 
 
 async def _payout_dispatch_job() -> None:

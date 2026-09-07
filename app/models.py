@@ -190,10 +190,6 @@ class Round(Base):
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (
-        Index("ix_round_status_finalized", "status", "payouts_finalized"),
-    )
-
     cards: Mapped[list[Card]] = relationship(back_populates="round", cascade="all, delete-orphan")
 
 
@@ -286,7 +282,7 @@ class Stake(Base):
     round_id: Mapped[int] = mapped_column(ForeignKey("rounds.id"), index=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
     amount_nanotons: Mapped[int] = mapped_column(BigInteger)
-    tx_hash: Mapped[str] = mapped_column(String(80), unique=True)
+    tx_hash: Mapped[str] = mapped_column(String(80))
     memo: Mapped[str] = mapped_column(String(64), default="")
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
     status: Mapped[str] = mapped_column(String(16), default="pending")
@@ -294,10 +290,11 @@ class Stake(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("tx_hash", "network", name="uq_stake_tx_network"),
         UniqueConstraint("round_id", "player_id", name="uq_stake_round_player"),
         CheckConstraint("amount_nanotons > 0", name="ck_stake_positive_amount"),
         CheckConstraint("status IN ('pending', 'confirmed', 'rejected', 'refunded')", name="ck_stake_valid_status"),
-        Index("ix_stake_status", "status"),
+        Index("ix_stake_network_round_status", "network", "round_id", "status"),
     )
 
 
@@ -337,7 +334,8 @@ class Payout(Base):
     __table_args__ = (
         CheckConstraint("amount_nanotons > 0", name="ck_payout_positive_amount"),
         CheckConstraint("status IN ('pending', 'sending', 'sent', 'failed', 'dismissed')", name="ck_payout_valid_status"),
-        Index("ix_payout_status_network", "status", "network"),
+        Index("ix_payout_dispatch", "status", "network", "dest_address"),
+        Index("ix_payout_alert", "status", "network", "alerted"),
     )
 
 
@@ -819,6 +817,7 @@ class NPCProfile(Base):
     speech_style: Mapped[str] = mapped_column(Text, default="")  # Как говорит
     appearance: Mapped[str] = mapped_column(Text, default="")  # Внешность (для обложек)
     default_mood: Mapped[str] = mapped_column(String(16), default="neutral")  # Начальное настроение
+    is_ai_generated: Mapped[bool] = mapped_column(default=False)  # False = хардкод, нужна регенерация
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -837,6 +836,7 @@ class PrologueBeat(Base):
     day_index: Mapped[int] = mapped_column(Integer)  # День пролога (1-7)
     title: Mapped[str] = mapped_column(String(80))  # Название дня
     block: Mapped[str] = mapped_column(Text)  # Блок для промпта
+    is_ai_generated: Mapped[bool] = mapped_column(default=False)  # False = хардкод, нужна регенерация
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -859,4 +859,23 @@ class SeasonArc(Base):
     whisper_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of whispers
     teaser_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of teasers
     guest: Mapped[str] = mapped_column(Text, default="")  # Гость этапа
+    is_ai_generated: Mapped[bool] = mapped_column(default=False)  # False = хардкод, нужна регенерация
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AIGeneratedPool(Base):
+    """Пул AI-сгенерированного контента: атмосферные пэды, голоса, мысли.
+
+    Хранит сгенерированный контент по типу и сезону.
+    is_ai_generated: True = LLM сгенерировал, False = хардкод-фолбэк (нужна регенерация).
+    """
+
+    __tablename__ = "ai_generated_pools"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pool_type: Mapped[str] = mapped_column(String(32), index=True)  # atmospheric, voice_examples, inner_thoughts
+    season: Mapped[int] = mapped_column(Integer, index=True)
+    phase: Mapped[str] = mapped_column(String(16), default="")  # early/mid/late или npc_key
+    content_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON array of strings
+    is_ai_generated: Mapped[bool] = mapped_column(default=False)  # False = хардкод, нужна регенерация
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

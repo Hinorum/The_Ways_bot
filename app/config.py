@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/the_way.db"
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"
+    # Imgbb — бесплатное хранилище картинок (без карты).
+    # Если задан — картинки загружаются в imgbb и served по URL.
+    # Если не задан — fallback на локальный диск (теряется при деплое).
+    # Получить ключ: https://api.imgbb.com/ (бесплатно, мгновенно).
+    imgbb_api_key: str = ""
     use_free_images: bool = True
     # Токен Pollinations (pollinations.ai → auth): поднимает лимиты анонимного
     # tier'а — без него общий IP Render регулярно ловит 429 на весь день.

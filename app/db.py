@@ -1,10 +1,13 @@
+import logging
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import postgres_connect_args, settings
 from app.models import Base
+
+logger = logging.getLogger("way.db")
 
 
 def _sqlite_connect_args() -> dict:
@@ -23,6 +26,18 @@ engine = create_async_engine(
         else postgres_connect_args(settings.database_url)
     ),
 )
+
+# Safety net: if a connection is returned to the pool with a failed
+# transaction (InFailedSQLTransactionError), roll it back so the next
+# session doesn't inherit the poison.
+if settings.async_database_url.startswith("postgresql"):
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _reset_on_checkout(dbapi_conn, connection_record, connection_proxy):
+        try:
+            dbapi_conn.rollback()
+        except Exception:
+            pass
+
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 _SQLITE_COLUMN_DDL = {
@@ -78,143 +93,102 @@ def _ensure_sqlite_columns(sync_conn) -> None:
                 sync_conn.execute(text(ddl))
 
 
+_PG_MIGRATIONS: list[str] = [
+    "ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)",
+    "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS cover_path VARCHAR(400) NOT NULL DEFAULT ''",
+    "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rake_nanotons BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS payouts_finalized BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS season VARCHAR(7)",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS place VARCHAR(80)",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_streak INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE players ADD COLUMN IF NOT EXISTS best_streak INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS alerted BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)",
+    "ALTER TABLE incomes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
+    "ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL",
+    "ALTER TABLE payouts ALTER COLUMN round_id DROP NOT NULL",
+    "UPDATE rounds SET status = lower(status) WHERE status = upper(status)",
+    "UPDATE rounds SET win_rule = lower(win_rule) WHERE win_rule = upper(win_rule)",
+    "ALTER TABLE ai_generated_pools ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE npc_profiles ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE prologue_beats ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE season_arcs ADD COLUMN IF NOT EXISTS is_ai_generated BOOLEAN NOT NULL DEFAULT FALSE",
+]
+
+_WATCHER_TYPE_FIX = """
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'watcher_state'
+      AND column_name = 'value'
+      AND data_type <> 'text'
+  ) THEN
+    ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT;
+  END IF;
+END $$;
+"""
+
+
+async def _run_pg_migration_sql(sql: str) -> None:
+    """Execute one DDL statement in its own transaction.
+
+    If the statement fails the transaction is rolled back completely
+    (no poison leaks to other connections in the pool).
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(sql))
+
+
 async def init_db() -> None:
     Path("data").mkdir(exist_ok=True)
+
+    # Phase 1: schema + create_all in one transaction (fast, must succeed).
     async with engine.begin() as conn:
         if conn.dialect.name == "postgresql":
-            # Render мог подсунуть свежую или чужую Postgres, где в search_path
-            # нет схемы (DROP/RESET базы): без неё create_all падает
-            # «no schema has been selected to create in». Гарантируем, что
-            # public существует и является схемой этого подключения.
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
             await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
-        if conn.dialect.name == "postgresql":
-            await conn.execute(text("ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)"))
-            await conn.execute(text("ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)"))
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS cover_path VARCHAR(400) NOT NULL DEFAULT ''"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rake_nanotons BIGINT NOT NULL DEFAULT 0"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS payouts_finalized BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS epilogue_text VARCHAR(700) NOT NULL DEFAULT ''"
-            ))
-            # Метка первого анонса дня: защита от дублей при деплое.
-            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ"))
-            # Объяснение ничьей при выборе победившего пути.
-            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)"))
-            # Сезон мира и место действия: память географии между днями.
-            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS season VARCHAR(7)"))
-            await conn.execute(text("ALTER TABLE rounds ADD COLUMN IF NOT EXISTS place VARCHAR(80)"))
-            # Доля дня, ушедшая в копилку недели (для поста итогов).
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0"
-            ))
-            # Глухой день: закон запечатан до итогов.
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-            # «Денежный режим» дня: ставки живут только в помеченных днях
-            # (/panel переключает), снимок дня — Round.money_mode.
-            await conn.execute(text(
-                "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE"
-            ))
-            await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)"))
-            await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ"))
-            # Призвание собаки и жетоны «Второго нюха» (Правила Стаи).
-            await conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)"))
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0"
-            ))
-            # Подтверждение владения кошельком (мемо bv:<код>): привязка чужого
-            # адреса перестаёт быть ресурсом для кражи призов.
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ"
-            ))
-            # Личные дубликаты рассылок: подписанные игроки получают итоги и
-            # анонсы в личку (/start тумблером). (Старым игрокам — да.)
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE"
-            ))
-            # Серия верных путей для титулов и.retention.
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_streak INTEGER NOT NULL DEFAULT 0"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE players ADD COLUMN IF NOT EXISTS best_streak INTEGER NOT NULL DEFAULT 0"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
-            ))
-            # Счётчик попыток отправки: failed-выплаты ретраятся до лимита.
-            await conn.execute(text(
-                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0"
-            ))
-            # Дедуп алертов о выплатах в БД: безопасен при рестартах и репликах.
-            await conn.execute(text(
-                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS alerted BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-            # Причина последней неудачи отправки: /payouts и алерты показывают её сами.
-            await conn.execute(text(
-                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)"
-            ))
-            # Свободный комментарий перевода (возвраты при паузе игры).
-            await conn.execute(text(
-                "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)"
-            ))
-            # Метка сети в ledger доходов: сверка казны не смешивает контуры
-            # TON (mainnet/testnet). Старые строки по умолчанию — mainnet.
-            await conn.execute(text(
-                "ALTER TABLE incomes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'"
-            ))
-            # План Хозяина Ошибки не влезал в VARCHAR(255): ронял тик до
-            # создания следующего дня. Расширяем до TEXT, но только когда это
-            # действительно нужно: безусловный ALTER при каждом старте
-            # инвалидирует prepared-statement кэши asyncpg и будит ошибки
-            # «cached statement plan is invalid» на живых пулах соединений.
-            await conn.execute(text(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'watcher_state'
-                      AND column_name = 'value'
-                      AND data_type <> 'text'
-                  ) THEN
-                    ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT;
-                  END IF;
-                END $$;
-                """
-            ))
-            # Доли казны (рейк/копилка месяца) уходят без игрока.
-            await conn.execute(text("ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL"))
-            # Авто-возвраты «ничейных» переводов не привязаны к раунду.
-            await conn.execute(text("ALTER TABLE payouts ALTER COLUMN round_id DROP NOT NULL"))
-            await conn.execute(text("UPDATE rounds SET status = lower(status) WHERE status = upper(status)"))
-            await conn.execute(text("UPDATE rounds SET win_rule = lower(win_rule) WHERE win_rule = upper(win_rule)"))
-        elif conn.dialect.name == "sqlite":
-            # WAL: читатели не блокируют писателя и наоборот — фоновые задачи
-            # (диспетчер выплат, преген) перестают ронять тик «database is locked».
+
+    if settings.async_database_url.startswith("postgresql"):
+        # Phase 2: each migration in its own transaction.
+        # If one fails the transaction is rolled back cleanly — no poison.
+        for sql in _PG_MIGRATIONS:
+            try:
+                await _run_pg_migration_sql(sql)
+            except Exception as exc:
+                logger.warning("PG migration failed (non-fatal): %s — %s", sql[:80], exc)
+        try:
+            await _run_pg_migration_sql(_WATCHER_TYPE_FIX)
+        except Exception as exc:
+            logger.warning("PG watcher_state TYPE fix failed: %s", exc)
+
+        # Phase 3: nuke the entire connection pool after init_db.
+        # Any connections that may have been poisoned by failed migrations
+        # are destroyed. Subsequent sessions get fresh connections.
+        await engine.dispose()
+    elif settings.async_database_url.startswith("sqlite"):
+        async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
             await conn.run_sync(_ensure_sqlite_columns)

@@ -319,13 +319,13 @@ def format_results(
         card = next((c for c in round_row.cards if c.position == position), None)
         cost_parts = []
         if card:
-            if card.food_cost > 0:
+            if (card.food_cost or 0) > 0:
                 cost_parts.append(f"−{card.food_cost} еда")
-            if card.water_cost > 0:
+            if (card.water_cost or 0) > 0:
                 cost_parts.append(f"−{card.water_cost} вода")
-            if card.health_risk > 0:
+            if (card.health_risk or 0) > 0:
                 cost_parts.append(f"⚡{card.health_risk} урон")
-            if card.trust_change != 0:
+            if (card.trust_change or 0) != 0:
                 sign = "+" if card.trust_change > 0 else ""
                 cost_parts.append(f"{sign}{card.trust_change} доверие")
         cost_str = f" 💰{', '.join(cost_parts)}" if cost_parts else ""

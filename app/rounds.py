@@ -368,6 +368,7 @@ async def _previous_round_stats(
     Возвращает (vote_counts, total_stakes_nanotons, player_count).
     Если предыдущего дня нет — дефолты (3, 0, 10).
     """
+    logger.warning("DIAG-PRS: ENTER _previous_round_stats")
     from app.models import Stake, Vote
 
     beat_row = (
@@ -595,28 +596,31 @@ def guest_blocks_for(day_index: int) -> set[str]:
     return {_GUEST_POOL[first], _GUEST_POOL[second]}
 
 
+async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
+    """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше."""
+    try:
+        return await fn(*args, **kwargs)
+    except Exception:
+        logger.exception("DIAG: %s FAILED", label)
+        raise
+
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
     opens_hint: datetime | None = None,
 ) -> dict:
-    """Тяжёлая половина создания дня: глава, библия арта и обложка.
-
-    Всё сетевое и медленное — здесь. Результат — лёгкий JSON-payload,
-    который материализуется в раунд за миллисекунды. Глава собирается
-    ОДИН раз на день и сразу с известным каноном («вчера» уже закрыт),
-    поэтому итог вчерашнего выбора вплетён в начало — без прегенерации
-    веток и без перерисовки обложки.
-    """
-    beats = await previous_beats(session)
-    echoes = await collect_due_echoes(session, day_index)
+    """Тяжёлая половина создания дня: глава, библия арта и обложка."""
+    logger.warning("DIAG-PR: ENTER day_index=%s", day_index)
+    beats = await _safe_db(session, "previous_beats", previous_beats, session)
+    echoes = await _safe_db(session, "collect_due_echoes", collect_due_echoes, session, day_index)
     salt = secrets.token_hex(16)
 
     # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
     from app.scar_rules import load_active_scars, process_round_scars
     from app.lore import tags_from_beats
 
-    active_scars = await load_active_scars(session, day_index)
+    active_scars = await _safe_db(session, "load_active_scars", load_active_scars, session, day_index)
     active_scar_keys = {s.scar_key for s in active_scars}
 
     # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
@@ -625,20 +629,20 @@ async def _plan_and_render(
     if history_tags:
         # Вчерашний тег = тег победившей карты за вчерашний день
         yesterday_winner_tag = history_tags[-1] if history_tags else None
-        new_scars = await process_round_scars(session, yesterday_winner_tag, history_tags, day_index)
+        new_scars = await _safe_db(session, "process_round_scars", process_round_scars, session, yesterday_winner_tag, history_tags, day_index)
         for scar in new_scars:
             active_scar_keys.add(scar.scar_key)
 
     # Эмоциональный профиль: обработка от вчерашнего выбора
     from app.emotional_state import process_round_emotions, emotion_block_for_prompt
 
-    emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
+    emotion_profile = await _safe_db(session, "process_round_emotions", process_round_emotions, session, yesterday_winner_tag, day_index)
     emotion_block = emotion_block_for_prompt(emotion_profile)
 
     # Потребности стаи: голод, жажда, здоровье
     from app.pack_state import process_round_needs, get_needs_block, check_death
 
-    pack_needs = await process_round_needs(session, yesterday_winner_tag, day_index)
+    pack_needs = await _safe_db(session, "process_round_needs", process_round_needs, session, yesterday_winner_tag, day_index)
     needs_block = get_needs_block(pack_needs)
 
     # Проверяем смерть стаи
@@ -658,7 +662,7 @@ async def _plan_and_render(
         CONSEQUENCE_TREES,
     )
 
-    active_branches = await load_active_branches(session, day_index)
+    active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index)
     branches_block = format_active_branches(active_branches)
 
     # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
@@ -667,7 +671,7 @@ async def _plan_and_render(
         existing_keys = {b.branch_key for b in active_branches}
         for tree in CONSEQUENCE_TREES.values():
             if tree.trigger_card in last_beat and tree.key not in existing_keys:
-                new_branch = await create_branch(session, tree, day_index)
+                new_branch = await _safe_db(session, "create_branch", create_branch, session, tree, day_index)
                 active_branches.append(new_branch)
                 existing_keys.add(tree.key)
         branches_block = format_active_branches(active_branches)
@@ -692,13 +696,13 @@ async def _plan_and_render(
         season_block as build_season_block,
     )
 
-    anchor = await get_run_anchor(session)
+    anchor = await _safe_db(session, "get_run_anchor", get_run_anchor, session)
     guests = guest_blocks_for(day_index)
     key = anchor["key"]
-    balance = await season_tag_balance(session, key)
+    balance = await _safe_db(session, "season_tag_balance", season_tag_balance, session, key)
     prev_summary = None
     if day_index <= 2:
-        prev_summary = await previous_season_summary(session, key)
+        prev_summary = await _safe_db(session, "previous_season_summary", previous_season_summary, session, key)
 
     # Load AI-generated prologue beats and season arc from DB
     db_prologue_beats = None
@@ -713,6 +717,8 @@ async def _plan_and_render(
         db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
         db_season_arc = await load_season_arc_from_db(session, season=season_num)
     except Exception:
+        logger.warning("DIAG-PR: prologue/arc DB query failed — rolling back")
+        await session.rollback()
         pass
 
     sblock = build_season_block(
@@ -724,7 +730,7 @@ async def _plan_and_render(
         db_season_arc=db_season_arc,
     )
     places_block = (
-        await places_memory_block(session) if "places" in guests else None
+        await _safe_db(session, "places_memory_block", places_memory_block, session) if "places" in guests else None
     )
     # Призвания стаи: Ведущий может показать их одним касанием в сцене.
     from app.callings import callings_prompt_block
@@ -733,6 +739,8 @@ async def _plan_and_render(
     try:
         callings_block = await callings_prompt_block(session)
     except Exception:
+        logger.warning("DIAG-PR: callings_prompt_block failed — rolling back")
+        await session.rollback()
         pass
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
@@ -764,8 +772,8 @@ async def _plan_and_render(
     from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
     try:
-        npc_sentiments = await load_relations(session)
-        npc_titles = await get_npc_titles(session)
+        npc_sentiments = await _safe_db(session, "load_relations", load_relations, session)
+        npc_titles = await _safe_db(session, "get_npc_titles", get_npc_titles, session)
         relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
@@ -814,6 +822,8 @@ async def _plan_and_render(
         for block in plugin_blocks:
             sblock = f"{sblock}\n{block}"
     except Exception:
+        logger.warning("DIAG-PR: plugin blocks failed — rolling back")
+        await session.rollback()
         logger.debug("Plugin prompt blocks не собраны", exc_info=True)
     # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
     from app.season import midpoint_day as season_midpoint
@@ -852,7 +862,7 @@ async def _plan_and_render(
     twist = season_midpoint(run_day_now, total_now)
 
     # DDA: сложность зависит от engagement прошлого дня.
-    prev_counts, prev_stakes, prev_voters = await _previous_round_stats(session)
+    prev_counts, prev_stakes, prev_voters = await _safe_db(session, "_previous_round_stats", _previous_round_stats, session)
     from app.difficulty import compute_difficulty_metrics, select_win_rule
 
     prev_metrics = compute_difficulty_metrics(
@@ -875,12 +885,10 @@ async def _plan_and_render(
 
     # Дальняя память мира: из давнего канона (старше окна) достаём дни,
     # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
-    canon_rows = await session.execute(
-        select(StoryBeat).order_by(StoryBeat.day_index.asc())
-    )
+    canon_rows_result = await _safe_db(session, "canon_rows", lambda s: s.execute(select(StoryBeat).order_by(StoryBeat.day_index.asc())), session)
     canon = [
         f"{beat.winning_title}: {beat.winning_text}"
-        for beat in canon_rows.scalars()
+        for beat in (canon_rows_result.scalars() if canon_rows_result else [])
     ]
     query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
     distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
@@ -893,7 +901,7 @@ async def _plan_and_render(
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
-        npc_titles = await get_npc_titles(session)
+        npc_titles = await _safe_db(session, "get_npc_titles (focus)", get_npc_titles, session)
         focus_line = (
             await npc_focus_line_ai(
                 run_day_now,
@@ -915,6 +923,33 @@ async def _plan_and_render(
     # Банк повторов: формулировки и места последних дней — модель не должна
     # дублировать их дословно (литературный де-дуп, окно 7 дней).
     repeat_block = await recent_repeats_block(session, day_index)
+    # AI-профили NPC из БД для voice cards
+    npc_profiles = None
+    try:
+        from app.npc_cog import load_all_npc_profiles
+        npc_profiles = await load_all_npc_profiles(session)
+    except Exception:
+        pass
+    # AI-кэши из БД
+    try:
+        from app.lore import (
+            load_all_atmospheric, load_all_voice_examples, load_all_voice_banned,
+            load_all_inner_thoughts, load_all_dog_pads, load_all_echo_tones,
+            load_weather_pool, load_places,
+        )
+        from app.season import load_villain_events, load_heretic_events
+        await load_all_atmospheric(session, season=1)
+        await load_all_voice_examples(session, season=1)
+        await load_all_voice_banned(session, season=1)
+        await load_all_inner_thoughts(session, season=1)
+        await load_all_dog_pads(session, season=1)
+        await load_all_echo_tones(session, season=1)
+        await load_weather_pool(session, season=1)
+        await load_places(session, season=1)
+        await load_villain_events(session, season=1)
+        await load_heretic_events(session, season=1)
+    except Exception:
+        pass
     chapter = await generate_chapter(
         day_index, beats, rule,
         echoes=echoes if "echoes" in guests else [],
@@ -932,6 +967,7 @@ async def _plan_and_render(
         dynamic_rules_block=dynamic_rules_block,
         needs_block=needs_block,
         characters_block=characters_block,
+        npc_profiles=npc_profiles,
         is_expanded=day_index == 1 or twist,
     )
 
@@ -1051,6 +1087,14 @@ async def _plan_and_render(
     if not fetched_cover:
         # PIL-рендер синхронный и тяжёлый — уводим из event loop.
         await asyncio.to_thread(render_cover, cover_path, chapter["title"], chapter["text"])
+    # Cloud storage: загружаем облку в R2 и подменяем локальный путь на URL.
+    try:
+        from app.story import _upload_cloud
+        cloud_url = await _upload_cloud(cover_path)
+        if cloud_url:
+            cover_path = Path(cloud_url)
+    except Exception:
+        logger.debug("Cloud upload обложки пропущен")
     # Стартовый кадр мира: один раз на забег (день 1). Падение молчит —
     # пост дня не зависит от него, файл переиспользуется /start и анонсами.
     if day_index == 1:
@@ -1421,24 +1465,44 @@ async def create_next_round_detailed(
     детерминированно: если тик уже создал N+1, возвращаем его, а не эскалируем
     в N+2 (иначе «двойной день» — прыжок вперёд и потерянные итоги N+1).
     """
-    latest = await get_latest_round(session)
+    try:
+        latest = await get_latest_round(session)
+    except Exception:
+        logger.exception("DIAG: get_latest_round (1st) FAILED")
+        await session.rollback()
+        raise
     target_day = (
         base_day_index + 1
         if base_day_index is not None
         else (1 if latest is None else latest.day_index + 1)
     )
     # Ранний выход из гонки: нужный день уже открыт — отдаём его без рендера.
-    already = (
-        await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
-    ).scalar_one_or_none()
+    try:
+        already = (
+            await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
+        ).scalar_one_or_none()
+    except Exception:
+        logger.exception("DIAG: Round.day_index query FAILED (target_day=%s)", target_day)
+        await session.rollback()
+        raise
     if already is not None:
         return already, False
     # Остатки старой двофазной прегенерации (до релиза инлайн-дней) — чистим,
     # чтобы открытый сегодня день не перезаписался заготовкой вчерашней ночи.
-    stale = await session.get(PreparedDay, target_day)
+    try:
+        stale = await session.get(PreparedDay, target_day)
+    except Exception:
+        logger.exception("DIAG: get PreparedDay (target_day=%s) FAILED", target_day)
+        await session.rollback()
+        raise
     if stale is not None:
         await session.delete(stale)
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception:
+            logger.exception("DIAG: commit after stale PreparedDay delete FAILED")
+            await session.rollback()
+            raise
 
     day_index = target_day
     opens_hint = (

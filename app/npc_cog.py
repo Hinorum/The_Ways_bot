@@ -211,10 +211,24 @@ _ACTIONS = {
 }
 
 
-def _pick_thought(name: str, tone: str, seed: int) -> str:
-    """Детерминированный выбор внутреннего монолога."""
-    import random
+def _pick_thought(name: str, tone: str, seed: int, override: list[str] | None = None) -> str:
+    """Детерминированный выбор внутреннего монолога.
 
+    Сначала из БД (AI), потом хардкод.
+    """
+    import random
+    from app.lore import get_inner_thoughts_from_cache
+
+    # Приоритет: thought_pool_override > AI cache > хардкод
+    if override and len(override) > 0:
+        return override[seed % len(override)]
+
+    # AI-мысли из БД
+    ai_thoughts = get_inner_thoughts_from_cache(1, name)
+    if ai_thoughts and len(ai_thoughts) > 0:
+        return ai_thoughts[seed % len(ai_thoughts)]
+
+    # Фолбэк на хардкод
     thoughts = _INNER_THOUGHTS.get(name, {}).get(tone, _INNER_THOUGHTS.get(name, {}).get("cautious", ["..."]))
     return thoughts[seed % len(thoughts)]
 
@@ -246,7 +260,7 @@ def generate_npc_cog(
     raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
     mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
 
-    inner_thought = _pick_thought(name, mood, day_index)
+    inner_thought = _pick_thought(name, mood, day_index, thought_pool_override)
     motivation = motive_override or _MOTIVATIONS.get(name, {}).get(mood, "Наблюдать за стаей")
     action_hint = _pick_action(name, mood, day_index)
 
@@ -408,11 +422,13 @@ async def seed_npc_profiles(session: "AsyncSession", llm_caller=None) -> int:
 
         # Если есть LLM — генерируем через AI
         profile_data = fallback
+        is_ai = False
         if llm_caller:
             try:
                 ai_profile = await _generate_npc_profile_via_llm(npc_key, llm_caller)
                 if ai_profile:
                     profile_data = ai_profile
+                    is_ai = True
             except Exception:
                 pass  # Используем фолбэк
 
@@ -423,6 +439,7 @@ async def seed_npc_profiles(session: "AsyncSession", llm_caller=None) -> int:
             speech_style=profile_data.get("speech_style", ""),
             appearance=profile_data.get("appearance", ""),
             default_mood=profile_data.get("default_mood", "neutral"),
+            is_ai_generated=is_ai,
         )
         session.add(row)
         inserted += 1
@@ -491,6 +508,85 @@ async def get_npc_names(session: "AsyncSession") -> dict[str, str]:
     result = await session.execute(q)
     rows = result.scalars().all()
     return {row.npc_key: row.name for row in rows}
+
+
+async def load_all_npc_profiles(session: "AsyncSession") -> dict[str, dict]:
+    """Загружает все профили NPC из БД. Возвращает {npc_key: profile_dict}."""
+    from sqlalchemy import select as sa_select
+    from app.models import NPCProfile
+
+    q = sa_select(NPCProfile)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    return {
+        row.npc_key: {
+            "name": row.name,
+            "personality": row.personality,
+            "speech_style": row.speech_style,
+            "appearance": row.appearance,
+            "default_mood": row.default_mood,
+        }
+        for row in rows
+    }
+
+
+def build_npc_micro_prompts(profiles: dict[str, dict]) -> dict[str, str]:
+    """Строит CHARACTER_MICRO_PROMPTS из AI-профилей БД.
+
+    Фолбэк на хардкод если профиль не найден.
+    """
+    from app.story import CHARACTER_MICRO_PROMPTS
+
+    result = {}
+    for npc_key, profile in profiles.items():
+        if npc_key in CHARACTER_MICRO_PROMPTS:
+            # Используем AI-данные из БД
+            personality = profile.get("personality", "")
+            name = profile.get("name", npc_key)
+            if personality:
+                result[npc_key] = f"{name} — {personality}"
+            else:
+                result[npc_key] = CHARACTER_MICRO_PROMPTS[npc_key]
+        else:
+            # NPC не в хардкоде — используем полностью AI
+            name = profile.get("name", npc_key)
+            personality = profile.get("personality", "")
+            result[npc_key] = f"{name} — {personality}" if personality else name
+    return result
+
+
+def build_voice_cards_from_profiles(profiles: dict[str, dict]) -> dict[str, dict]:
+    """Строит _VOICE_CARDS из AI-профилей БД.
+
+    Фолбэк на хардкод если профиль не найден.
+    Использует AI-сгенерированные examples и banned из кэша.
+    """
+    from app.story import _VOICE_CARDS
+    from app.lore import get_voice_examples_from_cache, get_voice_banned_from_cache
+
+    result = {}
+    for npc_key, profile in profiles.items():
+        speech_style = profile.get("speech_style", "")
+        # AI examples и banned из кэша (сезон 1)
+        ai_examples = get_voice_examples_from_cache(1, npc_key)
+        ai_banned = get_voice_banned_from_cache(1, npc_key)
+        if npc_key in _VOICE_CARDS:
+            if speech_style:
+                result[npc_key] = {
+                    "pattern": speech_style,
+                    "examples": ai_examples or _VOICE_CARDS[npc_key].get("examples", []),
+                    "banned": ai_banned or _VOICE_CARDS[npc_key].get("banned", []),
+                }
+            else:
+                result[npc_key] = _VOICE_CARDS[npc_key]
+        else:
+            if speech_style:
+                result[npc_key] = {
+                    "pattern": speech_style,
+                    "examples": ai_examples or [],
+                    "banned": ai_banned or [],
+                }
+    return result
 
 
 def npc_cogs_block(

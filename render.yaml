@@ -96,3 +96,7 @@ services:
         value: "0.1"
       - key: SEALED_DAY_EVERY
         value: "10"
+      # Imgbb — бесплатное хранилище картинок (выживает при деплое).
+      # Получить ключ: https://api.imgbb.com/ (бесплатно, мгновенно).
+      - key: IMGBB_API_KEY
+        sync: false

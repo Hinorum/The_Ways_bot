@@ -47,6 +47,39 @@ _CURSOR_FALLBACK_HOURS = 12
 # или не упрёмся в пустое место (история кончилась / подряд пустые страницы).
 _PAGE_LIMIT = max(1, settings.watch_page_limit)
 _MAX_PAGES = max(1, settings.watch_max_pages)
+
+
+async def _http_get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict | None = None,
+    headers: dict | None = None,
+    max_retries: int = 1,
+    retry_delay: float = 1.0,
+) -> httpx.Response:
+    """HTTP GET с retry для 5xx ошибок. Ловит транзентные сбои серверов."""
+    last_exc = None
+    for attempt in range(1 + max_retries):
+        try:
+            response = await client.get(url, params=params, headers=headers)
+            if response.status_code < 500 or attempt == max_retries:
+                return response
+            logger.warning(
+                "HTTP %d от %s (попытка %d/%d), повтор через %.1fs",
+                response.status_code, url, attempt + 1, 1 + max_retries, retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                raise
+            logger.warning(
+                "HTTP ошибка %s от %s (попытка %d/%d), повтор через %.1fs",
+                exc, url, attempt + 1, 1 + max_retries, retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+    raise last_exc  # type: ignore[misc]
 _EMPTY_STOP = 2
 
 
@@ -86,8 +119,8 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
     headers = _api_headers(settings.ton_api_key)
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(
-                url,
+            response = await _http_get_with_retry(
+                client, url,
                 params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before": before_hash} if before_hash else {})},
                 headers=headers,
             )
@@ -144,7 +177,7 @@ async def _tonapi_account_info() -> dict | None:
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}"
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url, headers=_api_headers(settings.ton_api_key))
+            response = await _http_get_with_retry(client, url, headers=_api_headers(settings.ton_api_key))
     except Exception as exc:
         logger.warning("TonAPI не ответил на запрос карточки аккаунта: %s", exc)
         return None
@@ -302,7 +335,7 @@ async def _toncenter_page(since_utime: int, before_lt: str | None = None) -> tup
         params["before_lt"] = before_lt
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url, params=params, headers=_api_headers(settings.toncenter_api_key))
+            response = await _http_get_with_retry(client, url, params=params, headers=_api_headers(settings.toncenter_api_key))
             response.raise_for_status()
             items = response.json().get("transactions") or []
     except Exception as exc:
@@ -486,7 +519,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 transfer,
                 None,
                 comment=PAUSE_REFUND_COMMENT,
-                ledger_result=f"paused:{'refund_queued'}",
+                ledger_result="paused",
                 ledger_player_id=player_id,
             )
             if player is not None and result == "refund_queued":
@@ -752,16 +785,20 @@ async def confirm_aged_pending(bot: Bot | None = None) -> int:
     """
     confirmed = 0
     now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=settings.stake_confirm_seconds)
     async with SessionLocal() as session:
         rows = (
-            (await session.execute(select(Stake).where(Stake.status == "pending")))
+            (await session.execute(
+                select(Stake).where(
+                    Stake.status == "pending",
+                    Stake.network == current_network(),
+                    Stake.created_at <= cutoff,
+                )
+            ))
             .scalars()
             .all()
         )
         for stake in rows:
-            created = stake.created_at if stake.created_at.tzinfo else stake.created_at.replace(tzinfo=timezone.utc)
-            if now - created < timedelta(seconds=settings.stake_confirm_seconds):
-                continue
             round_row = await session.get(Round, stake.round_id)
             if round_row is None or round_row.status != RoundStatus.OPEN:
                 continue
@@ -1012,8 +1049,9 @@ async def _collect_transfers(since: int) -> tuple[list[Transfer], bool, str]:
     if fallback_complete:
         return merged, True, "toncenter"
     logger.error(
-        "ОБА индексатора тестнета недоступны: переводы не читаются! "
-        "Проверь TonAPI/Toncenter или перезапусти сервис."
+        "ОБА индексатора (%s) недоступны: переводы не читаются! "
+        "Проверь TonAPI/Toncenter или перезапусти сервис.",
+        "testnet" if settings.is_testnet else "mainnet",
     )
     return merged, False, "none"
 
@@ -1089,8 +1127,8 @@ async def watch_once(bot: Bot | None = None) -> None:
                 transfer.utime,
             )
         except Exception as exc:
-            logger.warning("Перевод %s не обработан: %s", transfer.tx_hash[:16], exc)
-            break
+            logger.warning("Перевод %s не обработан: %s (продолжаем остаток пачки)", transfer.tx_hash[:16], exc)
+            continue
         processed_through = max(processed_through, transfer.utime)
         if i % 50 == 49:
             await asyncio.sleep(0.05)
