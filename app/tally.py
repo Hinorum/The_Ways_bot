@@ -514,17 +514,18 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
     if not players and not stats["pot"]:
         return stats
 
-    async def kind_sum(kind: str) -> int:
-        row = await session.execute(
-            select(func.coalesce(func.sum(Payout.amount_nanotons), 0)).where(
-                Payout.round_id == round_row.id,
-                Payout.kind == kind,
-            )
+    # Combine leaderboard + prize sums into one query
+    kind_rows = await session.execute(
+        select(Payout.kind, func.coalesce(func.sum(Payout.amount_nanotons), 0))
+        .where(
+            Payout.round_id == round_row.id,
+            Payout.kind.in_(["leaderboard", "prize"]),
         )
-        return int(row.scalar_one())
-
-    board_today = await kind_sum("leaderboard")
-    prize_sum = await kind_sum("prize")
+        .group_by(Payout.kind)
+    )
+    kind_map = {k: int(v) for k, v in kind_rows.all()}
+    board_today = kind_map.get("leaderboard", 0)
+    prize_sum = kind_map.get("prize", 0)
     bank_row = await session.execute(select(func.coalesce(func.sum(LeaderboardPot.nanotons), 0)))
     stats["bank_total"] = int(bank_row.scalar_one())
     week_row = await session.execute(
