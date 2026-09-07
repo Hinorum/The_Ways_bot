@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
-    from app.models import Card, Round, Stake, Vote
+    from app.models import Round
 
 logger = logging.getLogger(__name__)
 
@@ -241,11 +241,9 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     Вызывается ОДИН раз в finish_tally() после атомарного закрытия.
     Все данные читаются за один проход (или минимальное число запросов).
     """
-    from app.models import Card, Stake, Vote, WinRule
-    from app.rounds import pick_winner, tied_positions
+    from app.models import Card, Stake, Vote
     from app.stakes import current_network
     from app.tally import flip_margin
-    from app.ton_utils import from_nano
 
     # ── Карты ──
     cards_result = await session.execute(
@@ -302,7 +300,6 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     # Множитель
     multiplier = None
     if winner_stake > 0:
-        from sqlalchemy import select as _sel
         from app.models import Payout
 
         prize_row = await session.execute(
@@ -357,8 +354,7 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     # ── Alignment drift ──
     alignment = None
     try:
-        from app.models import WatcherState as WS
-        from app.season import RUN_START_KEY, get_run_anchor, anchor_axes, _ALIGNMENT_DRIFT, _clamp_axis, _rng
+        from app.season import get_run_anchor, anchor_axes, _ALIGNMENT_DRIFT, _clamp_axis, _rng
 
         anchor = await get_run_anchor(session)
         tag = winning.tag if winning else "care"

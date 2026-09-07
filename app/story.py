@@ -23,7 +23,6 @@ from app.narrative_ai import (
     kolmogorov_ratio,
     should_retry_entropy,
     dynamic_temperature,
-    coherence_score,
     sa_optimize_params,
     GenerationParams,
 )
@@ -429,7 +428,7 @@ async def _generate_session_characters(
     Вызывается при подготовке нового дня для создания уникальных NPC.
     pack_needs: {"hunger": int, "thirst": int, "health": int} или None для дефолта.
     """
-    from app.world_engine import generate_ai_character, WorldContext, AICharacter
+    from app.world_engine import generate_ai_character, WorldContext
 
     try:
         # Собираем контекст
@@ -491,7 +490,6 @@ def _build_dynamic_prompt(text_blocks: tuple[str, ...] = (), micro_prompts_overr
 
     micro_prompts_override: AI-сгенерированные микро-промпты из БД.
     """
-    import re as _re
     text = " ".join(text_blocks).lower()
     parts = [BASE_PROMPT]
     prompts = micro_prompts_override or CHARACTER_MICRO_PROMPTS
@@ -1544,7 +1542,6 @@ def _build_story_prompt(
         )
     # Компактный профиль: карты целиком влезают в развилку поста (показ без
     # многоточий до 260 знаков) — потолок промпта обязан быть ниже него.
-    card_desc_budget = 280
     return (
         head
         + opening_line
@@ -1585,7 +1582,6 @@ def _build_story_prompt(
 def _check_violations(text: str) -> list[str]:
     """Проверяет сгенерированный текст на нарушения голосовых карточек."""
     violations: list[str] = []
-    low = text.lower()
     # Дневник: диалоги не должны заканчиваться точкой (только многоточие)
     for match in re.finditer(
         r'[«"]([^»"]*)[»"]', text,

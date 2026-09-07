@@ -393,7 +393,7 @@ async def _chronicle(session, player_id: int, limit: int = 7) -> list[str]:
 
     Голоса и итоги уже лежат в базе; хроника просто собирает их в биографию.
     """
-    from app.models import Card, Round
+    from app.models import Card
 
     rows = (
         await session.execute(

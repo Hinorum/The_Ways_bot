@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.relations import _TONES
 
@@ -32,7 +32,6 @@ _TONE_TO_MOOD: dict[str, str] = {
 }
 
 _DEFAULT_MOOD = "cautious"
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +215,6 @@ def _pick_thought(name: str, tone: str, seed: int, override: list[str] | None = 
 
     Сначала из БД (AI), потом хардкод.
     """
-    import random
     from app.lore import get_inner_thoughts_from_cache
 
     # Приоритет: thought_pool_override > AI cache > хардкод
@@ -235,7 +233,6 @@ def _pick_thought(name: str, tone: str, seed: int, override: list[str] | None = 
 
 def _pick_action(name: str, tone: str, seed: int) -> str:
     """Детерминированный выбор действия."""
-    import random
 
     actions = _ACTIONS.get(name, {}).get(tone, "Наблюдает за стаей")
     return actions
@@ -304,7 +301,6 @@ async def load_motive_from_db(
     if not row:
         return None, None
 
-    import json
     thought_pool = json.loads(row.thought_pool_json) if row.thought_pool_json else None
     return row.motive_text, thought_pool
 
@@ -317,7 +313,6 @@ async def seed_npc_motives(session: "AsyncSession") -> int:
     """
     from sqlalchemy import select as sa_select, func as sa_func
     from app.models import NPCMotive
-    import json
 
     inserted = 0
     for npc_key, moods in _MOTIVATIONS.items():

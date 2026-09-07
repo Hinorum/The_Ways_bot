@@ -13,10 +13,9 @@ import logging
 import math
 import zlib
 from collections import Counter
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from random import Random
 
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 

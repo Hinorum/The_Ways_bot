@@ -55,7 +55,6 @@ async def regenerate_all(session: "AsyncSession", llm_caller, season: int = 1) -
 async def _regenerate_pools(session: "AsyncSession", llm_caller, season: int) -> int:
     """Перегенерирует AIGeneratedPool записи с is_ai_generated=False."""
     from sqlalchemy import select as sa_select
-    from sqlalchemy import update as sa_update
     from app.models import AIGeneratedPool
 
     q = sa_select(AIGeneratedPool).where(

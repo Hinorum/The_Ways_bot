@@ -590,7 +590,6 @@ async def cmd_finalize(message: Message) -> None:
             # Анализ: кто выиграл
             winner_ids = {v.player_id for v in votes if v.card_position == wc}
             winning_stakes = [s for s in stakes if s.player_id in winner_ids and s.status == "confirmed"]
-            confirmed = [s for s in stakes if s.status == "confirmed"]
             lines.append("")
             if winning_stakes:
                 total_prize = sum(s.amount_nanotons for s in winning_stakes)
@@ -647,7 +646,6 @@ async def cmd_refinalize(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
-    from sqlalchemy import delete as sa_delete
 
     from app.stakes import finalize_day_payouts
     from app.ton_pay import dispatch_pending_payouts

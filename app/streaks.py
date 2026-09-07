@@ -243,7 +243,7 @@ async def weekly_report(session: AsyncSession) -> str:
     """Генерирует еженедельный отчёт стаи: статистика голосов, настроение, титулы."""
     from datetime import datetime, timedelta, timezone
 
-    from app.models import Card, Round, Vote
+    from app.models import Card, Round
 
     now = datetime.now(timezone.utc)
     week_start = now - timedelta(days=now.weekday())

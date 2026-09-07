@@ -35,11 +35,6 @@ from app.models import (
     Vote,
     WatcherState,
     WinRule,
-    WorldChoice,
-    WorldEvent,
-    WorldLocation,
-    WorldCharacter,
-    WorldSnapshot,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
 from app.memory import recall_beats
@@ -658,8 +653,7 @@ async def _plan_and_render(
     # Деревья последствий: загрузка активных ветвей
     from app.consequence_trees import (
         load_active_branches, format_active_branches,
-        check_tree_trigger, create_branch, advance_branch,
-        CONSEQUENCE_TREES,
+        create_branch, CONSEQUENCE_TREES,
     )
 
     active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index)
@@ -678,7 +672,7 @@ async def _plan_and_render(
 
     # Динамические правила: определяем активные переопределения
     from app.dynamic_rules import (
-        get_active_overrides, apply_overrides, get_dynamic_rule_text,
+        get_active_overrides, get_dynamic_rule_text,
     )
 
     dynamic_overrides = get_active_overrides(active_scars, emotion_profile, active_branches, day_index)
@@ -711,7 +705,6 @@ async def _plan_and_render(
         from app.prologue import load_prologue_beats_from_db
         from app.story_arc import load_season_arc_from_db
         from app.season import current_season as _current_season
-        from datetime import datetime as _dt
 
         season_num = _current_season(anchor, open_moment)
         db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
@@ -745,7 +738,7 @@ async def _plan_and_render(
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
     # Характер стаи: определённый по голосованиям, влияет на тон повествования.
-    from app.trail import trail_stats, trail_prompt_block
+    from app.trail import trail_prompt_block
 
     try:
         # Используем агрегированную статистику по всем игрокам
@@ -1113,7 +1106,7 @@ async def _plan_and_render(
     cards_payload = []
     # AI World Engine: генерируем AI-выборы вместо фиксированных карт
     try:
-        from app.world_engine import generate_ai_choices, record_choice
+        from app.world_engine import generate_ai_choices
         from app.story import _chat_completion
 
         if world_ctx:

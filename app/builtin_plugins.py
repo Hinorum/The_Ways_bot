@@ -11,13 +11,11 @@ from typing import TYPE_CHECKING
 from app.plugins import (
     BasePlugin,
     Capability,
-    HookOrder,
     PluginContext,
-    registry,
 )
 
 if TYPE_CHECKING:
-    from app.projection import DayProjection
+    pass
 
 logger = logging.getLogger(__name__)
 
