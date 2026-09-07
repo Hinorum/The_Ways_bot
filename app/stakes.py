@@ -42,7 +42,6 @@ from app.models import (
     PackFund,
     PackFundLedger,
     Payout,
-    PayoutStatus,
     Player,
     Round,
     RoundStatus,
@@ -259,27 +258,6 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         wallet_map = {pid: addr for pid, addr in players_result.all()}
 
     def add_payout(stake: Stake, kind: str, amount: int) -> int:
-        # Guard: максимальная сумма выплаты
-        max_nano = to_nano(settings.max_payout_gram) if settings.max_payout_gram > 0 else 0
-        if max_nano > 0 and amount > max_nano:
-            logger.error(
-                "add_payout: сумма %d нанотонов превышает максимум %d (%s грам) — "
-                "выплата помечена failed",
-                amount, max_nano, settings.max_payout_gram,
-            )
-            session.add(
-                Payout(
-                    round_id=round_row.id,
-                    player_id=stake.player_id,
-                    kind=kind,
-                    amount_nanotons=amount,
-                    dest_address=wallet_map.get(stake.player_id) or "",
-                    network=network,
-                    status=PayoutStatus.FAILED.value,
-                    last_error=f"amount {from_nano(amount):.4f} exceeds max {settings.max_payout_gram}",
-                )
-            )
-            return 0
         session.add(
             Payout(
                 round_id=round_row.id,
