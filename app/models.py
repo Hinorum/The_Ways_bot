@@ -190,6 +190,10 @@ class Round(Base):
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    __table_args__ = (
+        Index("ix_round_status_finalized", "status", "payouts_finalized"),
+    )
+
     cards: Mapped[list[Card]] = relationship(back_populates="round", cascade="all, delete-orphan")
 
 
