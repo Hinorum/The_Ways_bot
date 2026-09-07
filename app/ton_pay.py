@@ -442,11 +442,14 @@ async def _hydrate_player_dests(session, network: str) -> int:
         return 0
     player_ids = {p.player_id for p in rows if p.player_id is not None}
     wallet_map: dict[int, str] = {}
+    verified_map: dict[int, bool] = {}
     if player_ids:
         players = await session.execute(
-            select(Player.id, Player.wallet_address).where(Player.id.in_(player_ids))
+            select(Player.id, Player.wallet_address, Player.wallet_verified).where(Player.id.in_(player_ids))
         )
-        wallet_map = {pid: addr for pid, addr in players.all()}
+        for pid, addr, verified in players.all():
+            wallet_map[pid] = addr
+            verified_map[pid] = verified
     revived = 0
     for payout in rows:
         if payout.kind in _TREASURY_KINDS:
@@ -462,10 +465,13 @@ async def _hydrate_player_dests(session, network: str) -> int:
             payout.last_error = "нет адреса получателя (кошелёк игрока не найден)"
         else:
             addr = wallet_map.get(payout.player_id) or ""
-            if addr:
+            is_verified = verified_map.get(payout.player_id, False)
+            if addr and is_verified:
                 payout.dest_address = addr
                 payout.last_error = None
                 revived += 1
+            elif addr and not is_verified:
+                payout.last_error = "кошелёк привязан, но не подтверждён (игрок должен отправить bv:<код>)"
             else:
                 payout.last_error = "нет адреса получателя: кошелёк игрока ещё не привязан"
     await session.commit()

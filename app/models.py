@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -189,6 +190,10 @@ class Round(Base):
     epilogue_text: Mapped[str] = mapped_column(String(700), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    __table_args__ = (
+        Index("ix_round_status_finalized", "status", "payouts_finalized"),
+    )
+
     cards: Mapped[list[Card]] = relationship(back_populates="round", cascade="all, delete-orphan")
 
 
@@ -292,6 +297,7 @@ class Stake(Base):
         UniqueConstraint("round_id", "player_id", name="uq_stake_round_player"),
         CheckConstraint("amount_nanotons > 0", name="ck_stake_positive_amount"),
         CheckConstraint("status IN ('pending', 'confirmed', 'rejected', 'refunded')", name="ck_stake_valid_status"),
+        Index("ix_stake_status", "status"),
     )
 
 
@@ -331,6 +337,7 @@ class Payout(Base):
     __table_args__ = (
         CheckConstraint("amount_nanotons > 0", name="ck_payout_positive_amount"),
         CheckConstraint("status IN ('pending', 'sending', 'sent', 'failed', 'dismissed')", name="ck_payout_valid_status"),
+        Index("ix_payout_status_network", "status", "network"),
     )
 
 
