@@ -760,7 +760,7 @@ async def _plan_and_render(
         if trail_block:
             sblock = f"{sblock}\n{trail_block}"
     except Exception:
-        pass
+        logger.debug("Trail-блок дня %s не собран", day_index, exc_info=True)
     # Отношения NPC к стае: канон последних дней в одной строке тона.
     from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
@@ -923,7 +923,7 @@ async def _plan_and_render(
         from app.npc_cog import load_all_npc_profiles
         npc_profiles = await load_all_npc_profiles(session)
     except Exception:
-        pass
+        logger.debug("AI-профили NPC дня %s не загружены", day_index, exc_info=True)
     # AI-кэши из БД
     try:
         from app.lore import (
@@ -943,7 +943,7 @@ async def _plan_and_render(
         await load_villain_events(session, season=1)
         await load_heretic_events(session, season=1)
     except Exception:
-        pass
+        logger.debug("AI-кэши лора для дня %s не загружены", day_index, exc_info=True)
     chapter = await generate_chapter(
         day_index, beats, rule,
         echoes=echoes if "echoes" in guests else [],

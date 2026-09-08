@@ -11,10 +11,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import WatcherState
+
+logger = logging.getLogger(__name__)
 
 RELATION_KEY = "npc_relations"
 
@@ -169,7 +172,7 @@ async def get_npc_titles(session: AsyncSession | None = None) -> dict[str, str]:
             result.update(db_names)
             return result
     except Exception:
-        pass
+        logger.debug("Имена NPC из БД не загружены — хардкод-титулы", exc_info=True)
     return dict(NPC_TITLES)
 
 

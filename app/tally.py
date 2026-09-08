@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,8 @@ from app.rounds import pick_winner
 from app.stakes import current_network
 from app.ton_utils import from_nano
 from app.weeks import iso_week_key
+
+logger = logging.getLogger(__name__)
 
 
 _CHUNK = 500  # лимит параметров IN(...): большие дни чанкуются
@@ -216,6 +219,7 @@ async def generate_reveal_phrase_ai(
         text = str(payload["choices"][0]["message"]["content"]).strip()
         return text if len(text) < 200 else text[:197] + "..."
     except Exception:
+        logger.warning("Фраза раскрытия: не разобран ответ %s", _used_model)
         return None
 
 
@@ -359,7 +363,7 @@ def format_results(
                     if name and reaction:
                         lines.append(f"🐾 {name}: «{reaction}»")
         except Exception:
-            pass
+            logger.debug("Реакции NPC дня %s не прочитаны", round_row.day_index, exc_info=True)
     return "\n".join(lines)
 
 
@@ -389,7 +393,7 @@ async def format_world_effects(round_row: Round, session=None) -> str:
             if snapshot.summary:
                 lines.append(f"📝 {_clip(snapshot.summary, 150)}")
     except Exception:
-        pass
+        logger.debug("Снимок мира дня %s не прочитан", round_row.day_index, exc_info=True)
 
     # Локация: атмосфера
     if round_row.place:
@@ -401,7 +405,7 @@ async def format_world_effects(round_row: Round, session=None) -> str:
             if loc and loc.atmosphere:
                 lines.append(f"🌫 Атмосфера: {_clip(loc.atmosphere, 120)}")
         except Exception:
-            pass
+            logger.debug("Локация дня %s не прочитана", round_row.day_index, exc_info=True)
 
     # Цепочка последствий: события дня
     try:
@@ -417,7 +421,7 @@ async def format_world_effects(round_row: Round, session=None) -> str:
             for event in events:
                 lines.append(f"🔗 {_clip(event.description, 150)}")
     except Exception:
-        pass
+        logger.debug("События дня %s не прочитаны", round_row.day_index, exc_info=True)
 
     # Trust changes: доверие NPC
     try:
@@ -439,7 +443,7 @@ async def format_world_effects(round_row: Round, session=None) -> str:
         if changes:
             lines.append("🤝 " + "; ".join(changes))
     except Exception:
-        pass
+        logger.debug("Доверие NPC дня %s не прочитано", round_row.day_index, exc_info=True)
 
     return "\n".join(lines)
 
@@ -461,7 +465,7 @@ async def format_plugin_results(
         if session is not None:
             projection = await build_projection(session, round_row)
     except Exception:
-        pass
+        logger.debug("Проекция дня %s не построена", round_row.day_index, exc_info=True)
 
     ctx = PluginContext(projection=projection, session=session)
     lines = await _plugin_registry.collect_results_format(ctx)

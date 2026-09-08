@@ -239,7 +239,7 @@ async def note_round(
             title, desc = BEASTIES["aretha"]
             wanted.append(("aretha", f"{title}. {desc}"))
     except Exception:
-        pass
+        logger.warning("Позиция дня для бестиария не вычислена — базовый набор существ", exc_info=True)
 
     # AI-генерация описаний для ВСЕХ существ
     ai_generated: dict[str, str] = {}

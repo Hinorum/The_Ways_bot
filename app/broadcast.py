@@ -369,7 +369,7 @@ async def results_body(finished: Round, session=None) -> str:
             economics_stats = await day_economics(session, finished)
             multiplier = economics_stats.get("multiplier")
         except Exception:
-            pass
+            logger.warning("Экономика дня %s не собрана — пост без коэффициента", getattr(finished, "day_index", "?"), exc_info=True)
 
     # AI-генерация фразы раскрытия
     reveal_phrase = None
@@ -386,7 +386,7 @@ async def results_body(finished: Round, session=None) -> str:
             chapter_title=getattr(finished, "chapter_title", ""),
         )
     except Exception:
-        pass
+        logger.warning("AI-фраза раскрытия дня %s не сгенерирована", getattr(finished, "day_index", "?"), exc_info=True)
 
     text = format_results(finished, path_stakes, multiplier, reveal_override=reveal_phrase)
     round_id = getattr(finished, "id", None)

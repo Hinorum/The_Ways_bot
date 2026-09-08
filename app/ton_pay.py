@@ -240,7 +240,7 @@ async def _get_wallet():
             try:
                 await _provider.close_all()
             except Exception:
-                pass
+                logger.warning("Не удалось закрыть старый провайдер лайтсерверов", exc_info=True)
             _provider = None
             _wallet = None
         if settings.liteserver_config_url:

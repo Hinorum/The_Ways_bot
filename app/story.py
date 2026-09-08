@@ -1681,7 +1681,7 @@ async def _free_story_llm(
             from app.npc_cog import build_npc_micro_prompts
             _micro_prompts = build_npc_micro_prompts(npc_profiles)
         except Exception:
-            pass
+            logger.warning("Микро-промпты NPC не собраны", exc_info=True)
     _system_prompt = _build_scene_prompt(_text_blocks, micro_prompts_override=_micro_prompts)
     _old_tokens = _estimate_tokens(DM_SYSTEM_PROMPT)
     _new_tokens = _estimate_tokens(_system_prompt)

@@ -292,7 +292,7 @@ async def _compose_whisper(
             if text and text_is_clean(text):
                 return text[:600]
         except Exception:
-            pass
+            logger.debug("Шёпот дня %s не разобран — офлайн-вариант", day_index, exc_info=True)
     rng = _random.Random(f"whisper:{day_index}")
     return _offline_whisper(
         day_index, season_hint, chapter_excerpt, candidates, intrigue, rng, arc_stage=arc_stage
