@@ -568,7 +568,11 @@ async def _announce_results_job(finished_id: int) -> None:
         from app.models import Round
 
         async with SessionLocal() as session:
-            finished = await session.get(Round, finished_id)
+            finished = (
+                await session.execute(
+                    select(Round).where(Round.id == finished_id).options(selectinload(Round.cards))
+                )
+            ).scalar_one_or_none()
             if finished is None:
                 logger.warning("Итоги дня %s: раунд не найден", finished_id)
                 return

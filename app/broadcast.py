@@ -17,6 +17,7 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.db import SessionLocal
@@ -343,6 +344,21 @@ async def results_body(finished: Round, session=None) -> str:
     итогов, пока эпилог ещё пишется нейросетью. session можно передать готовую.
     """
     from app.tally import day_economics, format_economics, format_plugin_results
+
+    # format_results читает .cards синхронно; асинхронная ленивая подгрузка вне
+    # greenlet-контекста дала бы MissingGreenlet и сорвала бы весь пост итогов.
+    # Грузим карты заранее (selectinload), из своей сессии, если её не передали.
+    try:
+        _stmt = select(Round).where(Round.id == finished.id).options(selectinload(Round.cards))
+        if session is None:
+            async with SessionLocal() as _own:
+                _loaded = (await _own.execute(_stmt)).scalar_one_or_none()
+        else:
+            _loaded = (await session.execute(_stmt)).scalar_one_or_none()
+        if _loaded is not None:
+            finished = _loaded
+    except Exception:
+        logger.warning("Карты дня %s не подгружены для итогов", getattr(finished, "day_index", "?"), exc_info=True)
 
     # Собираем ставки по путям и коэффициент (async)
     path_stakes: dict[int, int] = {}
