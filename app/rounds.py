@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.echoes import collect_due_echoes, spawn_echoes_from_round
+from app.echoes import spawn_echoes_from_round
 from app.models import (
     Card,
     Income,
@@ -38,6 +38,7 @@ from app.models import (
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
 from app.memory import recall_beats
+from app.narrative.canon import _closing_hook, load_canon
 from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_cover
 from app.ton_pay import pending_payout_count
@@ -343,62 +344,15 @@ async def get_latest_round(session: AsyncSession) -> Round | None:
     return result.scalar_one_or_none()
 
 
-def _closing_hook(text: str, limit: int = 220) -> str:
-    """Последние 1-2 предложения текста — финальный крючок дня.
-
-    Режет по границе предложения, чтобы ни одно слово обрывающихся глав
-    не попало в канон «на полуслове». Если последнее предложение короткое,
-    докидывает предпоследнее.
-    """
-    text = " ".join((text or "").split())
-    if not text:
-        return ""
-    text = text[: limit * 3]
-    seps = [text[:limit].rfind(s) for s in ("…", "?", "!", ".")]
-    first = max(seps)
-    if first <= 0:
-        return text[:limit].rstrip(" ,.;:")
-    if first >= limit - 40:
-        return text[: first + 1]
-    second = max(text[:first].rfind(s) for s in ("…", "?", "!", "."))
-    return text[second + 1 : first + 1] if second >= 0 else text[: first + 1]
-
-
 async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     """Канон последних дней для промпта главы, по порядку.
 
-    Возвращает не голые карты, а «титул: крючок главы · эпилог-крючок · итог» —
-    чтобы следующая глава знала не только ЧТО выбрала стая, но и НА ЧЁМ вчера
-    оборвалась история. Крючок падает из StoryBeat.hook_text (для старых дней —
-    из chapter_text), эпилог — финальное предложение Round.epilogue_text.
-
-    Окно ограничено: без лимита через несколько месяцев канон переполнил бы
-    контекст модели и генерация молча деградировала бы до офлайн-лора.
-    Ранние дни растворяются в шуме порталов — как и в /lore.
+    Формат — «титул: крючок главы · эпилог-крючок · итог». Логика канона
+    (чтение + форматирование) живёт в app.narrative.canon — здесь только
+    тонкая обёртка, сохраняющая прежнюю сигнатуру.
     """
-    result = await session.execute(
-        select(StoryBeat, Round)
-        .outerjoin(Round, Round.day_index == StoryBeat.day_index)
-        .order_by(StoryBeat.day_index.desc())
-        .limit(limit)
-    )
-    rows = list(result.all())
-    rows.reverse()
-    beats = []
-    for beat, round_row in rows:
-        chapter_text = round_row.chapter_text if round_row is not None else ""
-        epis_text = round_row.epilogue_text if round_row is not None else ""
-        hook = (beat.hook_text or "").strip() or _closing_hook(chapter_text)
-        hook = hook[:220]
-        epis = _closing_hook(epis_text, limit=140)
-        parts = []
-        if hook:
-            parts.append(f"крючок: {hook}")
-        if epis:
-            parts.append(f"эпилог: {epis}")
-        parts.append(f"итог: {beat.winning_text[:220]}")
-        beats.append(f"{beat.winning_title}: {' '.join(parts)}")
-    return beats
+    canon = await load_canon(session, limit=limit)
+    return canon.lines
 
 
 async def _previous_round_stats(
@@ -652,8 +606,10 @@ async def _plan_and_render(
 ) -> dict:
     """Тяжёлая половина создания дня: глава, библия арта и обложка."""
     logger.warning("DIAG-PR: ENTER day_index=%s", day_index)
-    beats = await _safe_db(session, "previous_beats", previous_beats, session)
-    echoes = await _safe_db(session, "collect_due_echoes", collect_due_echoes, session, day_index)
+    # Единое чтение канона: строки дней + созревшие эха в одном объекте.
+    canon = await _safe_db(session, "load_canon", load_canon, session, day_index)
+    beats = canon.lines
+    echoes = canon.echoes
     salt = secrets.token_hex(16)
 
     # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
