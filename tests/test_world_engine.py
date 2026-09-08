@@ -265,6 +265,34 @@ def test_fallback_choices_always_3():
     assert len(choices) == 3
 
 
+def test_fallback_choices_vary_across_days():
+    """Фолбэк не возвращает вечную тройку «Тихий коридор / Чужой след /
+    Развилка теней» — карты различаются от дня к дню."""
+    titles_by_day = []
+
+    for day in range(1, 9):
+        ctx = WorldContext(
+            day_index=day,
+            recent_choices=[],
+            active_locations=[],
+            active_characters=[],
+            world_mood="tense",
+            open_threads=[],
+            pack_needs={"hunger": 5, "thirst": 5, "health": 10},
+            season="unknown",
+        )
+        choices = _fallback_choices(ctx)
+        assert len(choices) == 3
+        titles_by_day.append(tuple(c.title for c in choices))
+
+    # Разные дни дают разные расклады (не меньше двух уникальных в неделю)
+    assert len(set(titles_by_day)) >= 2
+    # Ни один день не должен воспроизводить старый вечный шаблон целиком
+    stale_trio = {"Тихий коридор", "Чужой след", "Развилка теней"}
+    for trio in titles_by_day:
+        assert set(trio) != stale_trio
+
+
 # ── Tests: _build_world_prompt ─────────────────────────────────────────────
 
 

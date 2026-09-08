@@ -371,67 +371,70 @@ async def generate_ai_choices(
 
 
 def _fallback_choices(ctx: WorldContext) -> list[AIChoice]:
-    """Генерирует фолбэк-выборы на основе контекста, когда AI недоступен."""
+    """Офлайн-фолбэк выборов: разнообразные карты из пула lore, а не вечные
+    три строки «Тихий коридор / Чужой след / Развилка теней».
+
+    Берёт богатый пул _cards(): ~29 троп на архетип + эхо-сужение по истории
+    выборов (механика _narrowed_card) + анти-повторы по недавним названиям.
+    День и история выборов дают соль, поэтому каждое утро стая видит новый
+    расклад, а перезапуск дня не возвращает ту же тройку. Потребности стаи
+    подмешивают профильную карту («Голодный путь» / «Целительный лист»).
+    """
+
+    from app.lore import _cards, _rng
 
     needs = ctx.pack_needs
     hunger = needs.get("hunger", 5)
     health = needs.get("health", 10)
 
-    choices = []
+    history_tags = [str(c.get("tag", "")) for c in ctx.recent_choices if c.get("tag")]
+    recent_titles = {
+        str(c.get("text", "")).strip().lower()
+        for c in ctx.recent_choices
+        if c.get("text")
+    }
 
-    # Выбор на основе потребностей
-    if hunger > 7:
-        choices.append(
-            AIChoice(
-                title="Голодный путь",
-                description="Стая стоит перед развилкой: влево — тёмный коридор с запахом еды, вправо — светлый проход в никуда.",
-                consequence="Если пойдём на запах — может быть еда, а может быть ловушка. Если в светлый — точно не еда, но безопасно.",
-                tag="risk",
-                characters_involved=[],
-            )
-        )
-    else:
-        choices.append(
-            AIChoice(
-                title="Тихий коридор",
-                description="Коридор уходит вглубь. Стены холодные, но ровные. Где-то вдали капает вода.",
-                consequence="Можно идти вперёд — возможно, найдём что-то полезное. Или вернуться — ничего не потеряем.",
-                tag="cunning",
-                characters_involved=[],
-            )
-        )
-
-    if health < 7:
-        choices.append(
-            AIChoice(
-                title="Целительный лист",
-                description="На стене растёт блестящий мох. Он выглядит как лекарство — но кто знает.",
-                consequence="Мох светится зелёным. Если съесть — может помочь. Если нет — будет хуже.",
-                tag="care",
-                characters_involved=[],
-            )
-        )
-    else:
-        choices.append(
-            AIChoice(
-                title="Чужой след",
-                description="На полу свежие следы. Кто-то был здесь совсем недавно — и пошёл дальше в лабиринт.",
-                consequence="Можно следовать за следами — может привести к людям или к опасности. Или игнорировать.",
-                tag="risk",
-                characters_involved=[],
-            )
-        )
-
-    choices.append(
-        AIChoice(
-            title="Развилка теней",
-            description="Три коридора расходятся. В каждом — своя тишина. Лабиринт ждёт решения.",
-            consequence="Каждый путь ведёт к разным последствиям. Назад дороги нет.",
-            tag="cunning",
-            characters_involved=[],
-            location=ctx.active_locations[0]["name"] if ctx.active_locations else None,
-        )
+    salt = "|".join(history_tags[-5:])
+    rng = _rng(ctx.day_index, f"fallback:{salt}")
+    cards = _cards(
+        rng,
+        ctx.day_index,
+        history_tags=history_tags or None,
+        salt=salt,
+        recent_titles=recent_titles or None,
     )
+
+    location = ctx.active_locations[0]["name"] if ctx.active_locations else None
+    choices = [
+        AIChoice(
+            title=card.title,
+            description=card.description,
+            consequence=card.consequence,
+            tag=card.tag,
+            characters_involved=[],
+            location=location,
+        )
+        for card in cards
+    ]
+
+    if hunger > 7:
+        choices[0] = AIChoice(
+            title="Голодный путь",
+            description="Стая стоит перед развилкой: влево — тёмный коридор с запахом еды, вправо — светлый проход в никуда.",
+            consequence="Если пойдём на запах — может быть еда, а может быть ловушка. Если в светлый — точно не еда, но безопасно.",
+            tag="risk",
+            characters_involved=[],
+            location=location,
+        )
+    elif health < 7:
+        choices[1] = AIChoice(
+            title="Целительный лист",
+            description="На стене растёт блестящий мох. Он выглядит как лекарство — но кто знает.",
+            consequence="Мох светится зелёным. Если съесть — может помочь. Если нет — будет хуже.",
+            tag="care",
+            characters_involved=[],
+            location=location,
+        )
 
     return choices[:3]
 

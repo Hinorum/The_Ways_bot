@@ -1109,6 +1109,7 @@ async def _plan_and_render(
         from app.world_engine import generate_ai_choices
         from app.story import _chat_completion
 
+        ai_choices = None
         if world_ctx:
             ai_choices = await generate_ai_choices(session, world_ctx, _chat_completion)
 
@@ -1142,8 +1143,8 @@ async def _plan_and_render(
                 rng = _secrets.SystemRandom()
                 offline_cards = _cards(rng, day_index)
                 chapter_cards = [
-                    {"title": c[0], "description": c[1], "consequence": c[2], "tag": tag}
-                    for c, tag in zip(offline_cards, ["risk", "care", "cunning"])
+                    {"title": c.title, "description": c.description, "consequence": c.consequence, "tag": c.tag}
+                    for c in offline_cards
                 ]
             for position, card in enumerate(chapter_cards[:3]):
                 cards_payload.append(
@@ -1167,8 +1168,8 @@ async def _plan_and_render(
             rng = _secrets.SystemRandom()
             offline_cards = _cards(rng, day_index)
             chapter_cards = [
-                {"title": c[0], "description": c[1], "consequence": c[2], "tag": tag}
-                for c, tag in zip(offline_cards, ["risk", "care", "cunning"])
+                {"title": c.title, "description": c.description, "consequence": c.consequence, "tag": c.tag}
+                for c in offline_cards
             ]
         for position, card in enumerate(chapter_cards[:3]):
             cards_payload.append(
