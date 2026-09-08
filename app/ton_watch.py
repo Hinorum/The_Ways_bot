@@ -25,22 +25,12 @@ from app.db import SessionLocal
 from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
 from app.payments import parse_revote_memo, parse_verify_memo
 from app.ops import is_game_paused
+from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, WALLET_NORM_KEY
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
 
-CURSOR_KEY = "ton_watch_cursor_utime"
-# Сердцебиение: отметка времени последнего УСПЕШНОГО цикла (пусть и без
-# переводов). Курсор для этого не годится: он двигается только переводами,
-# и на тихой цепочке честно «стареет», хотя watcher здоров.
-BEAT_KEY = "ton_watch_beat_iso"
-# Источник данных последнего успешного цикла («tonapi» / «toncenter»):
-# видно в /health как watcher_source — устойчивый фолбэк сигнализирует
-# о деградации основного индексатора.
-SOURCE_KEY = "ton_watch_last_source"
-# Одноразовая миграция старых привязок из UQ/EQ-формы в канонический raw-hex.
-WALLET_NORM_KEY = "wallet_norm_v1"
 # Стартовый откат для первого запуска: не глубже полусуток.
 _CURSOR_FALLBACK_HOURS = 12
 # TonAPI v2 отдаёт страницы транзакций; идём вглубь, пока не накроем курсор

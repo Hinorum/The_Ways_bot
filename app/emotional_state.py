@@ -14,15 +14,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rules import EMOTION_SHIFTS
 from app.models import EmotionalState
-
-
-# Шаги изменения эмоций по тегу победившей карты
-EMOTION_SHIFTS: dict[str, dict[str, int]] = {
-    "risk": {"fatigue": +1, "hope": -1, "paranoia": 0},
-    "care": {"fatigue": -1, "hope": +1, "paranoia": 0},
-    "cunning": {"fatigue": 0, "hope": -1, "paranoia": +1},
-}
 
 _MIN, _MAX = 0, 10
 

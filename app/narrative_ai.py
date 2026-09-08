@@ -16,6 +16,7 @@ from collections import Counter
 from dataclasses import dataclass, asdict
 from random import Random
 
+from app.core.registry import GEPA_POPULATION_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +494,7 @@ async def load_active_gene() -> PromptGene | None:
 
         async with SessionLocal() as session:
             result = await session.execute(
-                _select(WatcherState).where(WatcherState.key == "gepa_population")
+                _select(WatcherState).where(WatcherState.key == GEPA_POPULATION_KEY)
             )
             ws = result.scalar_one_or_none()
             if ws and ws.value:

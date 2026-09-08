@@ -41,7 +41,11 @@ from app.memory import recall_beats
 from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_cover
 from app.ton_pay import pending_payout_count
-
+from app.core.registry import (
+    ANCHOR_KEY,
+    art_bible_key,
+    img_stubs_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +160,6 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
             season_note=season_note,
         )
     except Exception as exc:
-        logger = logging.getLogger(__name__)
         logger.warning("Эпилог дня %s не написан: %s", round_row.day_index, exc)
         return ""
     if text:
@@ -518,9 +521,8 @@ async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | N
 
 async def _load_art_anchor(session: AsyncSession) -> dict | None:
     from app.models import WatcherState
-    from app.art_director import AnchorKey
 
-    row = await session.get(WatcherState, AnchorKey)
+    row = await session.get(WatcherState, ANCHOR_KEY)
     if row is None:
         return None
     try:
@@ -532,23 +534,23 @@ async def _load_art_anchor(session: AsyncSession) -> dict | None:
 
 async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
     """Сохраняем компактный якорь библии: следующий день продолжит стиль."""
-    from app.art_director import AnchorKey, compact_anchor
+    from app.art_director import compact_anchor
     from app.models import WatcherState
 
     anchor = compact_anchor(bible)
     if not anchor.get("palette"):
         return
     blob = json.dumps(anchor, ensure_ascii=False)[:250]
-    row = await session.get(WatcherState, AnchorKey)
+    row = await session.get(WatcherState, ANCHOR_KEY)
     if row is None:
-        session.add(WatcherState(key=AnchorKey, value=blob))
+        session.add(WatcherState(key=ANCHOR_KEY, value=blob))
     else:
         row.value = blob
     await session.commit()
 
 
 def _day_bible_key(day_index: int) -> str:
-    return f"art_bible:{day_index}"
+    return art_bible_key(day_index)
 
 
 async def _save_day_bible(session: AsyncSession, day_index: int, bible: dict) -> None:
@@ -1351,7 +1353,7 @@ def place_seed_for(place: str | None) -> int | None:
 
 
 def _stubs_key(day_index: int) -> str:
-    return f"img_stubs:{day_index}"
+    return img_stubs_key(day_index)
 
 
 async def _record_image_stubs(
@@ -2102,19 +2104,6 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         from app.plugins import registry
 
         await registry.run_post_day_hooks(ctx)
-        # Кэшируем проекцию в WatcherState для доступа из broadcast/prompt
-        try:
-            from app.models import WatcherState as WS
-
-            ws_key = f"day_projection:{round_row.day_index}"
-            ws_row = (await session.execute(select(WS).where(WS.key == ws_key))).scalar_one_or_none()
-            if ws_row is None:
-                session.add(WS(key=ws_key, value=json.dumps(projection.to_dict(), ensure_ascii=False)))
-            else:
-                ws_row.value = json.dumps(projection.to_dict(), ensure_ascii=False)
-            await session.commit()
-        except Exception:
-            logger.debug("Кэш DayProjection не записан", exc_info=True)
     except Exception:
         logger.warning("DayProjection/plugin hooks не выполнены", exc_info=True)
     # AI World Engine: создаём снимок мира в конце дня

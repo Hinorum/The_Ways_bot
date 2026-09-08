@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rules import NEED_SHIFTS
 from app.models import PackState
 
 
@@ -27,14 +28,6 @@ class PackNeeds:
         self.thirst = max(0, min(10, self.thirst))
         self.health = max(0, min(10, self.health))
         self.alive_count = max(0, min(5, self.alive_count))
-
-
-# Сдвиги потребностей по тегу победившей карты
-NEED_SHIFTS: dict[str, dict[str, int]] = {
-    "risk":   {"hunger": +1, "thirst": +1, "health": -1},
-    "care":   {"hunger": -2, "thirst": -1, "health": +1},
-    "cunning": {"hunger": +0, "thirst": +1, "health": +0},
-}
 
 
 def apply_needs_shift(needs: PackNeeds, tag: str | None) -> None:

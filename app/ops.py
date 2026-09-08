@@ -19,6 +19,19 @@ from aiogram import Bot
 from sqlalchemy import func, select
 
 from app.config import settings
+from app.core.registry import (
+    ALERT_BALANCE_KEY,
+    ALERT_DEAD_KEY,
+    ALERT_QUEUE_KEY,
+    ALERT_REFUND_KEY,
+    ALERT_STAKE_KEY,
+    ALERT_TICK_KEY,
+    ALERT_WATCHER_KEY,
+    MONEY_MODE_KEY,
+    PAUSE_KEY,
+    PAUSE_REASON_KEY,
+    TICK_KEY,
+)
 from app.db import SessionLocal
 from app.models import Income, Payout, Round, RoundStatus, Stake, WatcherState
 
@@ -26,14 +39,6 @@ logger = logging.getLogger(__name__)
 
 PROCESS_START = time.time()
 
-TICK_KEY = "last_tick_iso"
-ALERT_WATCHER_KEY = "alert_watcher_ts"
-ALERT_QUEUE_KEY = "alert_queue_ts"
-ALERT_DEAD_KEY = "alert_dead_ts"
-ALERT_TICK_KEY = "alert_tick_ts"
-ALERT_BALANCE_KEY = "alert_balance_ts"
-ALERT_REFUND_KEY = "alert_refund_ts"
-ALERT_STAKE_KEY = "alert_stake_ts"
 _ALERT_COOLDOWN = timedelta(hours=1)
 _WATCHER_STALE_AFTER = timedelta(minutes=30)
 _QUEUE_OLD_AFTER = timedelta(minutes=30)
@@ -49,14 +54,6 @@ _TICK_STALE_AFTER = timedelta(minutes=5)
 # и мелкий ручной вывод не должны будить админа ложной тревогой.
 _BALANCE_TOLERANCE_NANO = 50_000_000  # 0.05 Gram
 
-# Пауза игры (стоп-кран): метка времени включения и причина. Живут в
-# watcher_state — переживают рестарт, видны всем процессам и джобам.
-PAUSE_KEY = "game_paused_iso"
-PAUSE_REASON_KEY = "game_paused_reason"
-# Версия игры: «со ставками» (1/отсутствует) или «без ставок» (0). Это рубильник
-# Хранителя из /panel; реальные дни снимают режим в Round.money_mode на своё
-# открытие, поэтому переключение вступает в силу со СЛЕДУЮЩЕГО дня.
-MONEY_MODE_KEY = "money_mode_on"
 # Виды корректировок казны: ручной вывод хранителя / ручное пополнение.
 # Пишутся в Income (unit_ref «manual:<uuid>»), попадают в формулу сверки.
 MANUAL_OUT_KIND = "manual_out"

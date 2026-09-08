@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.broadcast import POSITIONS, build_day_post, cards_keyboard, status_text
+from app.core.registry import memquiz_key, sniff_key
 from app.config import settings
 from app.db import SessionLocal
 from app.models import (
@@ -699,7 +700,7 @@ async def on_sniff_use(callback: CallbackQuery) -> None:
         if player.inspiration <= 0:
             await callback.answer("Жетонов нет: ищи следы памяти и верные серии.", show_alert=True)
             return
-        marker = f"sniff:{player.id}:{round_row.id}"
+        marker = sniff_key(player.id, round_row.id)
         if await session.get(WatcherState, marker) is not None:
             await callback.answer("Сегодня нюх уже потрачен.", show_alert=True)
             return
@@ -808,7 +809,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
 
     async with SessionLocal() as session:
         player = await upsert_player(session, callback.from_user)
-        marker = f"memquiz:{player.id}:{round_id}"
+        marker = memquiz_key(player.id, round_id)
         if await session.get(WatcherState, marker) is not None:
             await callback.answer("Сегодня архив уже закрыл твой вопрос.", show_alert=True)
             return

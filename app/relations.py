@@ -15,11 +15,10 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.registry import RELATION_KEY
 from app.models import WatcherState
 
 logger = logging.getLogger(__name__)
-
-RELATION_KEY = "npc_relations"
 
 # Лица мира: ключи стабильны для промптов, титулы — человеческие.
 NPC_TITLES = {
@@ -39,11 +38,7 @@ _MIN, _MAX = -3, 3
 #             корм Хозяина Ошибки, головная боль дневника;
 #   risk    — мир трещит: Хозяин доволен, Лайнер настораживается,
 #             Еретик одобряет — трещина значит, что мир ещё живой.
-_SHIFTS: dict[str, dict[str, int]] = {
-    "care": {"liner": 1, "journal": 1, "master": -1, "heretic": 0},
-    "cunning": {"liner": 1, "journal": 1, "master": 1, "heretic": 1},
-    "risk": {"liner": -1, "journal": -1, "master": 1, "heretic": 1},
-}
+from app.core.rules import RELATION_SHIFTS as _SHIFTS
 
 _TONES = {
     3: ("предан стае", "ходит за стаей хвостом"),

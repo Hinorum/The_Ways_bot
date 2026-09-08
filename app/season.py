@@ -17,6 +17,8 @@ import json
 import random
 from datetime import date, datetime, timedelta, timezone
 
+from app.core.registry import RUN_START_KEY, VILLAIN_KEY  # noqa: F401 (ре-экспорт для app.rounds)
+
 # Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
 FINALE_CARDS = {
     "care": "дом",
@@ -239,11 +241,7 @@ _AXIS_START_POOL = (-2, -1, 0, 1, 2)
 # детерминированно от сида дня победы (см. apply_alignment_drift), благодаря чему
 # достижима и диагональ «добрые-хаотики» (−порядок, +мораль), которая иначе
 # выпадала из покрытия.
-_ALIGNMENT_DRIFT: dict[str, dict[str, object]] = {
-    "care": {"moral_axis": +1, "order_axis": +1},
-    "risk": {"order_axis": -1, "moral_axis": lambda rng: rng.choice((+1, -1))},
-    "cunning": {"moral_axis": -1, "order_axis": +1},
-}
+from app.core.rules import ALIGNMENT_DRIFT as _ALIGNMENT_DRIFT
 
 
 def roll_axes() -> tuple[int, int]:
@@ -543,10 +541,6 @@ def season_block(
 
 
 # ---------- План Хозяина Ошибки: сюжет-машина сезона ----------
-
-VILLAIN_KEY = "villain_plot"
-# Якорь забега: {"dom": день-месяца старта, "key": "YYYY-MM"} в watcher_state.
-RUN_START_KEY = "run_season_anchor"
 
 _VILLAIN_EVENTS: dict[int, tuple[str, ...]] = {
     0: (

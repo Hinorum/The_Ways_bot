@@ -50,15 +50,16 @@ from app.models import (
     WatcherState,
     WeeklyPot,
 )
+from app.core.registry import (
+    MARKER_KEY,
+    MONTH_READY_KEY,
+    WEEK_READY_KEY,
+    WEEKLY_MARKER_KEY,
+)
 from app.stakes import split_equal
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
 logger = logging.getLogger(__name__)
-
-MARKER_KEY = "leaderboard_settled_through"
-WEEKLY_MARKER_KEY = "weekly_settled_through"
-MONTH_READY_KEY = "month_leaderboard_ready"
-WEEK_READY_KEY = "week_leaderboard_ready"
 
 # Приложение живёт в одном процессе, но закрытие дня (tick) и плановый
 # сброс копилок могут вызывать settle-функции параллельно из разных задач

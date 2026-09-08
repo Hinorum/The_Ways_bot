@@ -9,6 +9,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.core.registry import (
+    GEPA_POPULATION_KEY,
+    micro_event_key,
+    pecho_key,
+    teaser_key,
+)
 from app.broadcast import announce_new_day, send_personal_echoes
 from app.config import settings
 from app.db import SessionLocal
@@ -136,7 +142,7 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
         from app.db import SessionLocal
         from app.models import Round, WatcherState
 
-        marker = f"micro_event:{round_id}"
+        marker = micro_event_key(round_id)
         async with SessionLocal() as session:
             row = await session.get(WatcherState, marker)
             if row is not None:
@@ -447,7 +453,7 @@ async def _teaser_job(round_id: int) -> None:
     строки недосказанности во все чаты. Падения полностью некритичны.
     """
     try:
-        marker = f"teaser:{round_id}"
+        marker = teaser_key(round_id)
         async with SessionLocal() as session:
             row = await session.get(WatcherState, marker)
             if row is not None:
@@ -466,7 +472,7 @@ async def _teaser_job(round_id: int) -> None:
         if not text:
             import random as _random
 
-            text = _random.Random(f"teaser:{round_id}").choice(list(_TEASER_FALLBACKS))
+            text = _random.Random(teaser_key(round_id)).choice(list(_TEASER_FALLBACKS))
         text = f"Маска дня — «{mask_title}»: {mask_mood}. {text}"
         if sealed:
             text += " И это ещё не всё: правило дня вскроется вместе с итогами."
@@ -501,7 +507,7 @@ async def _personal_echo_job(round_id: int) -> None:
     превращался в повторные сообщения тем же игрокам. Падения некритичны.
     """
     try:
-        marker = f"pecho:{round_id}"
+        marker = pecho_key(round_id)
         async with SessionLocal() as session:
             already = await session.get(WatcherState, marker)
             if already is not None:
@@ -568,7 +574,7 @@ async def tick(bot: Bot | None = None) -> None:
             ):
                 from app.models import WatcherState
 
-                marker = f"micro_event:{current.id}"
+                marker = micro_event_key(current.id)
                 async with SessionLocal() as inner_session:
                     already = await inner_session.get(WatcherState, marker)
                 if already is None:
@@ -576,7 +582,7 @@ async def tick(bot: Bot | None = None) -> None:
             if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
                 from app.models import WatcherState
 
-                marker = f"teaser:{current.id}"
+                marker = teaser_key(current.id)
                 async with SessionLocal() as inner_session:
                     already = await inner_session.get(WatcherState, marker)
                 if already is None:
@@ -946,7 +952,7 @@ async def _gepa_evolution_job() -> None:
 
             # Загружаем популяцию из watcher_state
             ws_result = await session.execute(
-                _select(WatcherState).where(WatcherState.key == "gepa_population")
+                _select(WatcherState).where(WatcherState.key == GEPA_POPULATION_KEY)
             )
             ws_row = ws_result.scalar_one_or_none()
             if ws_row and ws_row.value:
@@ -967,7 +973,7 @@ async def _gepa_evolution_job() -> None:
 
             # Сохраняем
             if ws_row is None:
-                ws_row = WatcherState(key="gepa_population", value="")
+                ws_row = WatcherState(key=GEPA_POPULATION_KEY, value="")
                 session.add(ws_row)
             ws_row.value = pop.to_json()
             await session.commit()
