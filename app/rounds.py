@@ -37,7 +37,6 @@ from app.models import (
     WinRule,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
-from app.memory import recall_beats
 from app.narrative.canon import _closing_hook, load_canon
 from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_cover
@@ -47,13 +46,37 @@ from app.core.registry import (
     art_bible_key,
     img_stubs_key,
 )
+from app.day_context import (
+    _GUEST_POOL,
+    _previous_round_stats,
+    _villain_block,
+    build_day_context,
+    guest_blocks_for,
+    places_memory_block,
+    previous_season_summary,
+    recent_repeats_block,
+sealed_day,
+    season_tag_balance,
+)
+
+__all__ = [
+    "_GUEST_POOL",
+    "_previous_round_stats",
+    "_villain_block",
+    "build_day_context",
+    "guest_blocks_for",
+    "places_memory_block",
+    "previous_season_summary",
+    "recent_repeats_block",
+    "sealed_day",
+    "season_tag_balance",
+]
+
 
 logger = logging.getLogger(__name__)
 
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
 
 def utc_aware(value: datetime) -> datetime:
     """Гарантирует tzinfo=UTC у даты из БД.
@@ -64,9 +87,7 @@ def utc_aware(value: datetime) -> datetime:
     """
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
-
 _ROMAN = ("I", "II", "III")
-
 
 def _next_hour_slot(after: datetime, hour: int) -> datetime:
     """Ближайший момент «after-дня или позже» ровно в hour:00 UTC."""
@@ -75,7 +96,6 @@ def _next_hour_slot(after: datetime, hour: int) -> datetime:
     if candidate <= after:
         candidate += timedelta(days=1)
     return candidate
-
 
 def _day_window(opens_at: datetime) -> tuple[datetime, datetime]:
     """Границы дня на сетке UTC.
@@ -95,7 +115,6 @@ def _day_window(opens_at: datetime) -> tuple[datetime, datetime]:
         # переносим закрытие на следующие сутки (сетка сохраняется).
         voting_ends_at += timedelta(days=1)
     return voting_ends_at, voting_ends_at
-
 
 async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
     """После закрытия дня просит нейросеть описать, чем отозвался победивший путь.
@@ -168,22 +187,8 @@ async def write_epilogue(session: AsyncSession, round_row: Round) -> str:
         await session.commit()
     return text
 
-
 def commit_rule(rule: WinRule, salt: str) -> str:
     return hashlib.sha256(f"{rule.value}:{salt}".encode()).hexdigest()
-
-
-def sealed_day(day_index: int) -> bool:
-    """Глухой день: закон не объявляется утром — только хеш-обязательство.
-
-    Расписание детерминированное (каждый N-й день), чтобы игроки могли
-    положиться на ритм; день 1 никогда не глухой.
-    """
-    every = max(0, settings.sealed_day_every)
-    if every <= 0:
-        return False
-    return day_index % every == min(7, every - 1)
-
 
 # ---------- Живой банк дня (для синхронных постов) ----------
 
@@ -191,10 +196,8 @@ def sealed_day(day_index: int) -> bool:
 # Обновляется каждым тиком; синхронный статус дня читает без БД.
 _POT_CACHE: dict[int, tuple[int, int]] = {}
 
-
 def get_cached_pot(round_id: int) -> tuple[int, int]:
     return _POT_CACHE.get(round_id, (0, 0))
-
 
 async def refresh_round_pot_cache(session: AsyncSession, round_row: Round) -> None:
     """Банк дня = сумма подтверждённых ставок; счётчик — все ставки дня."""
@@ -207,7 +210,6 @@ async def refresh_round_pot_cache(session: AsyncSession, round_row: Round) -> No
     if len(_POT_CACHE) > 64:
         _POT_CACHE.clear()
     _POT_CACHE[round_row.id] = (nano, len(rows))
-
 
 async def get_run_anchor(session: AsyncSession) -> dict:
     """Якорь забега из watcher_state; для новых инстансов создаётся «сейчас».
@@ -266,59 +268,6 @@ async def get_run_anchor(session: AsyncSession) -> dict:
     set_run_anchor_cache(anchor)
     return anchor
 
-
-async def _villain_block(
-    session: AsyncSession, open_moment: datetime, anchor: dict
-) -> str | None:
-    """Сюжет-машина сезона: продвигает план Администратора и отдаёт блок промпта.
-
-    Состояние живёт в watcher_state (один ключ на весь мир): ступень и список
-    событий. Ступени считаются по дням ЗАБЕГА (от сброса), а не календаря.
-    """
-    import json as _json
-
-    from app.models import WatcherState
-    from app.season import (
-        VILLAIN_KEY,
-        run_position,
-        villain_event,
-        villain_prompt_block,
-        villain_stage,
-    )
-
-    key = anchor["key"]
-    run_day, total = run_position(anchor, open_moment)
-    stage = villain_stage(run_day, total)
-
-    row = await session.get(WatcherState, VILLAIN_KEY)
-    data: dict = {}
-    if row is not None and row.value:
-        try:
-            data = json.loads(row.value)
-        except ValueError:
-            data = {}
-    if data.get("season") != key or not isinstance(data, dict):
-        # Новый сезон (или полный сброс): свежий план и своя соль событий —
-        # перезапуск игры начинает арку с других канонических вех.
-        data = {"season": key, "stage": -1, "events": [], "salt": secrets.token_hex(4)}
-
-    changed = False
-    while data["stage"] < stage:
-        data["stage"] += 1
-        data.setdefault("events", []).append(
-            villain_event(key, data["stage"], data.get("salt", ""))
-        )
-        changed = True
-    if changed or row is None:
-        payload = _json.dumps(data, ensure_ascii=False)
-        if row is None:
-            session.add(WatcherState(key=VILLAIN_KEY, value=payload))
-        else:
-            row.value = payload
-        await session.commit()
-    return villain_prompt_block(list(data.get("events") or [])[-3:], stage)
-
-
 async def get_active_round(session: AsyncSession) -> Round | None:
     result = await session.execute(
         select(Round)
@@ -329,20 +278,17 @@ async def get_active_round(session: AsyncSession) -> Round | None:
     )
     return result.scalar_one_or_none()
 
-
 async def get_round(session: AsyncSession, round_id: int) -> Round | None:
     result = await session.execute(
         select(Round).options(selectinload(Round.cards)).where(Round.id == round_id)
     )
     return result.scalar_one_or_none()
 
-
 async def get_latest_round(session: AsyncSession) -> Round | None:
     result = await session.execute(
         select(Round).options(selectinload(Round.cards)).order_by(Round.day_index.desc()).limit(1)
     )
     return result.scalar_one_or_none()
-
 
 async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     """Канон последних дней для промпта главы, по порядку.
@@ -353,125 +299,6 @@ async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     """
     canon = await load_canon(session, limit=limit)
     return canon.lines
-
-
-async def _previous_round_stats(
-    session: AsyncSession,
-) -> tuple[dict[int, int], int, int]:
-    """Голоса, ставки и численность предыдущего закрытого дня для DDA.
-
-    Возвращает (vote_counts, total_stakes_nanotons, player_count).
-    Если предыдущего дня нет — дефолты (3, 0, 10).
-    """
-    logger.warning("DIAG-PRS: ENTER _previous_round_stats")
-    from app.models import Stake, Vote
-
-    beat_row = (
-        await session.execute(
-            select(StoryBeat).order_by(StoryBeat.day_index.desc()).limit(1)
-        )
-    ).scalar_one_or_none()
-    if beat_row is None:
-        return {0: 1, 1: 1, 2: 1}, 0, 10
-
-    import json
-
-    try:
-        counts = json.loads(beat_row.vote_counts)
-        counts = {int(k): v for k, v in counts.items()}
-    except Exception:
-        counts = {0: 1, 1: 1, 2: 1}
-
-    round_row = (
-        await session.execute(
-            select(Round).where(Round.day_index == beat_row.day_index).limit(1)
-        )
-    ).scalar_one_or_none()
-
-    total_stakes = 0
-    voter_count = 10
-    if round_row is not None:
-        stakes_result = await session.execute(
-            select(func.coalesce(func.sum(Stake.amount_nanotons), 0)).where(
-                Stake.round_id == round_row.id,
-                Stake.status.in_(["confirmed", "settled"]),
-            )
-        )
-        total_stakes = int(stakes_result.scalar() or 0)
-
-        voters_result = await session.execute(
-            select(func.count(func.distinct(Vote.player_id))).where(
-                Vote.round_id == round_row.id
-            )
-        )
-        voter_count = int(voters_result.scalar() or 10)
-
-    return counts, total_stakes, max(voter_count, 1)
-
-
-async def season_tag_balance(session: AsyncSession, key: str) -> dict[str, int]:
-    """Характер стаи за сезон: теги победивших путей закрытых дней."""
-    result = await session.execute(
-        select(Card.tag)
-        .join(Round, Card.round_id == Round.id)
-        .where(
-            Round.season == key,
-            Round.status == RoundStatus.CLOSED,
-            Card.position == Round.winner_card,
-        )
-    )
-    balance = {"risk": 0, "care": 0, "cunning": 0}
-    for (tag,) in result.all():
-        balance[tag if tag in balance else "care"] += 1
-    return balance
-
-
-async def previous_season_summary(session: AsyncSession, current_key: str) -> str | None:
-    """Осадок финала прошлого сезона: последний канон предыдущего месяца."""
-    year, month = (int(part) for part in current_key.split("-"))
-    prev_key = f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
-    result = await session.execute(
-        select(Round.day_index)
-        .where(Round.season == prev_key, Round.status == RoundStatus.CLOSED)
-        .order_by(Round.day_index.desc())
-        .limit(1)
-    )
-    day_index = result.scalar_one_or_none()
-    if day_index is None:
-        return None
-    beat = (
-        await session.execute(select(StoryBeat).where(StoryBeat.day_index == day_index))
-    ).scalar_one_or_none()
-    if beat is None:
-        return None
-    summary = f"{beat.winning_title}: {beat.winning_text}"
-    return summary[:180]
-
-
-async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | None:
-    """Память мест для промпта: где стая уже была и что там изменилось."""
-    result = await session.execute(
-        select(Round.place, Round.day_index)
-        .where(Round.place.is_not(None))
-        .order_by(Round.day_index.desc())
-        .limit(limit * 3)
-    )
-    seen: dict[str, int] = {}
-    for place, day_index in result.all():
-        seen.setdefault(place, day_index)
-        if len(seen) >= limit:
-            break
-    if not seen:
-        return None
-    lines: list[str] = []
-    for place, day_index in seen.items():
-        beat = (
-            await session.execute(select(StoryBeat).where(StoryBeat.day_index == day_index))
-        ).scalar_one_or_none()
-        snippet = beat.winning_text[:90] if beat else ""
-        lines.append(f"- «{place}»: {snippet}")
-    return "\n".join(lines)
-
 
 async def _load_art_anchor(session: AsyncSession) -> dict | None:
     from app.models import WatcherState
@@ -484,7 +311,6 @@ async def _load_art_anchor(session: AsyncSession) -> dict | None:
         return data if isinstance(data, dict) and data.get("palette") else None
     except ValueError:
         return None
-
 
 async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
     """Сохраняем компактный якорь библии: следующий день продолжит стиль."""
@@ -502,10 +328,8 @@ async def _save_art_anchor(session: AsyncSession, bible: dict) -> None:
         row.value = blob
     await session.commit()
 
-
 def _day_bible_key(day_index: int) -> str:
     return art_bible_key(day_index)
-
 
 async def _save_day_bible(session: AsyncSession, day_index: int, bible: dict) -> None:
     """Полная библия дня в watcher_state (Text, без лимитов).
@@ -523,7 +347,6 @@ async def _save_day_bible(session: AsyncSession, day_index: int, bible: dict) ->
         row.value = blob
     await session.commit()
 
-
 async def _load_day_bible(session: AsyncSession, day_index: int) -> dict | None:
     from app.models import WatcherState
 
@@ -536,60 +359,6 @@ async def _load_day_bible(session: AsyncSession, day_index: int) -> dict | None:
     except ValueError:
         return None
 
-
-async def recent_repeats_block(session: AsyncSession, day_index: int, limit: int = 7) -> str | None:
-    """Банк повторов: формулировки и места последних дней в промпт главы.
-
-    Модель не должна строить сегодняшний день на дословных повторах своих же
-    описаний и названий мест (окно 7 дней). None — нечего заносить в копилку.
-    """
-    rows = await session.execute(
-        select(Round)
-        .options(selectinload(Round.cards))
-        .where(Round.day_index >= day_index - limit, Round.day_index < day_index)
-        .order_by(Round.day_index.desc())
-        .limit(limit)
-    )
-    lines: list[str] = []
-    for round_row in rows.scalars():
-        parts: list[str] = []
-        if round_row.place:
-            parts.append(f"место «{round_row.place}»")
-        for card in sorted(round_row.cards, key=lambda c: c.position):
-            snippet = (card.description or "").strip()
-            if snippet:
-                parts.append(f"«{card.title}»: {snippet[:90]}")
-        if parts:
-            lines.append("- " + "; ".join(parts))
-    if not lines:
-        return None
-    return (
-        "Банк повторов — формулировки и места, которые уже звучали в каноне "
-        "последних дней. НЕ повторяй их дословно; если сцена снова ведёт стаю "
-        "в уже знакомое место — покажи, что здесь изменилось, а не перескажи "
-        "старое описание заново:\n"
-        + "\n".join(lines)
-        + "\n"
-    )
-
-
-# ---------- Ротация гост-блоков промпта ----------
-
-# "promises" (книга обещаний) удалена — её место в ротации заняла линия
-# Еретика: «Правила Еретика» объясняют механики мира как его изобретения.
-_GUEST_POOL = ("villain", "heretic", "echoes", "focus", "places", "distant")
-
-
-def guest_blocks_for(day_index: int) -> set[str]:
-    """Бюджет главы: ≤4 сюжетных блока. Постоянные (закон, нрав,
-    акт-рамка) не считаются. Гости ротируются парами по дню забега:
-    {villain↔focus} / {heretic↔places} / {echoes↔distant} — каждая пара
-    видна через день, антагонист дышит через день без давления."""
-    first = day_index % len(_GUEST_POOL)
-    second = (first + 3) % len(_GUEST_POOL)
-    return {_GUEST_POOL[first], _GUEST_POOL[second]}
-
-
 async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
     """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше."""
     try:
@@ -598,51 +367,20 @@ async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
         logger.exception("DIAG: %s FAILED", label)
         raise
 
-
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
     opens_hint: datetime | None = None,
 ) -> dict:
-    """Тяжёлая половина создания дня: глава, библия арта и обложка."""
-    logger.warning("DIAG-PR: ENTER day_index=%s", day_index)
-    # Единое чтение канона: строки дней + созревшие эха в одном объекте.
-    canon = await _safe_db(session, "load_canon", load_canon, session, day_index)
-    beats = canon.lines
-    echoes = canon.echoes
-    salt = secrets.token_hex(16)
+    """Тяжёлая половина создания дня: глава, библия арта и обложка.
 
-    # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
-    from app.scar_rules import load_active_scars, process_round_scars
-    from app.lore import tags_from_beats
-
-    active_scars = await _safe_db(session, "load_active_scars", load_active_scars, session, day_index)
-    active_scar_keys = {s.scar_key for s in active_scars}
-
-    # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
-    history_tags = tags_from_beats(beats)
-    yesterday_winner_tag = None
-    if history_tags:
-        # Вчерашний тег = тег победившей карты за вчерашний день
-        yesterday_winner_tag = history_tags[-1] if history_tags else None
-        new_scars = await _safe_db(session, "process_round_scars", process_round_scars, session, yesterday_winner_tag, history_tags, day_index)
-        for scar in new_scars:
-            active_scar_keys.add(scar.scar_key)
-
-    # Эмоциональный профиль: обработка от вчерашнего выбора
-    from app.emotional_state import process_round_emotions, emotion_block_for_prompt
-
-    emotion_profile = await _safe_db(session, "process_round_emotions", process_round_emotions, session, yesterday_winner_tag, day_index)
-    emotion_block = emotion_block_for_prompt(emotion_profile)
-
-    # Потребности стаи: голод, жажда, здоровье
-    from app.pack_state import process_round_needs, get_needs_block, check_death
-
-    pack_needs = await _safe_db(session, "process_round_needs", process_round_needs, session, yesterday_winner_tag, day_index)
-    needs_block = get_needs_block(pack_needs)
-
-    # Проверяем смерть стаи
-    if check_death(pack_needs):
+    Состояние мира собрано в DayContext единым проходом build_day_context
+    (канон, эха, шрамы, эмоции, потребности, ветви, правила, сезон, арка,
+    NPC); здесь — только повествовательный конвейер: глава, карты, библия
+    и обложка.
+    """
+    ctx = await _safe_db(session, "build_day_context", build_day_context, session, day_index, opens_hint)
+    if ctx.game_over:
         return {
             "title": "Конец",
             "text": "Стая погибла. Мир стих.",
@@ -650,333 +388,43 @@ async def _plan_and_render(
             "image_prompt": "dark empty maze, no dogs, silence",
             "game_over": True,
         }
+    salt = secrets.token_hex(16)
 
-    # Деревья последствий: загрузка активных ветвей
-    from app.consequence_trees import (
-        load_active_branches, format_active_branches,
-        create_branch, CONSEQUENCE_TREES,
-    )
+    # Сезонные краски: нрав стаи красит промпт и кадр (SeasonBlock — в sblock).
+    from app.season import alignment_block, alignment_motifs, alignment_tints
 
-    active_branches = await _safe_db(session, "load_active_branches", load_active_branches, session, day_index)
-    branches_block = format_active_branches(active_branches)
-
-    # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
-    if beats:
-        last_beat = beats[-1] if beats else ""
-        existing_keys = {b.branch_key for b in active_branches}
-        for tree in CONSEQUENCE_TREES.values():
-            if tree.trigger_card in last_beat and tree.key not in existing_keys:
-                new_branch = await _safe_db(session, "create_branch", create_branch, session, tree, day_index)
-                active_branches.append(new_branch)
-                existing_keys.add(tree.key)
-        branches_block = format_active_branches(active_branches)
-
-    # Динамические правила: определяем активные переопределения
-    from app.dynamic_rules import (
-        get_active_overrides, get_dynamic_rule_text,
-    )
-
-    dynamic_overrides = get_active_overrides(active_scars, emotion_profile, active_branches, day_index)
-    dynamic_rules_block = get_dynamic_rule_text(dynamic_overrides)
-
-    # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
-    # Первого Лая на длине месяца старта забега.
-    open_moment = utc_aware(opens_hint) if opens_hint is not None else _now()
-    from app.season import (
-        alignment_block,
-        alignment_motifs,
-        alignment_tints,
-        anchor_axes,
-        heretic_prompt_block,
-        season_block as build_season_block,
-    )
-
-    anchor = await _safe_db(session, "get_run_anchor", get_run_anchor, session)
-    guests = guest_blocks_for(day_index)
-    key = anchor["key"]
-    balance = await _safe_db(session, "season_tag_balance", season_tag_balance, session, key)
-    prev_summary = None
-    if day_index <= 2:
-        prev_summary = await _safe_db(session, "previous_season_summary", previous_season_summary, session, key)
-
-    # Load AI-generated prologue beats and season arc from DB
-    db_prologue_beats = None
-    db_season_arc = None
-    try:
-        from app.prologue import load_prologue_beats_from_db
-        from app.story_arc import load_season_arc_from_db
-        from app.season import current_season as _current_season
-
-        season_num = _current_season(anchor, open_moment)
-        db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
-        db_season_arc = await load_season_arc_from_db(session, season=season_num)
-    except Exception:
-        logger.warning("DIAG-PR: prologue/arc DB query failed — rolling back")
-        await session.rollback()
-        pass
-
-    sblock = build_season_block(
-        anchor=anchor,
-        moment=open_moment,
-        balance=balance,
-        previous_season_summary=prev_summary,
-        db_prologue_beats=db_prologue_beats,
-        db_season_arc=db_season_arc,
-    )
-    places_block = (
-        await _safe_db(session, "places_memory_block", places_memory_block, session) if "places" in guests else None
-    )
-    # Призвания стаи: Ведущий может показать их одним касанием в сцене.
-    from app.callings import callings_prompt_block
-
-    callings_block = None
-    try:
-        callings_block = await callings_prompt_block(session)
-    except Exception:
-        logger.warning("DIAG-PR: callings_prompt_block failed — rolling back")
-        await session.rollback()
-        pass
-    if callings_block:
-        sblock = f"{sblock}\n{callings_block}"
-    # Характер стаи: определённый по голосованиям, влияет на тон повествования.
-    from app.trail import trail_prompt_block
-
-    try:
-        # Используем агрегированную статистику по всем игрокам
-        # (упрощённо: берём данные из anchor)
-        trail_data = None
-        if anchor and "order_axis" in anchor and "moral_axis" in anchor:
-            # Конвертируем оси anchor в формат trail_stats
-            order = anchor.get("order_axis", 0)
-            moral = anchor.get("moral_axis", 0)
-            trail_data = {
-                "order": order,
-                "moral": moral,
-                "total": 100,  # Заглушка
-                "conformity": (order + 1) / 2,
-                "heart_share": (moral + 1) / 2,
-                "fang_share": 0.5,
-            }
-        trail_block = trail_prompt_block(trail_data)
-        if trail_block:
-            sblock = f"{sblock}\n{trail_block}"
-    except Exception:
-        logger.debug("Trail-блок дня %s не собран", day_index, exc_info=True)
-    # Отношения NPC к стае: канон последних дней в одной строке тона.
-    from app.relations import load_relations, relations_prompt_block, get_npc_titles
-
-    try:
-        npc_sentiments = await _safe_db(session, "load_relations", load_relations, session)
-        npc_titles = await _safe_db(session, "get_npc_titles", get_npc_titles, session)
-        relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
-    except Exception:
-        npc_sentiments = {}
-        relations_block = None
-    if relations_block:
-        sblock = f"{sblock}\n{relations_block}"
-    # AI-реакции NPC: уникальные описания поведения
-    try:
-        from app.relations import generate_npc_reaction
-        npc_reactions = []
-        for npc_key, sentiment in npc_sentiments.items():
-            if sentiment != 0:
-                reaction = await generate_npc_reaction(
-                    npc_key, sentiment,
-                    recent_events=story_context if 'story_context' in dir() else "",
-                    recent_choices=choices_context if 'choices_context' in dir() else "",
-                )
-                if reaction:
-                    npc_reactions.append(reaction)
-        if npc_reactions:
-            sblock = f"{sblock}\nРеакции NPC: " + " ".join(npc_reactions)
-    except Exception:
-        logger.warning("NPC реакции дня %s не собраны", day_index, exc_info=True)
-    # ── NPC chain-of-thought ──
-    # Внутренний монолог NPC перед действием: по sentinent-ам дня.
-    try:
-        from app.npc_cog import generate_all_npc_cogs, npc_cogs_block
-
-        npc_cogs = await generate_all_npc_cogs(npc_sentiments, day_index)
-        cog_block = npc_cogs_block(npc_cogs)
-        if cog_block:
-            sblock = f"{sblock}\n{cog_block}"
-    except Exception:
-        logger.debug("NPC CoG не собран", exc_info=True)
-    # ── Plugin prompt blocks ──
-    # Плагины декларируют prompt_block capability и инжектируют данные
-    # в季节ный блок. Это позволяет добавлять механики без изменения
-    # основного pipeline сборки промпта.
-    try:
-        from app.plugins import PluginContext, registry as _plugin_registry
-        from app.builtin_plugins import register_builtin_plugins
-
-        register_builtin_plugins()
-        plugin_ctx = PluginContext(session=session)
-        plugin_blocks = await _plugin_registry.collect_prompt_blocks(plugin_ctx)
-        for block in plugin_blocks:
-            sblock = f"{sblock}\n{block}"
-    except Exception:
-        logger.warning("DIAG-PR: plugin blocks failed — rolling back")
-        await session.rollback()
-        logger.debug("Plugin prompt blocks не собраны", exc_info=True)
-    # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
-    from app.season import midpoint_day as season_midpoint
-    from app.season import run_position as season_run_position
-    from app.season import villain_stage as season_villain_stage
-
-    run_day_now, total_now = season_run_position(anchor, open_moment)
-    # Сквозная арка месяца: этапы, миссия дня, приметы Лая и лица арки.
-    # Вплетается в season_block — видна и нейро-главе, и офлайн-сборке.
-    # (Токен ЭТАП=N стабилен и разбирается составом лора.)
-    from app.story_arc import arc_block as arc_block_builder
-
-    try:
-        sblock = f"{sblock}\n{arc_block_builder(run_day_now, total_now, key, prev_summary)}"
-    except Exception:
-        logger.warning("Блок арки месяца не собран (день продолжится без него)", exc_info=True)
-    # Правила Еретика: вторая сюжетная линия, зеркало плана Хозяина Ошибки.
-    # Идёт в season_block одним блоком (как призвания/отношения) — сигнатура
-    # генератора главы не раздувается.
-    if "heretic" in guests:
-        try:
-            heretic_block = heretic_prompt_block(
-                key, season_villain_stage(run_day_now, total_now), run_day_now
-            )
-        except Exception:
-            logger.warning("Блок Еретика не собран (день продолжится без него)", exc_info=True)
-            heretic_block = None
-        if heretic_block:
-            sblock = f"{sblock}\n{heretic_block}"
-    # План Хозяина Ошибки: продвигается по ступеням забега, канон — в промпт.
-    villain = None
-    if "villain" in guests:
-        villain = await _villain_block(session, open_moment, anchor)
-
-    # Серединный поворот: первый день ступени 2 — запечатанный день Середняка.
-    twist = season_midpoint(run_day_now, total_now)
-
-    # DDA: сложность зависит от engagement прошлого дня.
-    prev_counts, prev_stakes, prev_voters = await _safe_db(session, "_previous_round_stats", _previous_round_stats, session)
-    from app.difficulty import compute_difficulty_metrics, select_win_rule
-
-    prev_metrics = compute_difficulty_metrics(
-        counts=prev_counts,
-        total_stakes=prev_stakes,
-        player_count=prev_voters,
-    )
-    if twist:
-        rule = WinRule.MEDIAN
-    else:
-        rule = WinRule(
-            select_win_rule(
-                prev_metrics,
-                day_index,
-                is_sealed=sealed_day(day_index) or False,
-                is_midpoint=twist,
-                seed=day_index,
-            )
-        )
-
-    # Дальняя память мира: из давнего канона (старше окна) достаём дни,
-    # сюжетно похожие на настоящее, — мир вспоминает собственную историю.
-    canon_rows_result = await _safe_db(session, "canon_rows", lambda s: s.execute(select(StoryBeat).order_by(StoryBeat.day_index.asc())), session)
-    canon = [
-        f"{beat.winning_title}: {beat.winning_text}"
-        for beat in (canon_rows_result.scalars() if canon_rows_result else [])
-    ]
-    query_parts = [beats[-1] if beats else "", *(echo.title for echo in echoes)]
-    distant = recall_beats(canon, query=" ".join(filter(None, query_parts)))
-
-    run_salt = secrets.token_hex(4)
-    order_axis, moral_axis = anchor_axes(anchor)
-    # Фокус-день NPC (каждый третий день забега).
-    try:
-        from app.relations import npc_focus_line_ai, get_npc_titles
-        from app.season import run_position as _run_pos
-
-        run_day_now, _total_now = _run_pos(anchor, open_moment)
-        npc_titles = await _safe_db(session, "get_npc_titles (focus)", get_npc_titles, session)
-        focus_line = (
-            await npc_focus_line_ai(
-                run_day_now,
-                relations=npc_sentiments,
-                npc_titles=npc_titles,
-            )
-            if "focus" in guests
-            else None
-        )
-    except Exception:
-        logger.warning("NPC focus line дня %s не сгенерирована", day_index, exc_info=True)
-        focus_line = None
-    # AI World Engine: блок персонажей для промпта
-    characters_block = ""
-    try:
-        from app.story import _build_dynamic_character_block
-        characters_block = await _build_dynamic_character_block(session)
-    except Exception:
-        logger.debug("Dynamic character block не собран", exc_info=True)
-    # Банк повторов: формулировки и места последних дней — модель не должна
-    # дублировать их дословно (литературный де-дуп, окно 7 дней).
-    repeat_block = await recent_repeats_block(session, day_index)
-    # AI-профили NPC из БД для voice cards
-    npc_profiles = None
-    try:
-        from app.npc_cog import load_all_npc_profiles
-        npc_profiles = await load_all_npc_profiles(session)
-    except Exception:
-        logger.debug("AI-профили NPC дня %s не загружены", day_index, exc_info=True)
-    # AI-кэши из БД
-    try:
-        from app.lore import (
-            load_all_atmospheric, load_all_voice_examples, load_all_voice_banned,
-            load_all_inner_thoughts, load_all_dog_pads, load_all_echo_tones,
-            load_weather_pool, load_places,
-        )
-        from app.season import load_villain_events, load_heretic_events
-        await load_all_atmospheric(session, season=1)
-        await load_all_voice_examples(session, season=1)
-        await load_all_voice_banned(session, season=1)
-        await load_all_inner_thoughts(session, season=1)
-        await load_all_dog_pads(session, season=1)
-        await load_all_echo_tones(session, season=1)
-        await load_weather_pool(session, season=1)
-        await load_places(session, season=1)
-        await load_villain_events(session, season=1)
-        await load_heretic_events(session, season=1)
-    except Exception:
-        logger.debug("AI-кэши лора для дня %s не загружены", day_index, exc_info=True)
     chapter = await generate_chapter(
-        day_index, beats, rule,
-        echoes=echoes if "echoes" in guests else [],
-        distant_echoes=distant if "distant" in guests else [],
-        season_block=sblock, places_block=places_block,
-        villain_block=villain, sealed=sealed_day(day_index) or twist,
-        salt=run_salt,
-        alignment_block=alignment_block(order_axis, moral_axis),
-        tint_lines=alignment_tints(order_axis, moral_axis, salt=run_salt),
-        focus_line=focus_line,
-        repeat_block=repeat_block,
-        active_scar_keys=active_scar_keys,
-        emotion_block=emotion_block,
-        branches_block=branches_block,
-        dynamic_rules_block=dynamic_rules_block,
-        needs_block=needs_block,
-        characters_block=characters_block,
-        npc_profiles=npc_profiles,
-        is_expanded=day_index == 1 or twist,
+        ctx.day_index, ctx.beats, ctx.rule,
+        echoes=ctx.echoes if "echoes" in guest_blocks_for(ctx.day_index) else [],
+        distant_echoes=ctx.distant if "distant" in guest_blocks_for(ctx.day_index) else [],
+        season_block=ctx.sblock, places_block=ctx.places_block,
+        villain_block=ctx.villain, sealed=sealed_day(ctx.day_index) or ctx.twist,
+        salt=ctx.run_salt,
+        alignment_block=alignment_block(ctx.order_axis, ctx.moral_axis),
+        tint_lines=alignment_tints(ctx.order_axis, ctx.moral_axis, salt=ctx.run_salt),
+        focus_line=ctx.focus_line,
+        repeat_block=ctx.repeat_block,
+        active_scar_keys=set(ctx.active_scar_keys),
+        emotion_block=ctx.emotion_block,
+        branches_block=ctx.branches_block,
+        dynamic_rules_block=ctx.dynamic_rules_block,
+        needs_block=ctx.needs_block,
+        characters_block=ctx.characters_block,
+        npc_profiles=ctx.npc_profiles,
+        is_expanded=ctx.day_index == 1 or ctx.twist,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.
-    echo_motifs = sorted({_ECHO_ART_MOTIFS.get(echo.kind, "portal hum haze") for echo in echoes})
+    echo_motifs = sorted({_ECHO_ART_MOTIFS.get(echo.kind, "portal hum haze") for echo in ctx.echoes})
     # Сквозные персонажи главы получают стабильные визуальные дескрипторы:
     # Лайнер в кадре сегодня и через неделю — одна и та же фигура.
     hero_motifs = character_motifs_for(f"{chapter.get('title', '')} {chapter.get('text', '')}")
     # Нрав стаи красит кадр: квадрант характера добавляет свой мотив первым.
-    align_motifs = alignment_motifs(order_axis, moral_axis)
+    align_motifs = alignment_motifs(ctx.order_axis, ctx.moral_axis)
     anchor = await _load_art_anchor(session)
     bible = await plan_day_art(
-        chapter, beats, anchor=anchor,
+        chapter, ctx.beats, anchor=anchor,
         extra_motifs=sorted(set(echo_motifs + hero_motifs + align_motifs)),
     )
     bible["motifs"] = align_motifs + [m for m in (bible.get("motifs") or []) if m not in align_motifs]
@@ -993,11 +441,11 @@ async def _plan_and_render(
     try:
         from app.story import _generate_session_characters
         needs_dict = {
-            "hunger": pack_needs.hunger,
-            "thirst": pack_needs.thirst,
-            "health": pack_needs.health,
+            "hunger": ctx.pack_needs.hunger,
+            "thirst": ctx.pack_needs.thirst,
+            "health": ctx.pack_needs.health,
         }
-        char_result = await _generate_session_characters(session, day_index, needs_dict, season=key)
+        char_result = await _generate_session_characters(session, day_index, needs_dict, season=ctx.key)
         if char_result:
             logger.info("AIWorldEngine: %s", char_result)
     except Exception as e:
@@ -1024,11 +472,11 @@ async def _plan_and_render(
     try:
         from app.world_engine import get_world_context
         needs_dict = {
-            "hunger": pack_needs.hunger,
-            "thirst": pack_needs.thirst,
-            "health": pack_needs.health,
+            "hunger": ctx.pack_needs.hunger,
+            "thirst": ctx.pack_needs.thirst,
+            "health": ctx.pack_needs.health,
         }
-        world_ctx = await get_world_context(session, day_index, needs_dict, season=key)
+        world_ctx = await get_world_context(session, day_index, needs_dict, season=ctx.key)
     except Exception as e:
         logger.debug("AIWorldEngine: не удалось собрать контекст мира: %s", e)
 
@@ -1191,18 +639,17 @@ async def _plan_and_render(
     return {
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,
-        "rule": rule.value,
-        "commitment": commit_rule(rule, salt) + ":" + salt,
-        "sealed": sealed_day(day_index) or twist,
+        "rule": ctx.rule.value,
+        "commitment": commit_rule(ctx.rule, salt) + ":" + salt,
+        "sealed": sealed_day(ctx.day_index) or ctx.twist,
         "chapter_title": chapter["title"],
         "chapter_text": chapter["text"],
         "lore_summary": chapter["lore_summary"],
         "place": chapter.get("place"),
-        "season": key,
+        "season": ctx.key,
         "cover_path": str(cover_path),
         "cards": cards_payload,
     }
-
 
 def _payload_cards(payload: dict) -> list[dict]:
     cards = [dict(card) for card in payload.get("cards") or []]
@@ -1210,7 +657,6 @@ def _payload_cards(payload: dict) -> list[dict]:
         card.setdefault("position", position)
         card.setdefault("tag", "care")
     return cards
-
 
 async def _materialize_round(
     session: AsyncSession, payload: dict, latest: Round | None
@@ -1273,7 +719,6 @@ async def _materialize_round(
         logger.warning("Запись бестиария дня %s не удалась", day_index, exc_info=True)
     return round_row
 
-
 # Визуальная фактура типов эхов: содержание скрыто, фактура повторяется —
 # внимательный игрок учится узнавать класс следа по кадру дня.
 _ECHO_ART_MOTIFS = {
@@ -1289,13 +734,11 @@ _TIE_THEATER = (
     "Дневник перевернул страницу дважды; выпало {chosen}.",
 )
 
-
 # Формат payload'а дня. v4: инлайн-день — глава, карты и обложка рендерятся
 # сразу целиком (раньше флажок-версия отличал заготовку трёх веток, собранную
 # до вскрытия итогов; прегенерация убрана). Маркер остался как паспорт формата
 # «свершившегося дня» для материализации.
 PREPARED_PAYLOAD_VERSION = 4
-
 
 def place_seed_for(place: str | None) -> int | None:
     """Стабильный сид обложки по названию места: возвращение стаи в место
@@ -1304,13 +747,10 @@ def place_seed_for(place: str | None) -> int | None:
         return None
     return 10_000 + zlib.crc32(place.strip().lower().encode("utf-8")) % 890_000
 
-
 # ---------- Отложенный апгрейд PIL-заглушек картинок ----------
-
 
 def _stubs_key(day_index: int) -> str:
     return img_stubs_key(day_index)
-
 
 async def _record_image_stubs(
     session: AsyncSession, day_index: int, cover_stub: bool, card_positions: list[int]
@@ -1334,7 +774,6 @@ async def _record_image_stubs(
         row.value = payload
     await session.commit()
 
-
 async def _pop_image_stubs(session: AsyncSession, day_index: int) -> dict | None:
     from app.models import WatcherState
 
@@ -1349,7 +788,6 @@ async def _pop_image_stubs(session: AsyncSession, day_index: int) -> dict | None
     await session.delete(row)
     await session.commit()
     return data if isinstance(data, dict) else None
-
 
 async def upgrade_stub_images(day_index: int) -> int:
     """Вторая попытка для кадров, ушедших в PIL-заглушку (429/таймауты).
@@ -1438,7 +876,6 @@ async def upgrade_stub_images(day_index: int) -> int:
     logger.info("Апгрейд заглушек дня %d: перерисовано %d из %d", day_index, upgraded, len(jobs))
     return upgraded
 
-
 async def _stamp_day_money_mode(session: AsyncSession, round_row: Round) -> None:
     """Снимает режим «версии игры» на открытие дня.
 
@@ -1450,7 +887,6 @@ async def _stamp_day_money_mode(session: AsyncSession, round_row: Round) -> None
     from app.ops import money_mode_enabled
 
     round_row.money_mode = bool(await money_mode_enabled(session))
-
 
 async def create_next_round_detailed(
     session: AsyncSession, base_day_index: int | None = None
@@ -1531,11 +967,9 @@ async def create_next_round_detailed(
         return existing, False
     return round_row, True
 
-
 async def create_next_round(session: AsyncSession, base_day_index: int | None = None) -> Round:
     row, _created = await create_next_round_detailed(session, base_day_index=base_day_index)
     return row
-
 
 async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     """Сброс игры: чистые счёты и первый день заново.
@@ -1599,7 +1033,6 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
     row, _created = await create_next_round_detailed(session)
     return row
 
-
 async def claim_announcement(session: AsyncSession, round_row: Round) -> bool:
     """Занимает право объявить день: True только для первого вызывающего.
 
@@ -1614,7 +1047,6 @@ async def claim_announcement(session: AsyncSession, round_row: Round) -> bool:
     await session.commit()
     return result.rowcount > 0
 
-
 async def ensure_current_round(session: AsyncSession) -> Round:
     current = await get_active_round(session)
     if current is not None:
@@ -1625,7 +1057,6 @@ async def ensure_current_round(session: AsyncSession) -> Round:
     if latest is not None and utc_aware(latest.tally_ends_at) > _now():
         return latest
     return await create_next_round(session)
-
 
 async def heal_stale_rounds(session: AsyncSession) -> int:
     """Дочитывает дни, застрявшие не-закрытыми ПОЗАДИ актуального.
@@ -1682,7 +1113,6 @@ async def heal_stale_rounds(session: AsyncSession) -> int:
             await session.rollback()
     return healed
 
-
 def public_round_view(round_row: Round) -> dict:
     """Counts stay secret while the round is open; the law is public from the start.
 
@@ -1713,7 +1143,6 @@ def public_round_view(round_row: Round) -> dict:
         view["vote_counts"] = json.loads(round_row.vote_counts_json or "{}")
         view["lore_summary"] = round_row.lore_summary
     return view
-
 
 async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[int, int]:
     """Allowed only from the tally job. One GROUP BY, O(n) scan of the day partition."""
@@ -1746,7 +1175,6 @@ async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[in
                 counts[int(position)] += bonus
     return counts
 
-
 def tied_positions(counts: dict[int, int], rule: WinRule) -> list[int]:
     """Все пути, претендующие на победу по закону дня (без учёта позиций)."""
     items = [(counts.get(i, 0), i) for i in range(3)]
@@ -1760,7 +1188,6 @@ def tied_positions(counts: dict[int, int], rule: WinRule) -> list[int]:
     median = ordered[1][0]
     return sorted(i for total, i in items if total == median)
 
-
 def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) -> int:
     """Победитель по закону дня. Без seed — детерминированный fallback
     (меньший номер пути); с seed — честный жребий, посеянный утренним
@@ -1769,7 +1196,6 @@ def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) 
     if len(candidates) > 1 and seed:
         return random.Random(f"law:{seed}").choice(candidates)
     return candidates[0]
-
 
 async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
     """Пути дня, за которые есть хотя бы один подтверждённый ставщик."""
@@ -1783,7 +1209,6 @@ async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
         .group_by(Vote.card_position)
     )
     return {int(p) for p, holders in rows.all() if holders > 0}
-
 
 def _pick_among(
     counts: dict[int, int], rule: WinRule, seed: str | None, paths: list[int]
@@ -1808,7 +1233,6 @@ def _pick_among(
         winner = cands[0]
     return winner, cands
 
-
 def _prefer_staked(
     counts: dict[int, int], rule: WinRule, seed: str | None, staked: set[int]
 ) -> tuple[int, list[int]]:
@@ -1825,7 +1249,6 @@ def _prefer_staked(
         return pick_winner(counts, rule, seed=seed), tied_positions(counts, rule)
     return _pick_among(counts, rule, seed, sorted(staked))
 
-
 async def _winner_and_tied(
     session: AsyncSession,
     round_row: Round,
@@ -1840,7 +1263,6 @@ async def _winner_and_tied(
         counts, round_row.win_rule
     )
 
-
 async def _echoes_already_spawned(session: AsyncSession, day_index: int) -> bool:
     result = await session.execute(
         select(func.count())
@@ -1848,7 +1270,6 @@ async def _echoes_already_spawned(session: AsyncSession, day_index: int) -> bool
         .where(LoreEcho.born_day == day_index)
     )
     return bool(result.scalar_one())
-
 
 async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     if round_row.status != RoundStatus.OPEN:
@@ -1879,7 +1300,6 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
         spawn_echoes_from_round(session, source)
     await session.commit()
     return round_row
-
 
 async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, bool]:
     """Закрывает подсчёт атомарно. Второе значение — закрыт ли день этим вызовом.
@@ -2069,7 +1489,6 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     except Exception:
         logger.debug("AIWorldEngine: снимок мира не создан", exc_info=True)
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
-
 
 async def polish_stub_images() -> int:
     """Шлифовка заглушек: повторные попытки в течение 24 часов после дня.
