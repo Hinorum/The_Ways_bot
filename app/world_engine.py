@@ -141,8 +141,13 @@ async def get_world_context(
 # ── AI Choice Generation ──────────────────────────────────────────────────
 
 
-def _build_world_prompt(ctx: WorldContext) -> str:
-    """Строит промпт для AI-генерации выборов на основе текущего состояния мира."""
+def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
+    """Строит промпт для AI-генерации выборов на основе текущего состояния мира.
+
+    chapter_ctx — компактный «слепок» дня (заголовок главы + её финальный крючок),
+    чтобы карты голосования продолжали события главы, а не были абстрактной
+    развилкой. Если пусто — генерятся самоценные дилеммы мира.
+    """
 
     parts = [
         "Ты — Ведущий (Dungeon Master) игры. Мир живёт и меняется от выборов игроков.",
@@ -156,6 +161,17 @@ def _build_world_prompt(ctx: WorldContext) -> str:
         "- Каждый выбор — уникальная ситуация, не повторяй предыдущие",
         "",
     ]
+
+    if chapter_ctx:
+        parts.extend([
+            "КОНТЕКСТ СЕГОДНЯШНЕЙ ГЛАВЫ:",
+            chapter_ctx.strip(),
+            "",
+            "Три варианта выбора должны РАЗВИВАТЬ события и крючок этой главы, "
+            "а не быть абстрактной развилкой: каждый выбор — один из возможных "
+            "ответов стаи именно на эту главу.",
+            "",
+        ])
 
     # Контекст мира
     if ctx.active_locations:
@@ -299,6 +315,7 @@ async def generate_ai_choices(
     session: AsyncSession,
     ctx: WorldContext,
     llm_caller,
+    chapter_ctx: str = "",
 ) -> list[AIChoice]:
     """Генерирует 3 AI-выбора на основе контекста мира.
 
@@ -306,9 +323,11 @@ async def generate_ai_choices(
         session: сессия БД
         ctx: контекст мира
         llm_caller: async callable (messages, temperature, max_tokens, want_json) -> dict | None
+        chapter_ctx: компактный слепок дня (заголовок главы + крючок), чтобы карты
+            продолжали главу, а не были абстрактной развилкой
     """
 
-    prompt = _build_world_prompt(ctx)
+    prompt = _build_world_prompt(ctx, chapter_ctx=chapter_ctx)
     messages = [{"role": "user", "content": prompt}]
 
     try:

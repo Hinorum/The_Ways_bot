@@ -156,7 +156,7 @@ def test_story_prompt_demands_full_narrative() -> None:
         ["Костёр стаи: появился общий костёр"],
         WinRule.MAJORITY,
     )
-    assert "1200-1500" in prompt
+    assert "1000-1300" in prompt
     assert "новых главных персонажей не вводи" in prompt
     assert "реплика" in prompt and "сенсорная деталь" in prompt
     assert "крючок" in prompt  # финальная строка главы обрывает сцену
@@ -186,9 +186,9 @@ async def test_previous_beats_window_is_capped(session) -> None:
 
     beats = await previous_beats(session)
     assert len(beats) == 12
-    # Хронологический порядок, окно — последние дни.
-    assert beats[0] == f"Тропа {base + 8}: След дня {base + 8}."
-    assert beats[-1] == f"Тропа {base + 19}: След дня {base + 19}."
+    # Хронологический порядок, окно — последние дни. Канон несёт «итог» дня.
+    assert beats[0] == f"Тропа {base + 8}: итог: След дня {base + 8}."
+    assert beats[-1] == f"Тропа {base + 19}: итог: След дня {base + 19}."
 
 
 async def test_finish_tally_survives_missing_cards(session) -> None:

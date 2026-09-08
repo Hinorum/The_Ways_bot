@@ -1409,10 +1409,10 @@ def _build_story_prompt(
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
     season_text = f"{season_block}\n" if season_block else ""
-    # Пролог и серединный поворот несут двойную нагрузку (сцена + знакомство/
-    # событие): просим у модель более длинную главу. Пост выдерживает
-    # до ~3200 знаков текста при лимите Telegram 3900 на весь пакет.
-    chapter_low, chapter_high = (1400, 1700) if is_expanded else (1200, 1500)
+    # Эргономика чтения в ТГ: обычная глава 1000–1300 знаков (5–7 абзацев),
+    # расширенная (пролог/поворот) 1300–1600. Короче прежнего, но насыщеннее —
+    # меньше «воды ради скелета», больше крючка дня.
+    chapter_low, chapter_high = (1300, 1600) if is_expanded else (1000, 1300)
     villain_text = villain_text if villain_block else ""
     # alignment_block уже внутри season_text (через season.py:527),
     # но если season_block передан без него — добавляем отдельно.
@@ -1731,7 +1731,7 @@ async def _free_story_llm(
                 expanded = bool(season_block) and (
                     "ПРОЛОГ" in season_block or "ПОВОРОТ СЕРЕДИНЫ" in season_block
                 )
-                min_chars = 1000 if expanded else 850
+                min_chars = 900 if expanded else 750
                 text_len = len(str(data.get("text", "")))
                 if text_len < min_chars:
                     logger.warning(
@@ -1741,7 +1741,7 @@ async def _free_story_llm(
                     continue
                 # Верхний потолок: болезненно длинная глава режется по границе
                 # предложения, а не заводит день с простыней и риском обрыва в ТГ.
-                data["text"] = _clamp_sentence(str(data.get("text", "")), 2600)
+                data["text"] = _clamp_sentence(str(data.get("text", "")), 2200)
                 # Проверка диверситета: если bigram_diversity < 0.55 — предупреждаем
                 # (не отклоняем, чтобы не ломать тесты с коротким контентом)
                 _text_check = str(data.get("text", ""))

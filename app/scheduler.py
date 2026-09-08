@@ -157,8 +157,14 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
                 if run_day >= total
                 else f"до Дня Первого Лая {total - run_day} дн."
             )
-            chapter_excerpt = (round_row.chapter_text or "")[:700]
-            intrigue = day_index % 3 == 0
+            chapter_text = round_row.chapter_text or ""
+            chapter_excerpt = _sentence_lead(chapter_text, 340)
+            if not chapter_excerpt:
+                chapter_excerpt = " ".join(chapter_text.split())[:700]
+            chapter_hook = _sentence_tail(chapter_text, 260)
+            # ИНТРИГА решается сюжетом (есть ли неразрешённая примета дня),
+            # а не календарём — _compose_whisper сам решит по примете.
+            intrigue = None
             # ARG: каждую седьмую неделю забега вместо микросцены стая
             # находит страницу Совета Хранителей (планы бота как канон).
             from app.council import page_for_run_day
@@ -170,6 +176,7 @@ async def _micro_event_job(round_id: int, day_index: int) -> None:
                 if council_page is not None
                 else await _compose_whisper(
                     day_index, season_hint, chapter_excerpt,
+                    chapter_hook=chapter_hook,
                     intrigue=intrigue,
                     candidates=candidates,
                     arc_stage=arc_stage,
@@ -200,14 +207,20 @@ async def _compose_whisper(
     day_index: int,
     season_hint: str,
     chapter_excerpt: str = "",
-    intrigue: bool = False,
+    chapter_hook: str = "",
+    intrigue: bool | None = None,
     candidates: list[tuple[str, str]] | None = None,
     arc_stage: int | None = None,
 ) -> str:
     """Микросцена вечера: нейротекст с офлайн-фолбэком. Не раскрывает ни эхи,
     ни расклад голосов — только продолжает утреннюю сцену одной репликой. Если
     переданы кандидаты (публичные карты дня), текст сильнее «чувствует»
-    висящую развилку и переплетённость путей — без имён победителя."""
+    висящую развилку и переплетённость путей — без имён победителя.
+
+    chapter_excerpt — начало утренней главы, chapter_hook — её финальный крючок.
+    Вечер продолжает именно крючок, а не пересказывает утро.
+    intrigue=None — решается сюжетом: если у дня есть неразрешённая примета
+    (дремлющее эхо), сцена ставит её под вопрос."""
     import random as _random
 
     from app.story import DM_SYSTEM_PROMPT, _chat_completion, text_is_clean
@@ -241,6 +254,9 @@ async def _compose_whisper(
     except Exception:
         hint = ""
 
+    if intrigue is None:
+        intrigue = bool(hint)
+
     cards_line = ""
     if candidates:
         names = "», «".join(title for title, _ in candidates if title)
@@ -253,15 +269,15 @@ async def _compose_whisper(
             )
 
     task = (
-        "Вечерняя ИНТРИГА: поставь утреннюю примету под сомнение одной "
-        "деталяю или вопросом, которого никто не произнёс вслух; "
-        "финал — недоговорённость."
+        "Вечерняя ИНТРИГА: глава дня оборвалась крючком, а ты поставь сам этот "
+        "крючок и утреннюю примету под сомнение одной деталью или вопросом, "
+        "которого никто не произнёс вслух; финал — недоговорённость."
         if intrigue
         else (
             "Напиши атмосферную сцену вечера (2-4 предложения, до 450 знаков). "
-            "Проанализируй сегодняшний день и прошлые события. Покажи, как "
-            "выбор стаи отозвался в мире: запахи, звуки, тени, мелкие детали. "
-            "Одна реплика персонажа в его манере речи. Финал — "
+            "Подхвати то, на чём оборвалась утренняя глава, покажи, как выбор "
+            "стаи и крючок дня отозвались в мире: запахи, звуки, тени, мелкие "
+            "детали. Одна реплика персонажа в его манере речи. Финал — "
             "недоговорённость или намёк на то, что мир запомнил выбор. "
             "Без цифр, без имён победителя, без намёков на расклад голосов."
         )
@@ -276,6 +292,11 @@ async def _compose_whisper(
                 + (
                     f"Утренняя глава дня начиналась так:\n«{chapter_excerpt}»\n"
                     if chapter_excerpt
+                    else ""
+                )
+                + (
+                    f"Глава оборвалась так:\n«{chapter_hook}»\n"
+                    if chapter_hook
                     else ""
                 )
                 + cards_line
@@ -357,6 +378,25 @@ def _sentence_lead(text: str, limit: int = 160) -> str:
     for sep in (".", "!", "?", "…"):
         best = max(best, cut.rfind(sep))
     return cut[: best + 1] if best > 20 else ""
+
+
+def _sentence_tail(text: str, limit: int = 260) -> str:
+    """Последние 1-2 предложения главы — финальный крючок дня.
+
+    Режет по границе предложения; короткое последнее предложение докидывает
+    предпоследним, чтобы вечер видел развязку, а не обрывок на полуслове.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    text = text[: limit * 3]
+    first = max(text[:limit].rfind(s) for s in ("…", "?", "!", "."))
+    if first <= 0:
+        return text[:limit].rstrip(" ,.;:")
+    if first >= limit - 40:
+        return text[: first + 1]
+    second = max(text[:first].rfind(s) for s in ("…", "?", "!", "."))
+    return text[second + 1 : first + 1] if second >= 0 else text[: first + 1]
 
 
 def _offline_whisper(

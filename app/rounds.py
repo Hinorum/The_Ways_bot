@@ -340,19 +340,62 @@ async def get_latest_round(session: AsyncSession) -> Round | None:
     return result.scalar_one_or_none()
 
 
+def _closing_hook(text: str, limit: int = 220) -> str:
+    """Последние 1-2 предложения текста — финальный крючок дня.
+
+    Режет по границе предложения, чтобы ни одно слово обрывающихся глав
+    не попало в канон «на полуслове». Если последнее предложение короткое,
+    докидывает предпоследнее.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    text = text[: limit * 3]
+    seps = [text[:limit].rfind(s) for s in ("…", "?", "!", ".")]
+    first = max(seps)
+    if first <= 0:
+        return text[:limit].rstrip(" ,.;:")
+    if first >= limit - 40:
+        return text[: first + 1]
+    second = max(text[:first].rfind(s) for s in ("…", "?", "!", "."))
+    return text[second + 1 : first + 1] if second >= 0 else text[: first + 1]
+
+
 async def previous_beats(session: AsyncSession, limit: int = 12) -> list[str]:
     """Канон последних дней для промпта главы, по порядку.
+
+    Возвращает не голые карты, а «титул: крючок главы · эпилог-крючок · итог» —
+    чтобы следующая глава знала не только ЧТО выбрала стая, но и НА ЧЁМ вчера
+    оборвалась история. Крючок падает из StoryBeat.hook_text (для старых дней —
+    из chapter_text), эпилог — финальное предложение Round.epilogue_text.
 
     Окно ограничено: без лимита через несколько месяцев канон переполнил бы
     контекст модели и генерация молча деградировала бы до офлайн-лора.
     Ранние дни растворяются в шуме порталов — как и в /lore.
     """
     result = await session.execute(
-        select(StoryBeat).order_by(StoryBeat.day_index.desc()).limit(limit)
+        select(StoryBeat, Round)
+        .outerjoin(Round, Round.day_index == StoryBeat.day_index)
+        .order_by(StoryBeat.day_index.desc())
+        .limit(limit)
     )
-    rows = list(result.scalars())
+    rows = list(result.all())
     rows.reverse()
-    return [f"{beat.winning_title}: {beat.winning_text}" for beat in rows]
+    beats = []
+    for beat, round_row in rows:
+        chapter_text = round_row.chapter_text if round_row is not None else ""
+        epis_text = round_row.epilogue_text if round_row is not None else ""
+        hook = (beat.hook_text or "").strip() or _closing_hook(chapter_text)
+        hook = hook[:220]
+        epis = _closing_hook(epis_text, limit=140)
+        parts = []
+        if hook:
+            parts.append(f"крючок: {hook}")
+        if epis:
+            parts.append(f"эпилог: {epis}")
+        parts.append(f"итог: {beat.winning_text[:220]}")
+        beats.append(f"{beat.winning_title}: {' '.join(parts)}")
+    return beats
 
 
 async def _previous_round_stats(
@@ -1111,7 +1154,12 @@ async def _plan_and_render(
 
         ai_choices = None
         if world_ctx:
-            ai_choices = await generate_ai_choices(session, world_ctx, _chat_completion)
+            chapter_title = chapter.get("title", "")
+            chapter_hook = _closing_hook(chapter.get("text", ""), limit=260)
+            chapter_ctx = f"«{chapter_title}».\nКрючок главы: {chapter_hook}"
+            ai_choices = await generate_ai_choices(
+                session, world_ctx, _chat_completion, chapter_ctx=chapter_ctx
+            )
 
         if ai_choices and len(ai_choices) >= 3:
             # Используем AI-выборы
@@ -1935,6 +1983,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             day_index=round_row.day_index,
             winning_title=winning_card.title,
             winning_text=winning_card.consequence,
+            hook_text=_closing_hook(round_row.chapter_text or ""),
             win_rule=round_row.win_rule.value,
             vote_counts=counts_json,
         )
