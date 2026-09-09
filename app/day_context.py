@@ -510,19 +510,19 @@ async def build_day_context(
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
-    # AI-реакции NPC: уникальные описания поведения
+    # AI-реакции NPC: уникальные описания поведения. Параллелим через gather —
+    # глобальный семафор _chat_completion (story) не даст потоку провайдера
+    # захлебнуться, а независимые NPC-промпты изображены одновременно.
     try:
+        import asyncio as _asyncio
         from app.relations import generate_npc_reaction
-        npc_reactions = []
-        for npc_key, sentiment in npc_sentiments.items():
-            if sentiment != 0:
-                reaction = await generate_npc_reaction(
-                    npc_key, sentiment,
-                    recent_events=story_context if 'story_context' in dir() else "",
-                    recent_choices=choices_context if 'choices_context' in dir() else "",
-                )
-                if reaction:
-                    npc_reactions.append(reaction)
+        tasks = [
+            generate_npc_reaction(npc_key, sentiment)
+            for npc_key, sentiment in npc_sentiments.items()
+            if sentiment != 0
+        ]
+        results = await _asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+        npc_reactions = [r for r in results if isinstance(r, str) and r]
         if npc_reactions:
             sblock = f"{sblock}\nРеакции NPC: " + " ".join(npc_reactions)
     except Exception:

@@ -213,6 +213,13 @@ async def cmd_resetgame(message: Message) -> None:
                 "возвраты и призы, после отправки сброс пройдёт."
             )
             return
+        # Страховка перед необратимым сбросом: снимок БД до стирания, чтобы
+        # случайный /resetgame не лишил возможности откатить решения.
+        try:
+            from app.backups import backup_now
+            await backup_now()
+        except Exception:
+            await message.answer(f"{warn_mark('queue')} Бэкап перед сбросом не удался, " "продолжаю без снимка.")
         new_round = await reset_game(session, keep_story=keep_story)
         first = await claim_announcement(session, new_round)
     if not first:

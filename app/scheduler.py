@@ -782,6 +782,38 @@ def shutdown_scheduler() -> None:
         scheduler.shutdown(wait=False)
 
 
+async def _cleanup_watcher_state_job() -> None:
+    """Вычищает одноразовые/устаревшие ключи watcher_state.
+
+    Ключи вида micro_event:*, teaser:*, pecho:*, sniff:*, memquiz:* живут по
+    одному на раунд и никогда не чистятся сами (append-only), как и устаревшие
+    img_stubs:* / day_projection:* / art_bible:* за прошлые дни. На больших
+    сезонах таблица растёт бесконечно — раз в неделю держим её в узде,
+    оставляя только живые настройки и потоковые якоря.
+    """
+    try:
+        async with SessionLocal() as session:
+            stmt = select(WatcherState).where(
+                (WatcherState.key.like("micro_event:%"))
+                | (WatcherState.key.like("teaser:%"))
+                | (WatcherState.key.like("pecho:%"))
+                | (WatcherState.key.like("sniff:%"))
+                | (WatcherState.key.like("memquiz:%"))
+                | (WatcherState.key.like("img_stubs:%"))
+                | (WatcherState.key.like("day_projection:%"))
+                | (WatcherState.key.like("art_bible:%"))
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            if not rows:
+                return
+            for row in rows:
+                await session.delete(row)
+            await session.commit()
+            logger.info("watcher_state: вычищено %d устаревших ключей", len(rows))
+    except Exception as exc:
+        logger.warning("Очистка watcher_state не удалась: %s", exc)
+
+
 def start_scheduler() -> None:
     from app.backups import backup_job
 
@@ -795,6 +827,15 @@ def start_scheduler() -> None:
     from app.rounds import polish_stub_images
 
     _register_job("img-polish", polish_stub_images, "interval", hours=2)
+    # Сброс разросшегося watcher_state: еженедельно в ночь после нагрузок.
+    _register_job(
+        "ws-cleanup",
+        _cleanup_watcher_state_job,
+        "cron",
+        day_of_week="sun",
+        hour=3,
+        minute=30,
+    )
     # Напоминание о голосовании: 1 раз в 10:00 UTC (за час до закрытия в 11:00)
     _register_job("vote-reminder", _vote_reminder_job, "cron", hour=10, minute=0)
     # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.

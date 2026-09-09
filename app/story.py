@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 # в промпт, чтобы модель не начинала карты одинаково.
 _RECENT_OPENINGS: deque[str] = deque(maxlen=10)
 
+# Потолок одновременных LLM-запросов: генерации дня параллелятся (реакции NPC,
+# шрамы, эпилог), но stream провайдеров лимитирован и не должен захлёбываться —
+# семафор не даёт gather'ам разом ударить по одному хосту.
+_LLM_CONCURRENCY = 3
+_llm_semaphore = asyncio.Semaphore(_LLM_CONCURRENCY)
+
 
 def _estimate_tokens(text: str) -> int:
     """Грубая оценка числа токенов: ~4 символа на токен для смешанного рус/англ."""
@@ -584,6 +590,30 @@ def _save_image(image: Image.Image, path: Path) -> None:
         image.save(path, "PNG", optimize=True)
 
 
+def _process_image_to_disk(
+    content: bytes, width: int, height: int, dest: Path, cached: Path | None = None, *, fit: bool = True
+) -> None:
+    """Синхронный PIL-конвейер: декод байтов → fit/resize → запись (+кэш).
+
+    Выносим в поток (asyncio.to_thread): декод JPEG/PNG и optimize-энкод —
+    тяжёлые CPU-проходы, которые не должны блокировать event loop.
+    fit=True — композиционная обрезка (Gemini-кадр), fit=False — аккуратный
+    stretch до целевых размеров (Pollinations): каждая лестница сохраняет
+    своё прежнее поведение, просто больше не блокирует цикл.
+    """
+    image = Image.open(BytesIO(content)).convert("RGB")
+    if image.size != (width, height):
+        image = ImageOps.fit(image, (width, height)) if fit else image.resize((width, height))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _save_image(image, dest)
+    if cached is not None:
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            _save_image(image, cached)
+        except OSError:
+            pass
+
+
 async def _upload_cloud(path: Path) -> str | None:
     """Upload a local image to cloud storage, return public URL or None."""
     if not is_configured():
@@ -936,12 +966,7 @@ async def _fetch_gemini_image(
         if not _looks_like_image(content):
             logger.warning("Gemini image вернул не изображение (%d байт)", len(content))
             return False
-        image = Image.open(BytesIO(content)).convert("RGB")
-        if image.size != (width, height):
-            # fit вместо stretch: кадр обрезается по композиции, а не давится.
-            image = ImageOps.fit(image, (width, height))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _save_image(image, dest)
+        await asyncio.to_thread(_process_image_to_disk, content, width, height, dest)
         logger.info("Кадр получен через Gemini (%s): %s", settings.gemini_image_model, dest.name)
         return True
     except Exception as exc:
@@ -1037,15 +1062,7 @@ async def fetch_free_image(
                             attempt,
                         )
                         continue
-                    image = Image.open(BytesIO(content)).convert("RGB")
-                    if image.size != (width, height):
-                        image = image.resize((width, height))
-                    _save_image(image, dest)
-                    try:
-                        cached.parent.mkdir(parents=True, exist_ok=True)
-                        _save_image(image, cached)
-                    except OSError:
-                        pass
+                    await asyncio.to_thread(_process_image_to_disk, content, width, height, dest, cached, fit=False)
                     logger.info("Картинка дня получена: %s (%d байт)", dest.name, len(content))
                     return True
             except Exception as exc:
@@ -1100,47 +1117,48 @@ async def fetch_day_image(
     min_variance = 60.0  # Минимальная дисперсия Лапласиана (снижена для надёжности)
     logger.info("Story: start fetch_day_image (prompt=%d chars, seed=%s)", len(prompt), seed)
 
+    async def _gate(picture: Path) -> tuple[bool, float] | None:
+        """Quality gate + dedup в потоке: Лапласиан и aHash — тяжёлый PIL."""
+        passed, variance = await asyncio.to_thread(check_image_quality, picture, min_variance)
+        if not passed:
+            return passed, variance
+        if not prev_cover_path or not prev_cover_path.exists() or not picture.exists():
+            return True, variance
+        if not await asyncio.to_thread(_images_similar, prev_cover_path, picture):
+            return True, variance
+        return False, variance
+
     for outer in range(3):
         # Gemini: 2 попытки с backoff
         for attempt in range(2):
             if await _fetch_gemini_image(prompt, dest, width=width, height=height):
-                passed, variance = check_image_quality(dest, min_variance)
+                verdict = await _gate(dest)
+                if verdict is None:
+                    continue
+                passed, variance = verdict
                 if passed:
-                    if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                        return True
-                    if not _images_similar(prev_cover_path, dest):
-                        return True
-                    logger.info("Story: облока дублирует вчерашнюю, retry seed=%s", seed)
-                else:
-                    logger.warning("Gemini: изображение размытое (variance=%.2f), пробуем дальше", variance)
+                    return True
+                logger.info("Story: облока дублирует вчерашнюю или размыта (variance=%.2f), retry seed=%s", variance, seed)
             if attempt == 0:
                 await asyncio.sleep(10)
 
         if await fetch_free_image(prompt, dest, seed=seed, width=width, height=height, negative_prompt=negative_prompt):
-            passed, variance = check_image_quality(dest, min_variance)
-            if passed:
-                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                    return True
-                if not _images_similar(prev_cover_path, dest):
-                    return True
-                logger.info("Story: Pollinations облока дублирует, retry seed=%s", seed)
-            else:
-                logger.warning("Pollinations: изображение размытое (variance=%.2f), пробуем короткий промпт", variance)
+            verdict = await _gate(dest)
+            if verdict is not None and verdict[0]:
+                return True
+            variance = verdict[1] if verdict is not None else 0.0
+            logger.info("Story: Pollinations облока дублирует/размыта (variance=%.2f), retry seed=%s", variance, seed)
 
         if not settings.use_free_images:
             return False
 
         retry_seed = None if seed is None else seed + 9_000_001 + outer * 1000
         if await fetch_free_image(short_prompt, dest, seed=retry_seed, width=width, height=height, negative_prompt=negative_prompt):
-            passed, variance = check_image_quality(dest, min_variance)
-            if passed:
-                if not prev_cover_path or not prev_cover_path.exists() or not dest.exists():
-                    return True
-                if not _images_similar(prev_cover_path, dest):
-                    return True
-                logger.info("Story: short облока дублирует, retry seed=%s", seed)
-            else:
-                logger.warning("Pollinations (short): изображение размытое (variance=%.2f)", variance)
+            verdict = await _gate(dest)
+            if verdict is not None and verdict[0]:
+                return True
+            variance = verdict[1] if verdict is not None else 0.0
+            logger.info("Story: short облока дублирует/размыта (variance=%.2f), retry seed=%s", variance, seed)
 
     logger.warning("Story: все провайдеры кадра исчерпаны (3 итерации) — будет PIL-заглушка")
     return False
@@ -1240,6 +1258,26 @@ def _breaker_note(base_url: str, ok: bool) -> None:
 
 
 async def _chat_completion(
+    messages: list[dict],
+    timeout: int | None = None,
+    *,
+    temperature: float = 0.85,
+    max_tokens: int = 3500,
+    want_json: bool = False,
+) -> tuple[dict, str] | None:
+    """OpenAI-совместимый запрос по цепочке провайдеров и моделей (см. _chat_completion_core).
+
+    Пропускает запрос через глобальный семафор `_llm_semaphore`: графики дня
+    параллелятся (реакции NPC, шрамы, эпилог), но число одновременных запросов
+    ограничено, чтобы не захлёбывать лимитированный стрим провайдера.
+    """
+    async with _llm_semaphore:
+        return await _chat_completion_core(
+            messages, timeout, temperature=temperature, max_tokens=max_tokens, want_json=want_json,
+        )
+
+
+async def _chat_completion_core(
     messages: list[dict],
     timeout: int | None = None,
     *,
@@ -1771,15 +1809,18 @@ async def _free_story_llm(
     with_choices: bool = False,
     world_block: str | None = None,
 ) -> dict | None:
-    # AI-генерация описаний шрамов (до сборки промпта)
+    # AI-генерация описаний шрамов (до сборки промпта). Параллелим через
+    # gather — глобальный семафор _chat_completion держит поток провайдера.
     scar_descriptions_override = None
     if active_scar_keys:
         try:
-            scar_descriptions_override = {}
-            for k in active_scar_keys:
-                ai_desc = await generate_scar_description_ai(k, "care", day_index)
-                if ai_desc:
-                    scar_descriptions_override[k] = ai_desc
+            results = await asyncio.gather(
+                *(generate_scar_description_ai(k, "care", day_index) for k in active_scar_keys),
+                return_exceptions=True,
+            )
+            scar_descriptions_override = {
+                k: desc for k, desc in zip(active_scar_keys, results) if isinstance(desc, str) and desc
+            } or None
         except Exception:
             logger.warning("AI-описания шрамов для дня %s не сгенерированы", day_index, exc_info=True)
 
