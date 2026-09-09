@@ -354,7 +354,8 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     # ── Alignment drift ──
     alignment = None
     try:
-        from app.season import get_run_anchor, anchor_axes, _ALIGNMENT_DRIFT, _clamp_axis, _rng
+        from app.rounds import get_run_anchor
+        from app.season import anchor_axes, _ALIGNMENT_DRIFT, _clamp_axis, _rng
 
         anchor = await get_run_anchor(session)
         tag = winning.tag if winning else "care"
@@ -387,7 +388,8 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
         logger.debug("Alignment drift не собран для дня %s", round_row.day_index)
 
     # ── Временны́е рамки ──
-    from app.season import run_position, get_run_anchor
+    from app.rounds import get_run_anchor
+    from app.season import run_position
 
     try:
         anchor = await get_run_anchor(session)
@@ -395,10 +397,10 @@ async def build_projection(session: AsyncSession, round_row: Round) -> DayProjec
     except Exception:
         run_day, total_days = 0, 0
 
-    from app.season import act_index as _act_index
+    from app.season import act_number as _act_number
 
     try:
-        act_stage = _act_index(run_day, total_days)
+        act_stage = _act_number(run_day)
     except Exception:
         act_stage = 1
 

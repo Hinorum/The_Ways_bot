@@ -51,6 +51,17 @@ def entropy_score(text: str) -> float:
     return 0.7 + 0.3 * (1.0 - abs(ent - ENTROPY_TARGET) / (ENTROPY_HIGH - ENTROPY_LOW))
 
 
+def bigram_diversity(text: str) -> float:
+    """Доля уникальных биграмм 0.0-1.0 (выше = меньше повторов).
+
+    Нормализуется к 0.7 как «идеалу» (см. coherence_score)."""
+    words = text.split()
+    if len(words) < 2:
+        return 0.0
+    bigrams = list(zip(words[:-1], words[1:]))
+    return len(set(bigrams)) / max(len(bigrams), 1)
+
+
 def should_retry_entropy(text: str, attempt: int, max_attempts: int = 3) -> bool:
     """Нужна ли повторная генерация из-за низкой энтропии.
     На последней попытке (attempt >= max_attempts) не отказываем — принимаем что есть.
