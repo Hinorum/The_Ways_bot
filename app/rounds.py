@@ -420,6 +420,33 @@ def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
         )
     return out
 
+def _world_block_text(world_ctx) -> str | None:
+    """Компактная память живого мира для мега-промпта главы.
+
+    Мир приходит в генерацию ДО написания главы (один вызов вместо
+    отдельной AI-локации, патчившей текст задним числом). None — мир пуст.
+    """
+    if world_ctx is None:
+        return None
+    parts = []
+    mood = getattr(world_ctx, "world_mood", None)
+    if mood:
+        parts.append(f"- настроение лабиринта: {mood}")
+    threads = getattr(world_ctx, "open_threads", None) or []
+    if threads:
+        parts.append("- незакрытые сюжетные линии: " + "; ".join(str(t)[:60] for t in threads[:3]))
+    locs = getattr(world_ctx, "active_locations", None) or []
+    if locs:
+        names = [f"{loc['name']} ({loc.get('times_visited', 0)} посещ.)" for loc in locs[:5]]
+        parts.append("- известные стае места: " + ", ".join(names))
+    chars = getattr(world_ctx, "active_characters", None) or []
+    if chars:
+        cnames = [f"{char['name']} (доверие {char.get('trust_stay', 5)}/10)" for char in chars[:5]]
+        parts.append("- долгожители лабиринта: " + ", ".join(cnames))
+    if not parts:
+        return None
+    return "\n".join(parts)
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -446,6 +473,29 @@ async def _plan_and_render(
     # Сезонные краски: нрав стаи красит промпт и кадр (SeasonBlock — в sblock).
     from app.season import alignment_block, alignment_motifs, alignment_tints
 
+    # Мега-промпт: память живого мира заходит в ЕДИНЫЙ вызов главы — без
+    # отдельного LLM-вызова AI-локации «после факта». Мир слышит день ДО того,
+    # как написан, а не патчит текст задним числом (раньше генератор локации
+    # подменял место главы и вклеивал описание в уже готовый текст).
+    world_block = None
+    try:
+        from app.world_engine import get_world_context
+        needs_dict = {
+            "hunger": ctx.pack_needs.hunger,
+            "thirst": ctx.pack_needs.thirst,
+            "health": ctx.pack_needs.health,
+        }
+        world_ctx = await get_world_context(session, day_index, needs_dict, season=ctx.key)
+        world_block = _world_block_text(world_ctx)
+        logger.info(
+            "AIWorldEngine: контекст мира дня %d (%d локаций, %d персонажей)",
+            day_index,
+            len(world_ctx.active_locations),
+            len(world_ctx.active_characters),
+        )
+    except Exception as e:
+        logger.debug("AIWorldEngine: не удалось собрать контекст мира: %s", e)
+
     chapter = await generate_chapter(
         ctx.day_index, ctx.beats, ctx.rule,
         echoes=ctx.echoes if "echoes" in guest_blocks_for(ctx.day_index) else [],
@@ -466,6 +516,7 @@ async def _plan_and_render(
         npc_profiles=ctx.npc_profiles,
         is_expanded=ctx.day_index == 1 or ctx.twist,
         with_choices=True,
+        world_block=world_block,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -521,45 +572,6 @@ async def _plan_and_render(
     except Exception as e:
         logger.debug("AIWorldEngine: запрос NPC для обложки не удался: %s", e)
 
-    # AI World Engine: создаём контекст мира ОДИН раз для локаций и выборов
-    world_ctx = None
-    try:
-        from app.world_engine import get_world_context
-        needs_dict = {
-            "hunger": ctx.pack_needs.hunger,
-            "thirst": ctx.pack_needs.thirst,
-            "health": ctx.pack_needs.health,
-        }
-        world_ctx = await get_world_context(session, day_index, needs_dict, season=ctx.key)
-    except Exception as e:
-        logger.debug("AIWorldEngine: не удалось собрать контекст мира: %s", e)
-
-    # AI World Engine: пытаемся использовать AI-локацию
-    try:
-        from app.world_engine import get_or_create_location, update_location_visit
-        from app.story import _chat_completion
-
-        if world_ctx:
-            ai_location = await get_or_create_location(session, world_ctx, _chat_completion)
-
-            if ai_location:
-                # Переопределяем локацию главы
-                chapter["place"] = ai_location.name
-                # Обновляем описание места в тексте главы
-                if ai_location.description:
-                    # Добавляем описание локации в начало текста
-                    chapter["text"] = f"{ai_location.description}\n\n{chapter['text']}"
-                # Передаём atmosphere и scene для генерации обложки
-                if ai_location.atmosphere:
-                    chapter["atmosphere"] = ai_location.atmosphere
-                if ai_location.scene:
-                    chapter["location_scene"] = ai_location.scene
-                # Обновляем статистику посещения
-                await update_location_visit(session, ai_location.name, day_index)
-                logger.info("AIWorldEngine: использована AI-локация '%s' для дня %d", ai_location.name, day_index)
-    except Exception as e:
-        logger.warning("AIWorldEngine: ошибка генерации AI-локации: %s", e)
-
     # Сид обложки привязан к месту дня: возвращение в «Старый приют»
     # рисует тот же мир, а не новую случайную сцену.
     cover_seed = place_seed_for(chapter.get("place")) or day_seed
@@ -606,6 +618,33 @@ async def _plan_and_render(
             width=1280,
             height=720,
         )
+    # Живой мир фиксирует место дня БЕЗ отдельного LLM-вызова: глава сама
+    # выбрала место (place в том же JSON, что и текст), и этот выбор теперь
+    # локация мира (посещения, статистика) — без починки задним числом.
+    try:
+        from app.world_engine import update_location_visit
+        from app.models import WorldLocation
+
+        day_place = chapter.get("place")
+        if day_place:
+            await update_location_visit(session, day_place, day_index)
+            exists = (
+                await session.execute(select(WorldLocation).where(WorldLocation.name == day_place))
+            ).scalar_one_or_none()
+            if exists is None:
+                session.add(
+                    WorldLocation(
+                        name=day_place,
+                        description=str(chapter.get("text", ""))[:300],
+                        atmosphere="",
+                        created_day=day_index,
+                        times_visited=1,
+                        last_visited_day=day_index,
+                    )
+                )
+    except Exception as e:
+        logger.debug("AIWorldEngine: запись места дня не удалась: %s", e)
+
     cards_payload = []
     # Карты рождаются В ТОЙ ЖЕ генерации, что и глава (один контекст вместо
     # двух разных: раньше AI World Engine генерировал выборы отдельным
@@ -688,6 +727,7 @@ async def _materialize_round(
     # Бестиарий: маска закона дня и (со 2-й ступени) Администратор —
     # по записи за сезон, идемпотентно.
     from app.bestiary import note_round as bestiary_note_round
+    from app.story import _chat_completion
 
     try:
         # Формируем контекст для AI-генерации описаний бестиария
@@ -1481,7 +1521,9 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     # AI World Engine: создаём снимок мира в конце дня
     try:
         from app.world_engine import create_world_snapshot
-        await create_world_snapshot(session, round_row.day_index)
+        from app.story import _chat_completion
+
+        await create_world_snapshot(session, round_row.day_index, llm_caller=_chat_completion)
     except Exception:
         logger.debug("AIWorldEngine: снимок мира не создан", exc_info=True)
     return await get_round(session, round_row.id), True  # type: ignore[return-value]

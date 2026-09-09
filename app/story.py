@@ -429,6 +429,8 @@ async def _generate_session_characters(
     pack_needs: {"hunger": int, "thirst": int, "health": int} или None для дефолта.
     """
     from app.world_engine import generate_ai_character, WorldContext
+    from sqlalchemy import select
+    from app.models import WorldCharacter
 
     try:
         # Собираем контекст
@@ -1139,6 +1141,7 @@ async def generate_chapter(
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
+    world_block: str | None = None,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -1166,6 +1169,7 @@ async def generate_chapter(
         characters_block=characters_block,
         npc_profiles=npc_profiles,
         with_choices=with_choices,
+        world_block=world_block,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1416,11 +1420,15 @@ def _build_story_prompt(
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
+    world_block: str | None = None,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети.
     npc_profiles: AI-профили NPC из БД (опционально).
     with_choices: карты выбора рождаются в том же JSON, что и глава
     (единый конвейер «глава + карты одним контекстом»).
+    world_block: компактная память живого мира (настроение, открытые сюжеты,
+    известные места, долгожители) — мега-промпт слышит накопленное состояние
+    за день до генерации, без отдельного вызова AI-локации.
     """
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
     law_line = ""
@@ -1634,6 +1642,7 @@ def _build_story_prompt(
         '"cover_prompt":"english wide cinematic scene summarizing the whole day"}. '
         "Ссылайся на прошлый канон."
         + (_CHOICES_BLOCK if with_choices else "")
+        + ((_WORLD_BLOCK + world_block) if world_block else "")
     )
 
 
@@ -1660,6 +1669,14 @@ _CHOICES_BLOCK = (
     '"location": "Место дня или null", "food_cost": 0, "water_cost": 0, '
     '"health_risk": 0, "trust_change": 0, "emotional_consequence": "...", '
     '"npc_reactions": [{"name": "Лайнер", "reaction": "..."}]}, ...]\n'
+)
+
+
+_WORLD_BLOCK = (
+    "\n\nПАМЯТЬ МИРА — накопившиеся отголоски лабиринта. Учитывай их в "
+    "сюжете и картах дня (настроение, сюжетные линии, знакомые места и "
+    "долгожители), но не копируй дословно и не вываливай списком в текст "
+    "главы — это сырьё для развития, а не контент поста:\n"
 )
 
 
@@ -1725,6 +1742,7 @@ async def _free_story_llm(
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
+    world_block: str | None = None,
 ) -> dict | None:
     # AI-генерация описаний шрамов (до сборки промпта)
     scar_descriptions_override = None
@@ -1756,6 +1774,7 @@ async def _free_story_llm(
         characters_block=characters_block,
         npc_profiles=npc_profiles,
         with_choices=with_choices,
+        world_block=world_block,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (
