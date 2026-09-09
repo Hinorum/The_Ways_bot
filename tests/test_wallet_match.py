@@ -26,9 +26,10 @@ from app.ton_watch import (
 
 
 # Адреса уникальны в рамках прогона: players.wallet_address имеет UNIQUE,
-# а глобальная тестовая БД общая для всех модулей.
-NEW_STYLE = "UQpfcexKrlNjGFPF44W9am1o75Z6fs_QBdwVNzuhHVX2L4oo"
-OLD_STYLE = "UQRDxMsYZjk2LA8Qm0yyQVAXTH3wHNKISLhiibo2dhVgDCOW"
+# а глобальная тестовая БД общая для всех модулей. Оба — валидные
+# user-friendly (CRC16 верный), сгенерированы friendly_address().
+NEW_STYLE = "UQBVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8AESIzRJBb"
+OLD_STYLE = "UQCrq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq5jh"
 RAW = normalize_address(NEW_STYLE)
 
 

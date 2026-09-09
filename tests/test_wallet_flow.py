@@ -25,12 +25,13 @@ from app.models import Player, Round, RoundStatus, Stake, WalletDialog, WinRule
 
 
 # Адреса уникальны в рамках прогона: players.wallet_address имеет UNIQUE,
-# а глобальная тестовая БД общая для всех модулей.
-DIALOG_ADDRESS = "UQDD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnX"
-LOCKED_ADDRESS = "UQED39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnE"
-RESTART_ADDRESS = "UQFD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnF"
+# а глобальная тестовая БД общая для всех модулей. Все ниже — валидные
+# user-friendly (CRC16 верный), сгенерированы friendly_address().
+DIALOG_ADDRESS = "UQCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqppe"
+LOCKED_ADDRESS = "UQAiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8AERDo"
+RESTART_ADDRESS = "UQAzRFVmd4iZqrvM3e7_ABEiM0RVZneImaq7zN3u_wARIuR6"
 
-DUP_ADDRESS = "UQXD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnX"
+DUP_ADDRESS = "UQBEVWZ3iJmqu8zd7v8AESIzRFVmd4iZqrvM3e7_ABEiMwrl"
 
 _uid = 800_000
 
@@ -283,7 +284,7 @@ async def _link_wallet(uid: int, address: str) -> None:
 async def test_wallet_answers_fallback_when_builder_breaks(monkeypatch) -> None:
     """/wallet обязан ответить даже при сбое сборки вида — статичной инструкцией."""
     uid = next_uid()
-    fallback_address = "UQJD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnJ"
+    fallback_address = "UQCrq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq5jh"
     await _link_wallet(uid, fallback_address)
 
     async def boom(user):
@@ -356,7 +357,7 @@ async def test_wallet_view_html_is_telegram_safe(monkeypatch) -> None:
     # 2. Сгенерированный вид (обе ветки) проходит Telegram-парсер.
     monkeypatch.setattr(settings, "ton_enabled", True)
     uid = next_uid()
-    linked_address = "UQLD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnL"
+    linked_address = "UQBVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8AESIzRJBb"
     await _seed_open_day_with_stake(uid, day_index=99_099, amount_nanotons=100_000_000, address=linked_address)
     try:
         user = make_user(uid)
@@ -410,7 +411,7 @@ async def test_stake_button_alert_shows_amount(monkeypatch) -> None:
     """Кнопка в группе показывает личную сумму ставки: попап виден только нажавшему."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     uid = next_uid()
-    address = "UQGD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnG"
+    address = "UQABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZAm"
     # День с большим индексом, чем у соседних тестов модуля: активным
     # становится именно он (get_active_round берёт последний).
     await _seed_open_day_with_stake(uid, day_index=99_098, amount_nanotons=250_000_000, address=address)
@@ -434,7 +435,7 @@ async def test_wallet_view_includes_today_stake(monkeypatch) -> None:
     """/wallet показывает вклад в фонд текущего дня рядом с адресом кошелька."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     uid = next_uid()
-    address = "UQHD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnH"
+    address = "UQAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMV5"
     await _seed_open_day_with_stake(uid, day_index=99_097, amount_nanotons=600_000_000, address=address)
     try:
         message = make_message("private", uid, "/wallet")

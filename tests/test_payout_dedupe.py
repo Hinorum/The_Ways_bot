@@ -111,21 +111,30 @@ async def test_dispatch_still_sends_when_marker_absent(monkeypatch) -> None:
             await session.commit()
 
 
-async def test_first_attempt_skips_history_check(monkeypatch) -> None:
-    """Свежая выплата (attempts==0) не могла вещаться раньше — история не читается."""
+async def test_first_attempt_still_checks_history(monkeypatch) -> None:
+    """Даже при attempts==0 сверка с историей обязательна: краш после вещания
+    на первом проходе (статус не сохранился) не должен повторить перевод."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     payout_id = await _seed_payout(attempts=0)
 
-    async def explode() -> set[str]:
-        raise AssertionError("для первого attempts история казначея не нужна")
+    history_checked = {"calls": 0}
+
+    async def fake_markers() -> set[str]:
+        history_checked["calls"] += 1
+        return set()
 
     transfer = AsyncMock(return_value="bcast:77")
-    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", explode)
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", fake_markers)
     monkeypatch.setattr(ton_pay, "send_ton_transfer", transfer)
 
     try:
-        await ton_pay.dispatch_pending_payouts(bot=None)
+        sent = await ton_pay.dispatch_pending_payouts(bot=None)
+        assert history_checked["calls"] == 1  # один проход истории на цикл
+        assert sent == 1
         assert transfer.await_count == 1
+        async with SessionLocal() as session:
+            row = await session.get(Payout, payout_id)
+        assert row.status == "sent"
     finally:
         async with SessionLocal() as session:
             await session.delete(await session.get(Payout, payout_id))
@@ -237,10 +246,11 @@ async def test_no_wallet_prize_self_heals_when_player_binds(monkeypatch) -> None
         assert row.status == "pending"
         assert "кошелёк игрока ещё не привязан" in (row.last_error or "")
 
-        # Игрок привязал /wallet — следующий цикл сам платит приз.
+        # Игрок привязал /wallet и подтвердил bv — следующий цикл сам платит приз.
         async with SessionLocal() as session:
             player = await session.get(Player, player_id)
             player.wallet_address = "0:" + os.urandom(32).hex()
+            player.wallet_verified = True
             await session.commit()
         await ton_pay.dispatch_pending_payouts(bot=None)
         assert transfer.await_count == 1

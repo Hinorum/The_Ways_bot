@@ -9,6 +9,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.async_utils import spawn
+
 from app.core.registry import (
     GEPA_POPULATION_KEY,
     micro_event_key,
@@ -578,7 +580,7 @@ async def tick(bot: Bot | None = None) -> None:
                 async with SessionLocal() as inner_session:
                     already = await inner_session.get(WatcherState, marker)
                 if already is None:
-                    asyncio.create_task(_micro_event_job(current.id, current.day_index))
+                    spawn(_micro_event_job(current.id, current.day_index), "micro_event")
             if current.status == RoundStatus.TALLYING and now < utc_aware(current.tally_ends_at):
                 from app.models import WatcherState
 
@@ -586,7 +588,7 @@ async def tick(bot: Bot | None = None) -> None:
                 async with SessionLocal() as inner_session:
                     already = await inner_session.get(WatcherState, marker)
                 if already is None:
-                    asyncio.create_task(_teaser_job(current.id))
+                    spawn(_teaser_job(current.id), "teaser")
             if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
                 finished, closed_here = await finish_tally(session, current)
                 if closed_here:
@@ -594,9 +596,9 @@ async def tick(bot: Bot | None = None) -> None:
                     from app.stakes import finalize_day_payouts
 
                     await finalize_day_payouts(session, finished)
-                    asyncio.create_task(_payout_dispatch_job())
-                    asyncio.create_task(_announce_results_job(finished.id))
-                    asyncio.create_task(_finalize_new_day_job(finished.id))
+                    spawn(_payout_dispatch_job(), "payout_dispatch")
+                    spawn(_announce_results_job(finished.id), "announce_results")
+                    spawn(_finalize_new_day_job(finished.id), "finalize_new_day")
         except Exception:
             logger.exception("DIAG: tick FAILED — rolling back")
             await session.rollback()
@@ -698,7 +700,7 @@ async def _finalize_new_day_job(finished_id: int) -> None:
             await announce_new_day(_bot, nxt)
         # 4. Личные эха победителям — как и раньше, фоном после итогов.
         if settings.personal_echo:
-            asyncio.create_task(_personal_echo_job(finished_id))
+            spawn(_personal_echo_job(finished_id), "personal_echo")
     except Exception:
         logger.exception("DIAG: _finalize_new_day_job FAILED (id=%s)", finished_id)
 
@@ -751,7 +753,7 @@ async def boot_maintenance() -> None:
     """Разовые задачи при старте: свежий бэкап БД до всего остального."""
     from app.backups import backup_job
 
-    await backup_job()
+    await _alert_guarded("db-backup@boot", backup_job)
 
 
 def _register_job(job_id: str, func, trigger: str, **kwargs) -> None:
@@ -774,6 +776,32 @@ def _register_job(job_id: str, func, trigger: str, **kwargs) -> None:
         )
     except Exception:
         logger.exception("Джоба %s не зарегистрирована", job_id)
+
+
+async def _alert_guarded(job_id: str, func) -> None:
+    """Фоновая авто-задача с алертом админу при падении.
+
+    П.13 аудита: бэкап, шлифовка картинок и воскресные отчёты подолгу
+    живут без присмотра, а падают молча — APScheduler глушит исключение, и
+    сломанный отчёт недели выглядит как «отчёта просто не было». Оборачиваем
+    обслужку: исключение логируется и немедленно уходит админу, при этом
+    наружу НЕ пробрасывается (одна сломанная джоба не роняет расписание).
+    """
+    try:
+        await func()
+    except Exception as exc:
+        logger.exception("Фоновая задача «%s» упала: %s", job_id, exc)
+        try:
+            if _bot is not None and settings.admin_id_set:
+                from app.ops import notify_admins
+
+                await notify_admins(
+                    _bot,
+                    f"⚠️ Фоновая задача «{job_id}» упала: {exc} "
+                    f"(детали в логах планировщика)",
+                )
+        except Exception:
+            logger.exception("Алерт о падении «%s» не доставлен", job_id)
 
 
 def shutdown_scheduler() -> None:
@@ -815,18 +843,31 @@ async def _cleanup_watcher_state_job() -> None:
 
 
 def start_scheduler() -> None:
+    from functools import partial
+
     from app.backups import backup_job
 
     _register_job("way-tick", tick, "interval", seconds=15)
     # Суточный бэкап в «мёртвый» час: 04:17 UTC.
-    _register_job("db-backup", backup_job, "cron", hour=4, minute=17)
+    _register_job(
+        "db-backup",
+        partial(_alert_guarded, "db-backup", backup_job),
+        "cron",
+        hour=4,
+        minute=17,
+    )
     if settings.ton_enabled:
         _register_job("ton-watch", _watch_job, "interval", seconds=60)
         _register_job("ton-settle", _ton_maintenance, "interval", seconds=120)
     # Шлифовка картинок-заглушек: каждые 2 часа, окно 24 часа с момента дня.
     from app.rounds import polish_stub_images
 
-    _register_job("img-polish", polish_stub_images, "interval", hours=2)
+    _register_job(
+        "img-polish",
+        partial(_alert_guarded, "img-polish", polish_stub_images),
+        "interval",
+        hours=2,
+    )
     # Сброс разросшегося watcher_state: еженедельно в ночь после нагрузок.
     _register_job(
         "ws-cleanup",
@@ -843,7 +884,7 @@ def start_scheduler() -> None:
 
     _register_job(
         "style-review",
-        run_weekly_review_and_notify,
+        partial(_alert_guarded, "style-review", run_weekly_review_and_notify),
         "cron",
         day_of_week="sun",
         hour=18,
@@ -852,7 +893,7 @@ def start_scheduler() -> None:
     # Еженедельный отчёт стаи: воскресенье 20:00 UTC
     _register_job(
         "weekly-report",
-        _weekly_report_job,
+        partial(_alert_guarded, "weekly-report", _weekly_report_job),
         "cron",
         day_of_week="sun",
         hour=20,
@@ -861,7 +902,7 @@ def start_scheduler() -> None:
     # GEPA: еженедельная эволюция промпт-генов: воскресенье 21:00 UTC
     _register_job(
         "gepa-evolution",
-        _gepa_evolution_job,
+        partial(_alert_guarded, "gepa-evolution", _gepa_evolution_job),
         "cron",
         day_of_week="sun",
         hour=21,

@@ -89,6 +89,52 @@ async def trail_stats(session: AsyncSession, player_id: int) -> dict | None:
     }
 
 
+async def trail_stats_batch(session: AsyncSession, player_ids: list[int]) -> dict[int, dict]:
+    """Оси Следа сразу для пачки игроков: один запрос вместо N+1.
+
+    Возвращает {player_id: stats} — только для тех, чей След уже проявился
+    (MIN_VOTES закрытых голосов). Голосов меньше порога — игрока нет в словаре.
+    """
+    ids = [pid for pid in set(player_ids) if pid]
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Vote.player_id, Vote.card_position, Card.tag, Round.winner_card)
+            .join(Round, Round.id == Vote.round_id)
+            .join(Card, (Card.round_id == Vote.round_id) & (Card.position == Vote.card_position))
+            .where(
+                Vote.player_id.in_(ids),
+                Round.status == RoundStatus.CLOSED,
+                Round.winner_card.is_not(None),
+            )
+        )
+    ).all()
+    bucket: dict[int, list[tuple[int, str, int]]] = {pid: [] for pid in ids}
+    for pid, position, tag, winner in rows:
+        bucket.setdefault(pid, []).append((position, tag, winner))
+    out: dict[int, dict] = {}
+    for pid, group in bucket.items():
+        total = len(group)
+        if total < MIN_VOTES:
+            continue
+        with_winner = sum(1 for position, _tag, winner in group if position == winner)
+        care = sum(1 for _position, tag, _winner in group if tag == "care")
+        cunning = sum(1 for _position, tag, _winner in group if tag == "cunning")
+        order = (with_winner / total) * 2 - 1
+        denom = max(1, care + cunning)
+        moral = (care - cunning) / denom
+        out[pid] = {
+            "order": order,
+            "moral": moral,
+            "total": total,
+            "conformity": with_winner / total,
+            "heart_share": care / total,
+            "fang_share": cunning / total,
+        }
+    return out
+
+
 # Тональная окраска клетки: как След пахнет в личных текстах (эхо, нюх).
 TRAIL_TINTS: dict[tuple[int, int], str] = {
     (1, 1): "Хор ведёт — и ты идёшь в первых рядах.",

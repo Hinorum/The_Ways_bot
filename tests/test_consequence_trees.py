@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.consequence_trees import (
     CONSEQUENCE_TREES,
     check_tree_trigger,
@@ -72,7 +70,12 @@ def test_format_empty_branches():
 def test_format_active_branches():
     from unittest.mock import MagicMock
 
-    branch = MagicMock(branch_key="foreign_pack_debt", current_stage=0)
+    branch = MagicMock(
+        branch_key="foreign_pack_debt",
+        current_stage=0,
+        stage_text=None,
+        choices_json="",
+    )
     result = format_active_branches([branch])
     assert "АКТИВНЫЕ ПОСЛЕДСТВИЯ:" in result
     assert "Чужая стая" in result

@@ -37,6 +37,7 @@ from app.models import (
     WinRule,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
+from app.async_utils import spawn
 from app.card_payload import _assemble_cards, _card_payload, _world_block_text
 from app.narrative.canon import _closing_hook, load_canon
 from app.season import season_key
@@ -456,7 +457,7 @@ async def _plan_and_render(
             },
             season=ctx.key,
         )
-        char_task = asyncio.create_task(generate_ai_character(session, char_ctx, _chat_completion))
+        char_task = spawn(generate_ai_character(session, char_ctx, _chat_completion), "ai_character")
     except Exception as e:
         logger.debug("AIWorldEngine: подготовка контекста персонажа не удалась: %s", e)
 

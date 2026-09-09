@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import ton_pay
 from app.config import settings
 from app.db import SessionLocal
-from app.leaderboard import MARKER_KEY, previous_month_key, settle_month_if_due
+from app.leaderboard import MARKER_KEY, MONTH_READY_KEY, previous_month_key, settle_month_if_due
 from app.payments import parse_revote_memo
 from app.models import (
     LeaderboardPot,
@@ -515,6 +515,7 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
         pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(1))
         month_key = pot.month
         session.add(pot)
+        session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
         await session.commit()
         try:
             assert await settle_month_if_due(bot=None) is True
@@ -589,6 +590,7 @@ async def test_monthly_pot_pays_top_k_by_weights(monkeypatch: pytest.MonkeyPatch
         pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=1000)
         month_key = pot.month
         session.add(pot)
+        session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
         await session.commit()
         try:
             assert await settle_month_if_due(bot=None) is True
@@ -818,6 +820,7 @@ async def test_monthly_pot_gram_tiebreak_at_third_place(monkeypatch: pytest.Monk
         pot = LeaderboardPot(month=prev_month.strftime("%Y-%m"), nanotons=to_nano(1))
         month_key = pot.month
         session.add(pot)
+        session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
         await session.commit()
         try:
             assert await settle_month_if_due(bot=None) is True
@@ -892,6 +895,7 @@ async def test_monthly_pot_ignores_already_settled_months(
         pot = LeaderboardPot(month=prev_first.strftime("%Y-%m"), nanotons=to_nano(1))
         month_key = pot.month
         session.add(pot)
+        session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
         await session.commit()
         try:
             assert await settle_month_if_due(bot=None) is True

@@ -14,8 +14,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.relations import _TONES
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ── Маппинг русских тонов → английские mood-ключи ──
@@ -303,6 +307,35 @@ async def load_motive_from_db(
 
     thought_pool = json.loads(row.thought_pool_json) if row.thought_pool_json else None
     return row.motive_text, thought_pool
+
+
+async def load_motives_from_db(
+    session: "AsyncSession",
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], tuple[str | None, list[str] | None]]:
+    """Пакетная загрузка мотивов для списка (npc_key, mood) — один запрос.
+
+    Заменяет N+1 (по строке на NPC в generate_all_npc_cogs) одним IN-запросом.
+    Возвращает {pair: (motive_text, thought_pool)} — пары без записи получит
+    (None, None).
+    """
+    from sqlalchemy import select as sa_select, tuple_
+    from app.models import NPCMotive
+
+    unique_pairs = list(dict.fromkeys(pairs))
+    if not unique_pairs:
+        return {}
+    q = sa_select(NPCMotive).where(
+        tuple_(NPCMotive.npc_key, NPCMotive.mood).in_(unique_pairs)
+    )
+    result = await session.execute(q)
+    out: dict[tuple[str, str], tuple[str | None, list[str] | None]] = {
+        pair: (None, None) for pair in unique_pairs
+    }
+    for row in result.scalars().all():
+        thought_pool = json.loads(row.thought_pool_json) if row.thought_pool_json else None
+        out[(row.npc_key, row.mood)] = (row.motive_text, thought_pool)
+    return out
 
 
 async def seed_npc_motives(session: "AsyncSession") -> int:
@@ -617,18 +650,18 @@ async def generate_all_npc_cogs(
     """
     from app.npc_cog import _TONE_TO_MOOD, _TONES, _DEFAULT_MOOD
 
-    cogs = []
+    # Пакетная загрузка мотивов: все (npc_key, mood) за один IN-запрос вместо N+1.
+    pairs = []
     for name, sentiment in relations.items():
-        # Определяем mood для загрузки из БД
         tone_data = _TONES.get(sentiment, ("neutral", "безразличен"))
         raw_tone = tone_data[0] if isinstance(tone_data, tuple) else str(tone_data)
         mood = _TONE_TO_MOOD.get(raw_tone, _DEFAULT_MOOD)
+        pairs.append((name, mood))
+    loaded = await load_motives_from_db(session, pairs) if session else {}
 
-        # Загружаем из БД если есть сессия
-        motive_override = None
-        thought_pool_override = None
-        if session:
-            motive_override, thought_pool_override = await load_motive_from_db(session, name, mood)
+    cogs = []
+    for (name, mood), sentiment in zip(pairs, relations.values()):
+        motive_override, thought_pool_override = loaded.get((name, mood), (None, None))
 
         cog = generate_npc_cog(
             name=name,

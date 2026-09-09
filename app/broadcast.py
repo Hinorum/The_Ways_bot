@@ -835,9 +835,7 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
             )
         ).all()
         # Окраска эха: призвание сильнее, иначе — клетка Следа.
-        from app.callings import echo_tail
         from app.models import Player as _Player
-        from app.trail import trail_stats, trail_tint_line
 
         loser_ids = [pid for pid, pos in rows if pos != winner_pos]
         tail_map: dict[int, str] = {}
@@ -847,27 +845,34 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
                     select(_Player.id, _Player.calling).where(_Player.id.in_(loser_ids))
                 )
             ).all()
-            for pid, calling in calling_rows:
-                # AI-генерация хвоста эхо с фолбэком к статичному
-                try:
-                    from app.callings import generate_echo_tail_ai
-                    tail = await generate_echo_tail_ai(calling)
-                except Exception:
-                    tail = None
-                if tail is None:
-                    tail = echo_tail(calling)
-                if tail:
+            # AI-генерация хвостов эха параллельно (глобальный LLM-семафор
+            # держит поток провайдера); без сети — статичные эхо по призыву.
+            from app.callings import echo_tail as _echo_fallback
+            from app.callings import generate_echo_tail_ai as _echo_ai
+
+            tails = await asyncio.gather(
+                *(_echo_ai(calling) for _pid, calling in calling_rows),
+                return_exceptions=True,
+            )
+            for (pid, calling), tail in zip(calling_rows, tails):
+                if isinstance(tail, str) and tail:
                     tail_map[pid] = tail
-            # Без призвания окраску даёт След (если уже проявился).
-            for pid in loser_ids:
-                if pid in tail_map:
-                    continue
-                try:
-                    tint = trail_tint_line(await trail_stats(session, pid))
-                except Exception:
-                    tint = None
-                if tint:
-                    tail_map[pid] = tint
+                else:
+                    fallback = _echo_fallback(calling)
+                    if fallback:
+                        tail_map[pid] = fallback
+            # Без призвания окраску даёт След (если уже проявился): батч-запрос.
+            unmarked = [pid for pid in loser_ids if pid not in tail_map]
+            try:
+                from app.trail import trail_stats_batch, trail_tint_line
+
+                stats_map = await trail_stats_batch(session, unmarked)
+                for pid in unmarked:
+                    tint = trail_tint_line(stats_map.get(pid))
+                    if tint:
+                        tail_map[pid] = tint
+            except Exception:
+                logger.warning("След-окраска эха дня %s не собрана", getattr(finished, "day_index", "?"), exc_info=True)
     losers = [(pid, pos) for pid, pos in rows if pos != winner_pos]
     semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
 

@@ -236,3 +236,31 @@ async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypat
     assert "цифр" in user and "победителя" in user
     assert "намёков" in user
 
+
+async def test_alert_guarded_notifies_admin_and_swallows(monkeypatch) -> None:
+    """П.13: сломавшаяся фоновая задача бьёт админа в лоб, но не роняет
+    планировщик — исключение не пробрасывается наружу."""
+    from app import scheduler as scheduler_mod
+
+    notified: list[str] = []
+
+    async def fake_notify_admins(bot, text):
+        notified.append(text)
+
+    async def boom():
+        raise RuntimeError("backup-сломался")
+
+    async def fine():
+        return 42
+
+    monkeypatch.setattr(scheduler_mod, "_bot", object())
+    monkeypatch.setattr(scheduler_mod.settings, "admin_ids", "1,2")
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify_admins)
+
+    await scheduler_mod._alert_guarded("db-backup", boom)
+    assert notified and "db-backup" in notified[0] and "backup-сломался" in notified[0]
+
+    notified.clear()
+    assert await scheduler_mod._alert_guarded("weekly-report", fine) is None
+    assert not notified  # успешная задача молчит
+

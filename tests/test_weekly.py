@@ -504,6 +504,7 @@ async def test_settle_week_excludes_player_without_stake(monkeypatch: pytest.Mon
             if offset == 0:
                 _set_stake(session, round_row, pid_staked)
         session.add(WeeklyPot(week=previous_week_key(), nanotons=to_nano(10)))
+        await _set_week_ready(session, previous_week_key())
         await session.commit()
         try:
             assert await settle_week_if_due(bot=None) is True
@@ -561,6 +562,7 @@ async def test_settle_week_refunded_stake_counts_rejected_does_not(
                 _set_stake(session, round_row, pid_refunded, status="refunded")
                 _set_stake(session, round_row, pid_rejected, status="rejected")
         session.add(WeeklyPot(week=previous_week_key(), nanotons=to_nano(10)))
+        await _set_week_ready(session, previous_week_key())
         await session.commit()
         try:
             assert await settle_week_if_due(bot=None) is True
@@ -674,6 +676,7 @@ async def test_settle_week_claim_breaks_tie(monkeypatch: pytest.MonkeyPatch) -> 
             )
         )
         session.add(WeeklyPot(week=week_key, nanotons=to_nano(10)))
+        await _set_week_ready(session, week_key)
         await session.commit()
         try:
             assert await settle_week_if_due(bot=None) is True
@@ -740,6 +743,7 @@ async def test_settle_week_claimer_beats_silent_rival(monkeypatch: pytest.Monkey
             )
         )
         session.add(WeeklyPot(week=week_key, nanotons=to_nano(10)))
+        await _set_week_ready(session, week_key)
         await session.commit()
         try:
             assert await settle_week_if_due(bot=None) is True

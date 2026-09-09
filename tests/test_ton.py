@@ -15,8 +15,8 @@ from app.ton_utils import from_nano, friendly_address, is_valid_ton_address, nor
 from app.weeks import iso_week_key
 
 
-USER_FRIENDLY = "EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnW"
-RAW = "0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba79823f1999"
+USER_FRIENDLY = "EQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPrHF"
+RAW = "0:ca6e321c7cce9ecedf0a8ca2492ec8592494aa5fb5ce0387dff96ef6af982a3e"
 
 
 def test_address_validation() -> None:
@@ -33,7 +33,7 @@ def test_normalize_address_matches_friendly_and_raw() -> None:
 
 def test_friendly_address_roundtrip() -> None:
     """friendly_address обращает normalize_address: CRC и теги сходятся."""
-    for source in (USER_FRIENDLY, "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnV", RAW):
+    for source in (USER_FRIENDLY, "UQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPuwA", RAW):
         raw = normalize_address(source)
         shown = friendly_address(raw, testnet=False)
         assert is_valid_ton_address(shown)

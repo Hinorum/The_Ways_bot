@@ -71,6 +71,27 @@ async def _clean_global_db_per_module():
     yield
 
 
+@pytest.fixture(autouse=True)
+async def _clean_watcher_state_between_tests():
+    """watcher_state не должен перетекать между тестами одного модуля.
+
+    Флаги готовности (неделя/месяц), маркеры события дня («микрособытие»,
+    «тизер») и точки-якоря живут в глобальной БД с уникальным ключом —
+    один тест успевает освободить свой ключ только в finally, другой
+    в том же модуле налетает на IntegrityError. Чистим таблицу в начале
+    каждого теста (дёшево: таблица мелкая).
+    """
+    from sqlalchemy import delete
+
+    from app.db import SessionLocal
+    from app.models import WatcherState
+
+    async with SessionLocal() as db:
+        await db.execute(delete(WatcherState))
+        await db.commit()
+    yield
+
+
 @pytest.fixture
 async def session(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")

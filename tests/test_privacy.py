@@ -81,7 +81,7 @@ async def test_wallet_view_alert() -> None:
 
 
 async def test_wallet_bind_in_group_hides_details() -> None:
-    address = "EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bp5gj8ZmdnW"
+    address = "EQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPrHF"
     message = make_message("supergroup", 700_005, text=f"/wallet {address}")
     await cmd_wallet(message)
     text = message.answer.call_args.args[0]
@@ -91,7 +91,7 @@ async def test_wallet_bind_in_group_hides_details() -> None:
 async def test_wallet_bind_in_private_confirms() -> None:
     # Адрес с другим raw: после нормализации UQ/EQ одной пары ключей дают
     # одинаковый canonical-вид и UNIQUE(players.wallet_address) честно ругается.
-    address = "UQF7x2QmVbNjKdS8pLwAyHrTcEuIoPzXvBnMkJhGfdSwqLmZ"
+    address = "UQDd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3USz"
     message = make_message("private", 700_006, text=f"/wallet {address}")
     await cmd_wallet(message)
     assert "привязан" in message.answer.call_args.args[0]
