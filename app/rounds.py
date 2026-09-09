@@ -367,6 +367,59 @@ async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
         logger.exception("DIAG: %s FAILED", label)
         raise
 
+
+def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
+    """Карты дня из единой генерации главы (chapter["cards"]), достроенные
+    офлайн-пулом при нехватке. Возвращает payload-словари под Card-модель."""
+    cards = []
+    for card in chapter.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        title = str(card.get("title", "")).strip()
+        description = str(card.get("description", "")).strip()
+        if title and description:
+            cards.append(card)
+    if len(cards) < 3:
+        from app.lore import _cards
+        rng = secrets.SystemRandom()
+        used = {str(c["title"]).strip().lower() for c in cards}
+        for pool_card in _cards(rng, day_index):
+            if len(cards) >= 3:
+                break
+            key = str(pool_card.title).strip().lower()
+            if key in used:
+                continue
+            cards.append(
+                {
+                    "title": pool_card.title,
+                    "description": pool_card.description,
+                    "consequence": pool_card.consequence,
+                    "tag": pool_card.tag,
+                }
+            )
+            used.add(key)
+    out = []
+    for position, card in enumerate(cards[:3]):
+        out.append(
+            {
+                "position": position,
+                "title": card["title"],
+                "description": card["description"],
+                "consequence": str(card.get("consequence", "")),
+                "tag": card.get("tag", "care"),
+                "image_path": "",
+                "food_cost": int(card.get("food_cost", 0) or 0),
+                "water_cost": int(card.get("water_cost", 0) or 0),
+                "health_risk": int(card.get("health_risk", 0) or 0),
+                "trust_change": int(card.get("trust_change", 0) or 0),
+                "emotional_consequence": str(card.get("emotional_consequence", "")),
+                "npc_reactions_json": json.dumps(
+                    card.get("npc_reactions") or [], ensure_ascii=False
+                ),
+            }
+        )
+    return out
+
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -412,6 +465,7 @@ async def _plan_and_render(
         characters_block=ctx.characters_block,
         npc_profiles=ctx.npc_profiles,
         is_expanded=ctx.day_index == 1 or ctx.twist,
+        with_choices=True,
     )
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
@@ -553,89 +607,31 @@ async def _plan_and_render(
             height=720,
         )
     cards_payload = []
-    # AI World Engine: генерируем AI-выборы вместо фиксированных карт
+    # Карты рождаются В ТОЙ ЖЕ генерации, что и глава (один контекст вместо
+    # двух разных: раньше AI World Engine генерировал выборы отдельным
+    # вызовом по своему слепку мира + крючку главы). Если модель карт не
+    # вернула или вернула меньше трёх — офлайн-пул лора достраивает.
     try:
-        from app.world_engine import generate_ai_choices
-        from app.story import _chat_completion
-
-        ai_choices = None
-        if world_ctx:
-            chapter_title = chapter.get("title", "")
-            chapter_hook = _closing_hook(chapter.get("text", ""), limit=260)
-            chapter_ctx = f"«{chapter_title}».\nКрючок главы: {chapter_hook}"
-            ai_choices = await generate_ai_choices(
-                session, world_ctx, _chat_completion, chapter_ctx=chapter_ctx
-            )
-
-        if ai_choices and len(ai_choices) >= 3:
-            # Используем AI-выборы
-            for position, choice in enumerate(ai_choices[:3]):
-                cards_payload.append(
-                    {
-                        "position": position,
-                        "title": choice.title,
-                        "description": choice.description,
-                        "consequence": choice.consequence,
-                        "tag": choice.tag,
-                        "image_path": "",
-                        "food_cost": choice.food_cost,
-                        "water_cost": choice.water_cost,
-                        "health_risk": choice.health_risk,
-                        "trust_change": choice.trust_change,
-                        "emotional_consequence": choice.emotional_consequence,
-                        "npc_reactions_json": json.dumps(choice.npc_reactions, ensure_ascii=False),
-                    }
-                )
-            logger.info("AIWorldEngine: сгенерированы AI-выборы для дня %d", day_index)
-        else:
-            # Фолбэк на карты из главы (если AI вернул карточки) или офлайн-пул
-            chapter_cards = chapter.get("cards") or []
-            if not chapter_cards:
-                # AI не вернул карточки — генерируем из офлайн-пула
-                from app.lore import _cards
-                import secrets as _secrets
-                rng = _secrets.SystemRandom()
-                offline_cards = _cards(rng, day_index)
-                chapter_cards = [
-                    {"title": c.title, "description": c.description, "consequence": c.consequence, "tag": c.tag}
-                    for c in offline_cards
-                ]
-            for position, card in enumerate(chapter_cards[:3]):
-                cards_payload.append(
-                    {
-                        "position": position,
-                        "title": card["title"],
-                        "description": card["description"],
-                        "consequence": card["consequence"],
-                        "tag": card.get("tag", "care"),
-                        "image_path": "",
-                    }
-                )
-            logger.info("AIWorldEngine: фолбэк на карты для дня %d", day_index)
+        cards_payload = _assemble_cards(chapter, day_index)
+        logger.info(
+            "AIWorldEngine: карты дня %d собраны (%d из главы)",
+            day_index, len(chapter.get("cards") or []),
+        )
     except Exception as e:
-        logger.warning("AIWorldEngine: ошибка генерации AI-выборов: %s", e)
-        # Фолбэк на карты из главы или офлайн-пул
-        chapter_cards = chapter.get("cards") or []
-        if not chapter_cards:
-            from app.lore import _cards
-            import secrets as _secrets
-            rng = _secrets.SystemRandom()
-            offline_cards = _cards(rng, day_index)
-            chapter_cards = [
-                {"title": c.title, "description": c.description, "consequence": c.consequence, "tag": c.tag}
-                for c in offline_cards
-            ]
-        for position, card in enumerate(chapter_cards[:3]):
-            cards_payload.append(
-                {
-                    "position": position,
-                    "title": card["title"],
-                    "description": card["description"],
-                    "consequence": card["consequence"],
-                    "tag": card.get("tag", "care"),
-                    "image_path": "",
-                }
-            )
+        logger.warning("AIWorldEngine: сбор карт не удался: %s", e)
+        from app.lore import _cards
+        rng = secrets.SystemRandom()
+        cards_payload = [
+            {
+                "position": position,
+                "title": card.title,
+                "description": card.description,
+                "consequence": card.consequence,
+                "tag": card.tag,
+                "image_path": "",
+            }
+            for position, card in enumerate(_cards(rng, day_index)[:3])
+        ]
     return {
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,

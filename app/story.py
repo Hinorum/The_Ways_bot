@@ -1138,6 +1138,7 @@ async def generate_chapter(
     needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
+    with_choices: bool = False,
 ) -> dict:
     authored = compose_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
@@ -1164,6 +1165,7 @@ async def generate_chapter(
         needs_block=needs_block,
         characters_block=characters_block,
         npc_profiles=npc_profiles,
+        with_choices=with_choices,
     )
     # Типографика применяется к обоим путям: нейро-текст приходит с
     # ASCII-кавычками и дефисами, офлайн-сборка проходит для гарантии.
@@ -1305,16 +1307,70 @@ def _chapter_text_fields(data: dict) -> list[str]:
     return parts
 
 
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_cards(cards: list) -> list[dict]:
+    """Карты выбора из единой генерации главы → схема Card.
+
+    Отбрасывает повреждённые записи (пустые title/description), приводит tag
+    к белому списку, числа — к int, реакции NPC — к списку из ≤3 объектов.
+    """
+    out: list[dict] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        title = str(card.get("title", "")).strip()
+        description = str(card.get("description", "")).strip()
+        if not title or not description:
+            continue
+        tag = card.get("tag")
+        tag = tag if tag in {"risk", "care", "cunning"} else "care"
+        npc_reactions = []
+        raw_reactions = card.get("npc_reactions") or []
+        if isinstance(raw_reactions, list):
+            for reaction in raw_reactions[:3]:
+                if isinstance(reaction, dict) and reaction.get("name") and reaction.get("reaction"):
+                    npc_reactions.append(
+                        {
+                            "name": str(reaction["name"])[:50],
+                            "reaction": str(reaction["reaction"])[:200],
+                        }
+                    )
+        characters = card.get("characters_involved")
+        out.append(
+            {
+                "title": title[:120],
+                "description": description[:500],
+                "consequence": str(card.get("consequence", ""))[:500],
+                "tag": tag,
+                "characters_involved": characters if isinstance(characters, list) else [],
+                "location": str(card["location"])[:80] if card.get("location") else None,
+                "food_cost": _coerce_int(card.get("food_cost")),
+                "water_cost": _coerce_int(card.get("water_cost")),
+                "health_risk": _coerce_int(card.get("health_risk")),
+                "trust_change": _coerce_int(card.get("trust_change")),
+                "emotional_consequence": str(card.get("emotional_consequence", ""))[:500],
+                "npc_reactions": npc_reactions,
+            }
+        )
+    return out
+
+
 def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     content = payload["choices"][0]["message"]["content"]
     data = _extract_json(content)
-    # Карточки генерируются AI World Engine, не здесь
+    # Карты приходят в том же JSON, что и глава (единый конвейер: один
+    # контекст вместо двух разных). Нормализуем под схему Card; если модель
+    # карт не вернула — конвейер достроит офлайн-пулом.
     cards = data.get("cards") or []
-    if len(cards) > 0:
-        # Если AI всё же вернул карточки — используем их как фолбэк
-        for card in cards:
-            tag = card.get("tag")
-            card["tag"] = tag if tag in {"risk", "care", "cunning"} else "care"
+    if cards:
+        cards = _normalize_cards(cards)
+        data["cards"] = cards
     if not text_is_clean(" ".join(_chapter_text_fields(data))):
         logger.warning("Глава дня отброшена стоп-фильтром")
         return None
@@ -1359,9 +1415,12 @@ def _build_story_prompt(
     needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
+    with_choices: bool = False,
 ) -> str:
     """Промпт главы дня. Чистая функция — покрывается тестами без сети.
     npc_profiles: AI-профили NPC из БД (опционально).
+    with_choices: карты выбора рождаются в том же JSON, что и глава
+    (единый конвейер «глава + карты одним контекстом»).
     """
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
     law_line = ""
@@ -1574,7 +1633,34 @@ def _build_story_prompt(
         '"lore_summary":"...",'
         '"cover_prompt":"english wide cinematic scene summarizing the whole day"}. '
         "Ссылайся на прошлый канон."
+        + (_CHOICES_BLOCK if with_choices else "")
     )
+
+
+_CHOICES_BLOCK = (
+    '\n\nВ ЭТОМ ЖЕ ответе сгенерируй массив "cards" — три варианта выбора '
+    "для стаи, которые РАЗВИВАЮТ события этой главы: каждый выбор — один из "
+    "возможных ответов стаи именно на крючок дня, а не абстрактная развилка.\n"
+    "Требования к картам:\n"
+    "- РОВНО 3 карты; без метакомментариев и моральных резюме;\n"
+    "- каждая — трудная дилемма «вагонетки» без очевидно правильного ответа;\n"
+    "- tag — строго одно из: risk | care | cunning;\n"
+    "- consequence — что произойдёт при выборе: последствие влияет на мир, "
+    "потребности или доверие NPC;\n"
+    "- title (2-5 слов), description (1-2 предложения), consequence "
+    "(1-2 предложения);\n"
+    '- поля: "title", "description", "consequence", "tag", '
+    '"characters_involved" (имена постоянных NPC стаи, до 2 имён), '
+    '"location" (место дня или null), "food_cost" (0-3), "water_cost" (0-3), '
+    '"health_risk" (0-5), "trust_change" (-3..3), "emotional_consequence" '
+    '(одна фраза), "npc_reactions" (до 3 объектов '
+    '{"name": имя NPC, "reaction": фраза}).\n'
+    'Формат блока: "cards": [{"title": "...", "description": "...", '
+    '"consequence": "...", "tag": "risk", "characters_involved": ["Лайнер"], '
+    '"location": "Место дня или null", "food_cost": 0, "water_cost": 0, '
+    '"health_risk": 0, "trust_change": 0, "emotional_consequence": "...", '
+    '"npc_reactions": [{"name": "Лайнер", "reaction": "..."}]}, ...]\n'
+)
 
 
 
@@ -1638,6 +1724,7 @@ async def _free_story_llm(
     needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
+    with_choices: bool = False,
 ) -> dict | None:
     # AI-генерация описаний шрамов (до сборки промпта)
     scar_descriptions_override = None
@@ -1668,6 +1755,7 @@ async def _free_story_llm(
         needs_block=needs_block,
         characters_block=characters_block,
         npc_profiles=npc_profiles,
+        with_choices=with_choices,
     )
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (
