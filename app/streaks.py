@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Player, Round, Vote
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -295,7 +298,7 @@ async def weekly_report(session: AsyncSession) -> str:
 
     # Собираем отчёт
     lines = [
-        f"🐺 <b>Неделя в пути</b>",
+        "🐺 <b>Неделя в пути</b>",
         f"📅 {len(rounds)} дней пройдено · 🗳 {total_votes} голосов",
         "",
         "<b>Настроение стаи:</b>",

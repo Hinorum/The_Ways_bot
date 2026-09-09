@@ -913,9 +913,7 @@ def start_scheduler() -> None:
 
 async def _vote_reminder_job() -> None:
     """Напоминание игрокам проголосовать: DM тем, кто ещё не голосовал сегодня."""
-    from app.handlers.common import bot_instance
-
-    bot = bot_instance
+    bot = _bot
     if bot is None:
         return
     try:
@@ -972,10 +970,9 @@ async def _vote_reminder_job() -> None:
 
 async def _weekly_report_job() -> None:
     """Еженедельный отчёт стаи: статистика + топ стриков."""
-    from app.handlers.common import bot_instance
     from app.streaks import weekly_report
 
-    bot = bot_instance
+    bot = _bot
     if bot is None:
         return
     try:

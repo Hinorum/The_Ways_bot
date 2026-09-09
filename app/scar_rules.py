@@ -8,12 +8,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import WorldScar
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

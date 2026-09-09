@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Card, MemoryHit, Player, Round, RoundStatus, Vote
+
+logger = logging.getLogger(__name__)
 
 # Хвосты личного эха: как призвание окрашивает проигранную тропу.
 ECHO_TAILS: dict[str, str] = {
