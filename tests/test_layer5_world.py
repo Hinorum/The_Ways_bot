@@ -17,8 +17,8 @@ import json
 from pathlib import Path
 
 from app.config import settings
+from app.card_payload import _world_block_text
 from app.models import WinRule
-from app.rounds import _world_block_text
 from app.story import (
     _build_story_prompt,
     _free_story_llm,
@@ -162,9 +162,15 @@ def test_rounds_snapshot_call_receives_llm_caller() -> None:
 
 
 def test_story_session_characters_imports_restored() -> None:
+    # Импорты подняты на уровень модуля (п.5 гигиены импортов): функция не
+    # спотыкается о NameError ни на select, ни на WorldCharacter, ни на
+    # generate_ai_character — все имена резолвятся из шапки story.py.
     src = STORY_SRC.read_text(encoding="utf-8")
+    header, _ = src.split("async def _generate_session_characters", 1)
+    assert "from sqlalchemy import select" in src
+    assert "from app.models import RULE_PHRASES, WorldCharacter" in header
+    assert "from app.world_engine import WorldContext, generate_ai_character" in header
     body = src.split("async def _generate_session_characters", 1)[1]
     end = body.find("\ndef ")
     body = body[:end] if end != -1 else body
-    assert "from sqlalchemy import select" in body
-    assert "from app.models import WorldCharacter" in body
+    assert "generate_ai_character(session, ctx, _chat_completion)" in body

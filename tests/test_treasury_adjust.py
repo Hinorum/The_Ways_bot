@@ -542,9 +542,9 @@ async def test_process_transfer_refunds_everyone_during_pause(ton_on) -> None:
                 )
             ).scalars().all()
             stakes_left = (await session.execute(select(func.count()).select_from(Stake))).scalar_one()
-        assert {p.tx_hash for p in refunds} == {tx_stranger, tx_player}
-        assert all(p.comment_override and "технические работы" in p.comment_override for p in refunds)
-        assert all("paused:refund_queued" in n for n in notes)
+            assert {p.tx_hash for p in refunds} == {tx_stranger, tx_player}
+            assert all(p.comment_override and "идут технические работы" in p.comment_override for p in refunds)
+            assert all("in:paused" in n for n in notes)
         assert stakes_left == 0  # ставки при паузе не создаются
     finally:
         await _wipe_pause()

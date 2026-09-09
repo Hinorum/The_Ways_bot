@@ -132,7 +132,7 @@ def test_parse_chapter_normalizes_cards_inline() -> None:
 
 
 def test_assemble_cards_uses_chapter_then_fills_offline() -> None:
-    from app.rounds import _assemble_cards
+    from app.card_payload import _assemble_cards
 
     chapter = {
         "cards": [
@@ -164,7 +164,7 @@ def test_assemble_cards_uses_chapter_then_fills_offline() -> None:
 
 
 def test_assemble_cards_empty_chapter_uses_offline_pool() -> None:
-    from app.rounds import _assemble_cards
+    from app.card_payload import _assemble_cards
 
     cards = _assemble_cards({}, 43)
     assert len(cards) == 3

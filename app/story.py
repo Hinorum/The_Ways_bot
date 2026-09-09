@@ -17,15 +17,21 @@ import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from app.config import settings
+from app.cloud_storage import is_configured, upload_file
 from app.echoes import echo_prompt_lines
 from app.lore import compose_chapter
+from app.models import RULE_PHRASES, WorldCharacter
 from app.narrative_ai import (
+    get_active_gene,
     kolmogorov_ratio,
     should_retry_entropy,
     dynamic_temperature,
     sa_optimize_params,
     GenerationParams,
 )
+from app.npc_cog import build_npc_micro_prompts, build_voice_cards_from_profiles, load_all_npc_profiles
+from app.scar_rules import generate_scar_description_ai
+from app.world_engine import WorldContext, generate_ai_character
 
 
 logger = logging.getLogger(__name__)
@@ -171,7 +177,6 @@ async def _load_npc_profiles_for_prompt(session) -> dict[str, dict]:
     if _npc_profiles_cache is not None:
         return _npc_profiles_cache
     try:
-        from app.npc_cog import load_all_npc_profiles
         _npc_profiles_cache = await load_all_npc_profiles(session)
     except Exception:
         _npc_profiles_cache = {}
@@ -186,7 +191,6 @@ def _voice_cards_for(text: str, db_profiles: dict[str, dict] | None = None) -> s
     low = (text or "").lower()
     # Строим voice cards из БД если есть
     if db_profiles:
-        from app.npc_cog import build_voice_cards_from_profiles
         voice_cards = build_voice_cards_from_profiles(db_profiles)
     else:
         voice_cards = _VOICE_CARDS
@@ -386,7 +390,6 @@ NPC_NAMES = {
 async def _build_dynamic_character_block(session) -> str:
     """Строит блок описаний персонажей из БД (AI-сгенерированных)."""
     from sqlalchemy import select
-    from app.models import WorldCharacter
 
     try:
         q = select(WorldCharacter).where(WorldCharacter.is_alive == True).limit(10)
@@ -420,6 +423,27 @@ async def _build_dynamic_character_block(session) -> str:
         return ""
 
 
+async def persist_session_character(session, new_char, day_index: int) -> str:
+    """Сохраняет сгенерированного персонажа и возвращает строку анонса.
+
+    Отделена от генерации, чтобы оркестрация дня могла звать LLM-часть
+    параллельно с главой, а запись в БД делать на основном таске.
+    """
+    db_char = WorldCharacter(
+        name=new_char.name,
+        role=new_char.role,
+        personality=new_char.personality,
+        flaw=new_char.flaw,
+        virtue=new_char.virtue,
+        moral_alignment=new_char.moral_alignment,
+        mood=new_char.mood,
+        created_day=day_index,
+    )
+    session.add(db_char)
+    await session.flush()
+    return f"Новый персонаж: {new_char.name} — {new_char.personality[:60]}"
+
+
 async def _generate_session_characters(
     session, day_index: int, pack_needs: dict | None = None, season: str = "unknown",
 ) -> str:
@@ -428,11 +452,8 @@ async def _generate_session_characters(
     Вызывается при подготовке нового дня для создания уникальных NPC.
     pack_needs: {"hunger": int, "thirst": int, "health": int} или None для дефолта.
     """
-    from app.world_engine import generate_ai_character, WorldContext
-    from sqlalchemy import select
-    from app.models import WorldCharacter
-
     try:
+        from sqlalchemy import select
         # Собираем контекст
         q = select(WorldCharacter).where(WorldCharacter.is_alive == True)
         result = await session.execute(q)
@@ -460,29 +481,12 @@ async def _generate_session_characters(
         )
 
         # Генерируем нового персонажа
-        from app.story import _chat_completion
         new_char = await generate_ai_character(session, ctx, _chat_completion)
-
         if new_char:
-            # Сохраняем в БД
-            from app.models import WorldCharacter as WC
-            db_char = WC(
-                name=new_char.name,
-                role=new_char.role,
-                personality=new_char.personality,
-                flaw=new_char.flaw,
-                virtue=new_char.virtue,
-                moral_alignment=new_char.moral_alignment,
-                mood=new_char.mood,
-                created_day=day_index,
-            )
-            session.add(db_char)
-            await session.flush()
-            return f"Новый персонаж: {new_char.name} — {new_char.personality[:60]}"
+            return await persist_session_character(session, new_char, day_index)
 
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug("Генерация персонажей не удалась: %s", e)
+        logger.debug("Генерация персонажей не удалась: %s", e)
 
     return ""
 
@@ -582,7 +586,6 @@ def _save_image(image: Image.Image, path: Path) -> None:
 
 async def _upload_cloud(path: Path) -> str | None:
     """Upload a local image to cloud storage, return public URL or None."""
-    from app.cloud_storage import is_configured, upload_file
     if not is_configured():
         return None
     name = path.stem  # e.g. "day42_cover"
@@ -1050,6 +1053,33 @@ async def fetch_free_image(
     return False
 
 
+def _images_similar(a: Path, b: Path, threshold: float = 0.9) -> bool:
+    """Perceptual-сравнение обложек: 8×8 grayscale aHash.
+
+    Дубликат вчерашнего кадра (та же сцена, кривой seed) уходит в ретрай,
+    а не притворяется новым днём. >90% совпавших битов — считаем дубликатом.
+    Ошибки декодирования глотаем: неясность не должна ронять лестницу кадра.
+    """
+    try:
+        from PIL import Image
+
+        def ahash(path: Path) -> int:
+            img = Image.open(path).convert("L").resize((8, 8))
+            px = list(img.getdata())
+            mean = sum(px) / len(px)
+            bits = 0
+            for i, v in enumerate(px):
+                if v >= mean:
+                    bits |= 1 << i
+            return bits
+
+        ha, hb = ahash(a), ahash(b)
+        diff = bin(ha ^ hb).count("1")
+        return (1.0 - diff / 64.0) >= threshold
+    except Exception:
+        return False
+
+
 async def fetch_day_image(
     prompt: str,
     short_prompt: str,
@@ -1433,8 +1463,6 @@ def _build_story_prompt(
     history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
     law_line = ""
     if win_rule is not None:
-        from app.models import RULE_PHRASES
-
         if sealed:
             law_line = (
                 "ЗАКОН ДНЯ ЗАПЕЧАТАН: игроки его не знают до итогов, им показан "
@@ -1540,7 +1568,6 @@ def _build_story_prompt(
     _gepa_block = ""
     _gepa_active = False
     try:
-        from app.narrative_ai import get_active_gene
         _gene = get_active_gene()
         if _gene is not None:
             _gepa_block = _gene.to_prompt_block() + "\n"
@@ -1748,7 +1775,6 @@ async def _free_story_llm(
     scar_descriptions_override = None
     if active_scar_keys:
         try:
-            from app.scar_rules import generate_scar_description_ai
             scar_descriptions_override = {}
             for k in active_scar_keys:
                 ai_desc = await generate_scar_description_ai(k, "care", day_index)
@@ -1785,7 +1811,6 @@ async def _free_story_llm(
     _micro_prompts = None
     if npc_profiles:
         try:
-            from app.npc_cog import build_npc_micro_prompts
             _micro_prompts = build_npc_micro_prompts(npc_profiles)
         except Exception:
             logger.warning("Микро-промпты NPC не собраны", exc_info=True)

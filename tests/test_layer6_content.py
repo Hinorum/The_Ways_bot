@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import json
 
+from app.card_payload import _assemble_cards, _card_payload
 from app.lore import _CARE_PATHS, _CUNNING_PATHS, _RISK_PATHS, card_rich_payload
-from app.rounds import _assemble_cards, _card_payload
 
 POOL = [
     (*t, "risk") for t in _RISK_PATHS

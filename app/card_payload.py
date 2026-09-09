@@ -1,0 +1,143 @@
+"""Карточный конвейер дня: payload-карты, офлайн-достройка, память мира.
+
+Вынесено из rounds.py (слой 4-6): единая нормализация любой карты под
+Card-модель, офлайн-пул тропов при нехватке карт главы и компактный
+world_block для мега-промпта. Модуль без зависимостей на rounds — живёт
+на lore, поэтому его независимо тестировать и переиспользовать.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+
+from app.lore import _cards, card_rich_payload
+
+
+def _card_payload(card: dict, position: int, day_index: int) -> dict:
+    """Payload-словарь под Card-модель.
+
+    Единая нормализация для любых карт: LLM-карты главы несут свои
+    food_cost/water_cost/health_risk/trust_change/emotional_consequence/
+    npc_reactions — явные значения (включая осознанный 0) уважаются;
+    настоящие пустоты (None/пустая строка/отсутствие) выравниваются
+    деривацией lore.card_rich_payload по архетипу и названию, так что даже
+    офлайн-троп дня платит едой/водой/риском и реагирует на NPC, а не ходит
+    «бесплатной» картой-пустышкой.
+    """
+
+    def _taken(key, fallback):
+        value = card.get(key)
+        if value is None or str(value).strip() in {"", "null"}:
+            return fallback
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    rich = card_rich_payload(
+        str(card.get("title", "")),
+        str(card.get("tag", "care")),
+        day_index,
+    )
+    npc = card.get("npc_reactions") or rich["npc_reactions"]
+    return {
+        "position": position,
+        "title": card["title"],
+        "description": card["description"],
+        "consequence": str(card.get("consequence", "")),
+        "tag": card.get("tag", "care"),
+        "image_path": "",
+        "food_cost": _taken("food_cost", rich["food_cost"]),
+        "water_cost": _taken("water_cost", rich["water_cost"]),
+        "health_risk": _taken("health_risk", rich["health_risk"]),
+        "trust_change": _taken("trust_change", rich["trust_change"]),
+        "emotional_consequence": str(
+            card.get("emotional_consequence") or rich["emotional_consequence"]
+        ),
+        "npc_reactions_json": json.dumps(npc, ensure_ascii=False),
+    }
+
+
+def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
+    """Карты дня из единой генерации главы (chapter["cards"]), достроенные
+    офлайн-пулом при нехватке. Возвращает payload-словари под Card-модель."""
+    cards = []
+    for card in chapter.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        title = str(card.get("title", "")).strip()
+        description = str(card.get("description", "")).strip()
+        if title and description:
+            cards.append(card)
+    if len(cards) < 3:
+        rng = secrets.SystemRandom()
+        used = {str(c["title"]).strip().lower() for c in cards}
+        for pool_card in _cards(rng, day_index):
+            if len(cards) >= 3:
+                break
+            key = str(pool_card.title).strip().lower()
+            if key in used:
+                continue
+            cards.append(
+                {
+                    "title": pool_card.title,
+                    "description": pool_card.description,
+                    "consequence": pool_card.consequence,
+                    "tag": pool_card.tag,
+                }
+            )
+            used.add(key)
+    return [
+        _card_payload(card, position, day_index)
+        for position, card in enumerate(cards[:3])
+    ]
+
+
+def _world_block_text(world_ctx) -> str | None:
+    """Компактная память живого мира для мега-промпта главы.
+
+    Мир приходит в генерацию ДО написания главы (один вызов вместо
+    отдельной AI-локации, патчившей текст задним числом). None — мир пуст.
+    Общий бюджет ~600 символов и сортировка по важности: растущий лабиринт
+    не раздувает контекст, а в промпт попадают самые посещаемые места и
+    самые доверяющие NPC.
+    """
+    if world_ctx is None:
+        return None
+    budget = 600
+    parts = []
+    mood = getattr(world_ctx, "world_mood", None)
+    if mood:
+        parts.append(f"- настроение лабиринта: {mood}")
+    threads = getattr(world_ctx, "open_threads", None) or []
+    if threads:
+        parts.append("- незакрытые сюжетные линии: " + "; ".join(str(t)[:60] for t in threads[:3]))
+    locs = getattr(world_ctx, "active_locations", None) or []
+    if locs:
+        locs = sorted(locs, key=lambda loc: loc.get("times_visited", 0), reverse=True)
+        names = [
+            f"{str(loc['name'])[:40]} ({loc.get('times_visited', 0)} посещ.)"
+            for loc in locs[:5]
+        ]
+        parts.append("- известные стае места: " + ", ".join(names))
+    chars = getattr(world_ctx, "active_characters", None) or []
+    if chars:
+        chars = sorted(chars, key=lambda char: char.get("trust_stay", 5), reverse=True)
+        cnames = [
+            f"{str(char['name'])[:40]} (доверие {char.get('trust_stay', 5)}/10)"
+            for char in chars[:5]
+        ]
+        parts.append("- долгожители лабиринта: " + ", ".join(cnames))
+    if not parts:
+        return None
+    block = "\n".join(parts)
+    if len(block) <= budget:
+        return block
+    kept, total = [], 0
+    for part in parts:
+        if total + len(part) + 1 > budget:
+            break
+        kept.append(part)
+        total += len(part) + 1
+    return "\n".join(kept)

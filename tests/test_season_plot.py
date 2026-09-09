@@ -235,7 +235,7 @@ def test_status_text_hides_law_on_sealed_day() -> None:
         for i in range(3)
     ]
     text = status_text(round_row)
-    assert "запечатан архивом до итогов" in text and "deadbeef00…" in text
+    assert "запечатано до итогов" in text and "deadbeef00…" in text
     assert "собравшая меньше всех голосов" not in text
 
 
@@ -251,12 +251,16 @@ def test_results_reveal_sealed_law() -> None:
         tie_note=None,
         sealed=True,
         cards=[
-            SimpleNamespace(position=i, title=f"P{i}", consequence=f"с{i}")
+            SimpleNamespace(
+                position=i, title=f"P{i}", consequence=f"с{i}",
+                food_cost=0, water_cost=0, health_risk=0, trust_change=0,
+                emotional_consequence=None, npc_reactions_json="",
+            )
             for i in range(3)
         ],
     )
     text = format_results(round_row)
-    assert "Запечатанный закон" in text
+    assert "Запечатанное правило" in text
     assert "средним числом голосов" in text
 
 
@@ -318,6 +322,6 @@ async def test_chronicle_lists_recent_days_with_marks(session: AsyncSession) -> 
     await session.commit()
 
     lines = await _chronicle(session, player.id)
-    assert lines[0] == "Д70102 · Путь-2 🏆"
-    assert lines[1] == "Д70101 · Путь-1 ·"
-    assert lines[2] == "Д70100 · Путь-0 🏆"
+    assert lines[0] == "  💚 Д70102 · «Путь-2» 🏆"
+    assert lines[1] == "  💚 Д70101 · «Путь-1» ❌"
+    assert lines[2] == "  💚 Д70100 · «Путь-0» 🏆"

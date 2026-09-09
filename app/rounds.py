@@ -37,7 +37,7 @@ from app.models import (
     WinRule,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
-from app.lore import card_rich_payload
+from app.card_payload import _assemble_cards, _card_payload, _world_block_text
 from app.narrative.canon import _closing_hook, load_canon
 from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_cover
@@ -369,113 +369,6 @@ async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
         raise
 
 
-def _card_payload(card: dict, position: int, day_index: int) -> dict:
-    """Payload-словарь под Card-модель.
-
-    Единая нормализация для любых карт: LLM-карты главы несут свои
-    food_cost/water_cost/health_risk/trust_change/emotional_consequence/
-    npc_reactions — явные значения (включая осознанный 0) уважаются;
-    настоящие пустоты (None/пустая строка/отсутствие) выравниваются
-    деривацией lore.card_rich_payload по архетипу и названию, так что даже
-    офлайн-троп дня платит едой/водой/риском и реагирует на NPC, а не ходит
-    «бесплатной» картой-пустышкой.
-    """
-
-    def _taken(key, fallback):
-        value = card.get(key)
-        if value is None or str(value).strip() in {"", "null"}:
-            return fallback
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return fallback
-
-    rich = card_rich_payload(
-        str(card.get("title", "")),
-        str(card.get("tag", "care")),
-        day_index,
-    )
-    npc = card.get("npc_reactions") or rich["npc_reactions"]
-    return {
-        "position": position,
-        "title": card["title"],
-        "description": card["description"],
-        "consequence": str(card.get("consequence", "")),
-        "tag": card.get("tag", "care"),
-        "image_path": "",
-        "food_cost": _taken("food_cost", rich["food_cost"]),
-        "water_cost": _taken("water_cost", rich["water_cost"]),
-        "health_risk": _taken("health_risk", rich["health_risk"]),
-        "trust_change": _taken("trust_change", rich["trust_change"]),
-        "emotional_consequence": str(
-            card.get("emotional_consequence") or rich["emotional_consequence"]
-        ),
-        "npc_reactions_json": json.dumps(npc, ensure_ascii=False),
-    }
-
-
-def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
-    """Карты дня из единой генерации главы (chapter["cards"]), достроенные
-    офлайн-пулом при нехватке. Возвращает payload-словари под Card-модель."""
-    cards = []
-    for card in chapter.get("cards") or []:
-        if not isinstance(card, dict):
-            continue
-        title = str(card.get("title", "")).strip()
-        description = str(card.get("description", "")).strip()
-        if title and description:
-            cards.append(card)
-    if len(cards) < 3:
-        from app.lore import _cards
-        rng = secrets.SystemRandom()
-        used = {str(c["title"]).strip().lower() for c in cards}
-        for pool_card in _cards(rng, day_index):
-            if len(cards) >= 3:
-                break
-            key = str(pool_card.title).strip().lower()
-            if key in used:
-                continue
-            cards.append(
-                {
-                    "title": pool_card.title,
-                    "description": pool_card.description,
-                    "consequence": pool_card.consequence,
-                    "tag": pool_card.tag,
-                }
-            )
-            used.add(key)
-    return [
-        _card_payload(card, position, day_index)
-        for position, card in enumerate(cards[:3])
-    ]
-
-def _world_block_text(world_ctx) -> str | None:
-    """Компактная память живого мира для мега-промпта главы.
-
-    Мир приходит в генерацию ДО написания главы (один вызов вместо
-    отдельной AI-локации, патчившей текст задним числом). None — мир пуст.
-    """
-    if world_ctx is None:
-        return None
-    parts = []
-    mood = getattr(world_ctx, "world_mood", None)
-    if mood:
-        parts.append(f"- настроение лабиринта: {mood}")
-    threads = getattr(world_ctx, "open_threads", None) or []
-    if threads:
-        parts.append("- незакрытые сюжетные линии: " + "; ".join(str(t)[:60] for t in threads[:3]))
-    locs = getattr(world_ctx, "active_locations", None) or []
-    if locs:
-        names = [f"{loc['name']} ({loc.get('times_visited', 0)} посещ.)" for loc in locs[:5]]
-        parts.append("- известные стае места: " + ", ".join(names))
-    chars = getattr(world_ctx, "active_characters", None) or []
-    if chars:
-        cnames = [f"{char['name']} (доверие {char.get('trust_stay', 5)}/10)" for char in chars[:5]]
-        parts.append("- долгожители лабиринта: " + ", ".join(cnames))
-    if not parts:
-        return None
-    return "\n".join(parts)
-
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
@@ -523,30 +416,77 @@ async def _plan_and_render(
             len(world_ctx.active_characters),
         )
     except Exception as e:
-        logger.debug("AIWorldEngine: не удалось собрать контекст мира: %s", e)
+        logger.warning("AIWorldEngine: не удалось собрать контекст мира (день идёт без памяти мира): %s", e)
 
-    chapter = await generate_chapter(
-        ctx.day_index, ctx.beats, ctx.rule,
-        echoes=ctx.echoes if "echoes" in guest_blocks_for(ctx.day_index) else [],
-        distant_echoes=ctx.distant if "distant" in guest_blocks_for(ctx.day_index) else [],
-        season_block=ctx.sblock, places_block=ctx.places_block,
-        villain_block=ctx.villain, sealed=sealed_day(ctx.day_index) or ctx.twist,
-        salt=ctx.run_salt,
-        alignment_block=alignment_block(ctx.order_axis, ctx.moral_axis),
-        tint_lines=alignment_tints(ctx.order_axis, ctx.moral_axis, salt=ctx.run_salt),
-        focus_line=ctx.focus_line,
-        repeat_block=ctx.repeat_block,
-        active_scar_keys=set(ctx.active_scar_keys),
-        emotion_block=ctx.emotion_block,
-        branches_block=ctx.branches_block,
-        dynamic_rules_block=ctx.dynamic_rules_block,
-        needs_block=ctx.needs_block,
-        characters_block=ctx.characters_block,
-        npc_profiles=ctx.npc_profiles,
-        is_expanded=ctx.day_index == 1 or ctx.twist,
-        with_choices=True,
-        world_block=world_block,
-    )
+    # AI World Engine: генерация нового NPC стартует ПАРАЛЛЕЛЬНО с главой.
+    # generate_ai_character — чисто-LLM (session не трогает: контекст уже в
+    # char_ctx, а запись в БД отложена), поэтому единственный длинный вызов
+    # дня не растягивает критический путь ещё на один LLM-раунд.
+    char_task: asyncio.Task | None = None
+    try:
+        from app.story import _chat_completion, persist_session_character
+        from app.world_engine import WorldContext, generate_ai_character
+        from app.models import WorldCharacter
+
+        existing = (
+            await session.execute(
+                select(WorldCharacter).where(WorldCharacter.is_alive == True)
+            )
+        ).scalars().all()
+        char_ctx = WorldContext(
+            day_index=day_index,
+            recent_choices=[],
+            active_locations=[],
+            active_characters=[
+                {
+                    "name": c.name,
+                    "role": c.role,
+                    "personality": c.personality[:80],
+                    "mood": c.mood,
+                    "trust_stay": c.trust_stay,
+                }
+                for c in existing
+            ],
+            world_mood="tense",
+            open_threads=[],
+            pack_needs={
+                "hunger": ctx.pack_needs.hunger,
+                "thirst": ctx.pack_needs.thirst,
+                "health": ctx.pack_needs.health,
+            },
+            season=ctx.key,
+        )
+        char_task = asyncio.create_task(generate_ai_character(session, char_ctx, _chat_completion))
+    except Exception as e:
+        logger.debug("AIWorldEngine: подготовка контекста персонажа не удалась: %s", e)
+
+    try:
+        chapter = await generate_chapter(
+            ctx.day_index, ctx.beats, ctx.rule,
+            echoes=ctx.echoes if "echoes" in guest_blocks_for(ctx.day_index) else [],
+            distant_echoes=ctx.distant if "distant" in guest_blocks_for(ctx.day_index) else [],
+            season_block=ctx.sblock, places_block=ctx.places_block,
+            villain_block=ctx.villain, sealed=sealed_day(ctx.day_index) or ctx.twist,
+            salt=ctx.run_salt,
+            alignment_block=alignment_block(ctx.order_axis, ctx.moral_axis),
+            tint_lines=alignment_tints(ctx.order_axis, ctx.moral_axis, salt=ctx.run_salt),
+            focus_line=ctx.focus_line,
+            repeat_block=ctx.repeat_block,
+            active_scar_keys=set(ctx.active_scar_keys),
+            emotion_block=ctx.emotion_block,
+            branches_block=ctx.branches_block,
+            dynamic_rules_block=ctx.dynamic_rules_block,
+            needs_block=ctx.needs_block,
+            characters_block=ctx.characters_block,
+            npc_profiles=ctx.npc_profiles,
+            is_expanded=ctx.day_index == 1 or ctx.twist,
+            with_choices=True,
+            world_block=world_block,
+        )
+    except Exception:
+        if char_task is not None:
+            char_task.cancel()
+        raise
 
     # Арт-директор: визуальный план дня, затем промпты каждого кадра.
     # Якорь предыдущего дня держит сериальность палитры и мотивов.
@@ -571,19 +511,18 @@ async def _plan_and_render(
     cover_path = media_root / f"day{day_index}_cover.jpg"
     day_seed = 10_000 + day_index * 7
 
-    # AI World Engine: генерируем нового NPC (1 раз в день)
-    try:
-        from app.story import _generate_session_characters
-        needs_dict = {
-            "hunger": ctx.pack_needs.hunger,
-            "thirst": ctx.pack_needs.thirst,
-            "health": ctx.pack_needs.health,
-        }
-        char_result = await _generate_session_characters(session, day_index, needs_dict, season=ctx.key)
-        if char_result:
-            logger.info("AIWorldEngine: %s", char_result)
-    except Exception as e:
-        logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
+    # AI World Engine: присоединяем генерацию нового NPC (запущена параллельно
+    # главе). Запись в БД — только здесь, на основном таске: генерация не
+    # спорит с session, пока другие корутины его используют.
+    if char_task is not None:
+        try:
+            from app.story import persist_session_character
+            new_char = await char_task
+            if new_char:
+                logger.info("AIWorldEngine: %s",
+                            await persist_session_character(session, new_char, day_index))
+        except Exception as e:
+            logger.debug("AIWorldEngine: генерация персонажей не удалась: %s", e)
 
     # AI World Engine: получаем NPC для генерации обложки
     try:
@@ -672,7 +611,7 @@ async def _plan_and_render(
                     )
                 )
     except Exception as e:
-        logger.debug("AIWorldEngine: запись места дня не удалась: %s", e)
+        logger.warning("AIWorldEngine: запись места дня не удалась (мир потерял посещение): %s", e)
 
     cards_payload = []
     # Карты рождаются В ТОЙ ЖЕ генерации, что и глава (один контекст вместо
