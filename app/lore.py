@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from collections import deque
 from dataclasses import dataclass, replace
@@ -1592,6 +1593,96 @@ def _cards(
         ]
     rng.shuffle(cards)
     return cards
+
+
+# ── Деривация богатых полей офлайн-карт (слой 6: единый конвейер) ─────────
+#
+# LLM-карты приходят с food_cost/water_cost/health_risk/trust_change/
+# emotional_consequence/npc_reactions. Офлайн-тропы (и карты главы без этих
+# полей) выравниваются той же схемой: профиль-архетип + детерминированная
+# вариация по (день, соль, название) — одна и та же карта в один и тот же
+# день стоит одинаково, между днями дышит.
+
+_TAG_RICH = {
+    "risk": {"food_cost": (1, 3), "water_cost": (0, 1), "health_risk": (2, 5), "trust_change": (-2, 1)},
+    "care": {"food_cost": (1, 3), "water_cost": (0, 1), "health_risk": (0, 1), "trust_change": (1, 3)},
+    "cunning": {"food_cost": (0, 1), "water_cost": (0, 1), "health_risk": (1, 3), "trust_change": (-1, 0)},
+}
+
+_EMOTION_SKELETONS = {
+    "risk": (
+        "Стая запомнила дрожь под рёбрами: {t} случилось так, что мир на мгновение перестал дышать.",
+        "После {t} стая долго не могла отдышаться — страх сменился железным спокойствием.",
+        "В памяти остался запах озона и визг: {t} оставило на лабиринте зазубрину.",
+    ),
+    "care": (
+        "После {t} в лагере стало теплее: кто-то вылизывал чужие носы до дрожи.",
+        "Стая несла это тепло весь день: {t} оказалось мягче, чем пугало.",
+        "{t} оставило в памяти свет, которого раньше не было в коридорах.",
+    ),
+    "cunning": (
+        "Обман удался, но {t} навсегда вписало в записи лабиринта лишний след.",
+        "Стая шагала тише после {t} — хитрость пахнет победой с примесью оглядки.",
+        "{t} — теперь об этом шепчутся стены, и стая это знает.",
+    ),
+}
+
+_NPC_REACTIONS = {
+    "risk": (
+        ("Лайнер", "посчитал сломанные зубы и вздохнул: «считай, даром не отдадим»."),
+        ("Дневник", "записал дрожащей строкой: стая шла туда, откуда не все вернулись."),
+        ("Безымянная", "молчала и долго нюхала воздух, как будто искала того, кто не пришёл."),
+    ),
+    "care": (
+        ("Лайнер", "пододвинул лакомство и отвернулся, пряча удовлетворение."),
+        ("Дневник", "записал тёплой строкой: сегодня кто-то поставил чужую миску выше своей."),
+        ("Безымянная", "позволила прижаться к себе — первый раз за долгое время."),
+    ),
+    "cunning": (
+        ("Лайнер", "хмыкнул и пересчитал оговорки: «опять выторговали больше, чем честно»."),
+        ("Дневник", "записал кривыми буквами: стая провела лабиринт, а не наоборот."),
+        ("Безымянная", "сказала одно слово и отвернулась, как будто знала исход заранее."),
+    ),
+}
+
+
+def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> dict:
+    """Богатые поля карты по архетипу и названию — детерминированно.
+
+    Соблюдает тот же контракт, что и _CHOICES_BLOCK для LLM-карт: risk
+    health_risk>=2 и food_cost>=1; care food_cost>=1 и trust_change>=1;
+    cunning health_risk>=1 и trust_change<=0; каждой карте есть чем
+    заплатить. Тэг уходит в care на неизвестном архетипе.
+    """
+    tag = tag if tag in _TAG_RICH else "care"
+    profile = _TAG_RICH[tag]
+    rng = _rng(day_index, f"rich:{tag}:{salt}:{_title_key(title)}")
+
+    def roll(rng, lo_hi):
+        return rng.randint(*lo_hi)
+
+    food_cost = roll(rng, profile["food_cost"])
+    water_cost = roll(rng, profile["water_cost"])
+    health_risk = roll(rng, profile["health_risk"])
+    trust_change = roll(rng, profile["trust_change"])
+    t = str(title).strip() or "выбор"
+    emotions = _EMOTION_SKELETONS[tag]
+    emotions_rng = _rng(day_index, f"emo:{tag}:{_title_key(t)}")
+    emotional_consequence = emotions[emotions_rng.randrange(len(emotions))].format(t=t)
+    reactions = _NPC_REACTIONS[tag]
+    count = 1 + (emotions_rng.randrange(3) != 0)
+    picked = []
+    for i in range(count):
+        name, reaction = reactions[emotions_rng.randrange(len(reactions))]
+        picked.append({"name": name, "reaction": reaction})
+    return {
+        "food_cost": food_cost,
+        "water_cost": water_cost,
+        "health_risk": health_risk,
+        "trust_change": trust_change,
+        "emotional_consequence": emotional_consequence,
+        "npc_reactions": picked,
+    }
 
 
 # ── AI-генерация атмосферных падов и voice examples ──

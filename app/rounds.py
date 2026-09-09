@@ -37,6 +37,7 @@ from app.models import (
     WinRule,
 )
 from app.art_director import build_image_prompt, character_motifs_for, plan_day_art, short_image_prompt
+from app.lore import card_rich_payload
 from app.narrative.canon import _closing_hook, load_canon
 from app.season import season_key
 from app.story import fetch_day_image, generate_chapter, generate_epilogue, render_cover
@@ -368,6 +369,51 @@ async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
         raise
 
 
+def _card_payload(card: dict, position: int, day_index: int) -> dict:
+    """Payload-словарь под Card-модель.
+
+    Единая нормализация для любых карт: LLM-карты главы несут свои
+    food_cost/water_cost/health_risk/trust_change/emotional_consequence/
+    npc_reactions — явные значения (включая осознанный 0) уважаются;
+    настоящие пустоты (None/пустая строка/отсутствие) выравниваются
+    деривацией lore.card_rich_payload по архетипу и названию, так что даже
+    офлайн-троп дня платит едой/водой/риском и реагирует на NPC, а не ходит
+    «бесплатной» картой-пустышкой.
+    """
+
+    def _taken(key, fallback):
+        value = card.get(key)
+        if value is None or str(value).strip() in {"", "null"}:
+            return fallback
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    rich = card_rich_payload(
+        str(card.get("title", "")),
+        str(card.get("tag", "care")),
+        day_index,
+    )
+    npc = card.get("npc_reactions") or rich["npc_reactions"]
+    return {
+        "position": position,
+        "title": card["title"],
+        "description": card["description"],
+        "consequence": str(card.get("consequence", "")),
+        "tag": card.get("tag", "care"),
+        "image_path": "",
+        "food_cost": _taken("food_cost", rich["food_cost"]),
+        "water_cost": _taken("water_cost", rich["water_cost"]),
+        "health_risk": _taken("health_risk", rich["health_risk"]),
+        "trust_change": _taken("trust_change", rich["trust_change"]),
+        "emotional_consequence": str(
+            card.get("emotional_consequence") or rich["emotional_consequence"]
+        ),
+        "npc_reactions_json": json.dumps(npc, ensure_ascii=False),
+    }
+
+
 def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
     """Карты дня из единой генерации главы (chapter["cards"]), достроенные
     офлайн-пулом при нехватке. Возвращает payload-словари под Card-модель."""
@@ -398,27 +444,10 @@ def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
                 }
             )
             used.add(key)
-    out = []
-    for position, card in enumerate(cards[:3]):
-        out.append(
-            {
-                "position": position,
-                "title": card["title"],
-                "description": card["description"],
-                "consequence": str(card.get("consequence", "")),
-                "tag": card.get("tag", "care"),
-                "image_path": "",
-                "food_cost": int(card.get("food_cost", 0) or 0),
-                "water_cost": int(card.get("water_cost", 0) or 0),
-                "health_risk": int(card.get("health_risk", 0) or 0),
-                "trust_change": int(card.get("trust_change", 0) or 0),
-                "emotional_consequence": str(card.get("emotional_consequence", "")),
-                "npc_reactions_json": json.dumps(
-                    card.get("npc_reactions") or [], ensure_ascii=False
-                ),
-            }
-        )
-    return out
+    return [
+        _card_payload(card, position, day_index)
+        for position, card in enumerate(cards[:3])
+    ]
 
 def _world_block_text(world_ctx) -> str | None:
     """Компактная память живого мира для мега-промпта главы.
@@ -660,16 +689,19 @@ async def _plan_and_render(
         logger.warning("AIWorldEngine: сбор карт не удался: %s", e)
         from app.lore import _cards
         rng = secrets.SystemRandom()
+        pool = []
+        for card in _cards(rng, day_index)[:3]:
+            pool.append(
+                {
+                    "title": card.title,
+                    "description": card.description,
+                    "consequence": card.consequence,
+                    "tag": card.tag,
+                }
+            )
         cards_payload = [
-            {
-                "position": position,
-                "title": card.title,
-                "description": card.description,
-                "consequence": card.consequence,
-                "tag": card.tag,
-                "image_path": "",
-            }
-            for position, card in enumerate(_cards(rng, day_index)[:3])
+            _card_payload(card, position, day_index)
+            for position, card in enumerate(pool)
         ]
     return {
         "v": PREPARED_PAYLOAD_VERSION,

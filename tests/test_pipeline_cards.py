@@ -172,4 +172,8 @@ def test_assemble_cards_empty_chapter_uses_offline_pool() -> None:
         assert card["position"] == cards.index(card)
         assert card["title"] and card["description"]
         assert card["tag"] in {"risk", "care", "cunning"}
-        assert card["npc_reactions_json"] == "[]"
+        # Офлайн-троп тоже платит: богатые поля деривируются по архетипу
+        # (слой 6 — единый конвейер), а не обнуляются.
+        assert card["food_cost"] or card["water_cost"] or card["health_risk"]
+        assert card["emotional_consequence"]
+        assert json.loads(card["npc_reactions_json"])
