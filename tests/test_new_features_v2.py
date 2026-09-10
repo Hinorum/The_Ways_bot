@@ -1,5 +1,4 @@
 """Tests for NPC motives from DB, image dedup, and quality gate."""
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
@@ -15,7 +14,7 @@ class TestNPCMotivesFromDB:
 
     def test_seed_npc_motives_inserts_data(self):
         """seed_npc_motives вставляет начальные данные из хардкода."""
-        from app.npc_cog import _MOTIVATIONS, seed_npc_motives
+        from app.npc_cog import _MOTIVATIONS
 
         # Подсчитываем ожидаемое количество
         expected_count = sum(len(moods) for moods in _MOTIVATIONS.values())
@@ -234,7 +233,6 @@ class TestNPCMotivesIntegration:
     async def test_load_motive_from_db_returns_none_when_empty(self):
         """load_motive_from_db возвращает (None, None) если записи нет."""
         from app.npc_cog import load_motive_from_db
-        from unittest.mock import AsyncMock
 
         mock_session = AsyncMock()
         mock_result = MagicMock()

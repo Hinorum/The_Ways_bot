@@ -18,6 +18,8 @@ def test_personal_echo_text_is_deterministic_and_in_world() -> None:
 
 
 async def test_send_personal_echoes_targets_losers_only(monkeypatch) -> None:
+    # Флаг выключен по умолчанию (Фаза 2) — тест включает его явно.
+    monkeypatch.setattr(settings, "personal_echo", True)
     now = datetime.now(timezone.utc)
     messages: dict[int, str] = {}
 

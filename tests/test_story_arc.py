@@ -6,7 +6,6 @@ from app.lore import compose_chapter
 from app.story_arc import (
     _ARC_CARD_TITLES,
     _ARC_MISSION_SCENES,
-    _HOWL_SIGNS,
     arc_block,
     arc_card_titles,
     arc_details_from_block,
@@ -15,7 +14,6 @@ from app.story_arc import (
     arc_stage_index,
     mission_for,
     mission_scene,
-    sign_for,
     teaser_pool,
     whisper_pool,
     whisper_pool_for_stage,

@@ -15,9 +15,7 @@ from app.plugins import (
     Plugin,
     PluginMeta,
     PluginRegistry,
-    PluginContext,
     Capability,
-    HookOrder,
     BasePlugin,
 )
 from app.npc_cog import (

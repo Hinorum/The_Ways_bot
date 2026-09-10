@@ -39,6 +39,15 @@ from app.ton_utils import to_nano
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
 
+@pytest.fixture(autouse=True)
+def _week_prize_contract():
+    """Доли мест тестируются как контракт 50/30/20 независимо от env-переопределения."""
+    prev = settings.weekly_prize_pcts
+    settings.weekly_prize_pcts = "50,30,20"
+    yield
+    settings.weekly_prize_pcts = prev
+
+
 async def _set_week_ready(session: AsyncSession, week_key: str) -> None:
     """Ставит флаг готовности недельного лидерборда (эпилог последнего дня недели записан)."""
     session.add(WatcherState(key=WEEK_READY_KEY, value=week_key))

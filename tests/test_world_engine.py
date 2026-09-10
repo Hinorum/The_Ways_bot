@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import AsyncMock, patch
 
-from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import (
@@ -42,7 +40,6 @@ from app.world_engine import (
     get_or_create_character,
     get_or_create_location,
     get_world_context,
-    process_choice_consequences,
     record_choice,
     record_world_event,
     update_character_state,

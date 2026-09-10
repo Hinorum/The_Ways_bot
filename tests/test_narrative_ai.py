@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-import zlib
 from random import Random
 
 from app.narrative_ai import (
@@ -13,7 +11,6 @@ from app.narrative_ai import (
     coherence_score,
     dynamic_temperature,
     entropy_score,
-    entropy_score_from_value,
     is_summary_quality,
     kolmogorov_ratio,
     kolmogorov_score,

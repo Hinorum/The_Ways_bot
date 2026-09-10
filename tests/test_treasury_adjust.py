@@ -44,6 +44,8 @@ from app.ton_watch import Transfer, process_transfer
 RAW = normalize_address("UQpfcexKrlNjGFPF44W9am1o75Z6fs_QBdwVNzuhHVX2L4oo")
 STRANGER = "0:" + "9" * 62
 ADMIN_ID = 4242
+# Аутсайдер не должен совпадать ни с одним id окружения (CI ставит ADMIN_IDS=1).
+OUTSIDER_ID = 777_007
 
 
 @pytest.fixture()
@@ -372,7 +374,7 @@ async def test_set_game_paused_is_idempotent() -> None:
 
 
 async def test_adjust_is_admin_only(ton_on) -> None:
-    outsider = make_message(1, "/adjust")
+    outsider = make_message(OUTSIDER_ID, "/adjust")
     await cmd_adjust(outsider)
     assert "только для хранителя" in outsider.answer.call_args.args[0]
 
@@ -438,7 +440,7 @@ async def test_adjust_button_double_press_records_manual_out(
         assert len(rows) == 1 and rows[0].amount_nanotons == to_nano(1)
 
         # Чужому кнопки закрыты.
-        outsider_cb = make_callback(1, "adj:out")
+        outsider_cb = make_callback(OUTSIDER_ID, "adj:out")
         await on_adjust_action(outsider_cb)
         assert outsider_cb.answer.call_args.kwargs.get("show_alert") is True
     finally:
@@ -698,7 +700,7 @@ async def test_pause_commands_toggle_and_guard(
     monkeypatch.setattr(settings, "use_free_story_llm", False)
     monkeypatch.setattr(settings, "media_dir", str(tmp_path))
     try:
-        outsider = make_message(1, "/pause")
+        outsider = make_message(OUTSIDER_ID, "/pause")
         await cmd_pause(outsider)
         assert "только для хранителя" in outsider.answer.call_args.args[0]
 
@@ -810,7 +812,7 @@ async def test_payouts_command_actually_answers(admin_only) -> None:
             ))
             await db.commit()
 
-        outsider = make_message(1, "/payouts")
+        outsider = make_message(OUTSIDER_ID, "/payouts")
         await cmd_payouts(outsider)
         assert "только для хранителя" in outsider.answer.call_args.args[0]
 

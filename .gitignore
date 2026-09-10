@@ -9,4 +9,5 @@ __pycache__/
 data/
 media/generated/
 *.log
+out.txt
 .DS_Store
