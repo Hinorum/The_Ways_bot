@@ -30,6 +30,49 @@ def test_npc_focus_arcs_three_day_line() -> None:
     assert npc_focus_line(0) is None
 
 
+# ---------- Фокус-день стаи (собака — герой дня) ----------
+
+
+def test_pick_pack_focus_valid_and_deterministic() -> None:
+    from app.story import _PACK_CHARS, pick_pack_focus
+
+    assert pick_pack_focus(0, "2026-08") is None
+    run = [pick_pack_focus(d, "2026-08") for d in range(1, 60)]
+    assert all(n in _PACK_CHARS and n is not None for n in run)  # type: ignore[operator]
+    # Детерминизм: тот же ключ забега — та же ротация.
+    again = [pick_pack_focus(d, "2026-08") for d in range(1, 60)]
+    assert run == again
+    # Ротация задействует всю стаю за 60 дней.
+    assert set(run) == _PACK_CHARS
+    # Собака не повторяется два дня подряд.
+    assert all(run[i] != run[i + 1] for i in range(len(run) - 1))
+
+
+def test_pick_pack_focus_differs_between_runs() -> None:
+    from app.story import pick_pack_focus
+
+    a = [pick_pack_focus(d, "2026-08") for d in range(1, 60)]
+    b = [pick_pack_focus(d, "2027-01") for d in range(1, 60)]
+    assert a != b
+
+
+def test_pack_focus_line_shapes_prompt() -> None:
+    from app.story import _build_story_prompt, pack_focus_line_for
+
+    focus = pack_focus_line_for(7, "2026-08")
+    assert focus is not None
+    assert "ФОКУС ДНЯ" in focus
+    prompt = _build_story_prompt(day_index=7, previous_beats=[], pack_focus_line=focus)
+    assert "ФОКУС ДНЯ" in prompt
+    # В фокус-день «фоновый бросок» не запрещает собаке выступать главной.
+    assert "только фоновый бросок" not in prompt
+    assert "одна собака стаи — герой дня" in prompt
+    # Без фокуса — прежняя строгая формулировка.
+    plain = _build_story_prompt(day_index=7, previous_beats=[])
+    assert "только фоновый бросок" in plain
+    assert "одна собака стаи — герой дня" not in plain
+
+
 # ---------- Двухмесячная арка ----------
 
 

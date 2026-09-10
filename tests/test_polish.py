@@ -160,7 +160,8 @@ def test_story_prompt_demands_full_narrative() -> None:
     assert "новых главных персонажей не вводи" in prompt
     assert "реплика" in prompt and "сенсорная деталь" in prompt
     assert "крючок" in prompt  # финальная строка главы обрывает сцену
-    assert "голосом дневника" in prompt  # закон звучит репликой в сцене
+    assert "реплика в сцене" in prompt  # закон звучит как реплика, не справка
+    assert "голосом дневника" not in prompt  # дневник больше не озвучивает каждый закон
     # Закон дня объявлен как известный факт.
     assert RULE_PHRASES[WinRule.MAJORITY] in prompt
 

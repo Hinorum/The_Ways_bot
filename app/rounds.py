@@ -460,6 +460,7 @@ async def _plan_and_render(
             alignment_block=alignment_block(ctx.order_axis, ctx.moral_axis),
             tint_lines=alignment_tints(ctx.order_axis, ctx.moral_axis, salt=ctx.run_salt),
             focus_line=ctx.focus_line,
+            pack_focus_line=ctx.pack_focus_line,
             repeat_block=ctx.repeat_block,
             active_scar_keys=set(ctx.active_scar_keys),
             emotion_block=ctx.emotion_block,

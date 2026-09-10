@@ -290,6 +290,7 @@ class DayContext:
     rule: WinRule
     distant: list[str]  # дальние эха (recall_beats)
     focus_line: str | None
+    pack_focus_line: str | None
     repeat_block: str | None
     characters_block: str
     npc_profiles: dict[str, dict] | None
@@ -615,6 +616,14 @@ async def build_day_context(
     except Exception:
         logger.warning("NPC focus line дня %s не сгенерирована", day_index, exc_info=True)
         focus_line = None
+    # Фокус-день стаи: одна собака выходит в центр сцены главы дня.
+    pack_focus_line = None
+    try:
+        from app.story import pack_focus_line_for
+
+        pack_focus_line = pack_focus_line_for(day_index, key)
+    except Exception:
+        logger.debug("Фокус-день стаи для дня %s не выбран", day_index, exc_info=True)
     # AI World Engine: блок персонажей для промпта
     characters_block = ""
     try:
@@ -669,6 +678,7 @@ async def build_day_context(
         rule=rule,
         distant=distant,
         focus_line=focus_line,
+        pack_focus_line=pack_focus_line,
         repeat_block=repeat_block,
         characters_block=characters_block,
         npc_profiles=npc_profiles,

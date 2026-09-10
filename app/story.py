@@ -390,7 +390,47 @@ CHARACTER_MICRO_PROMPTS: dict[str, str] = {
 
 NPC_NAMES = {
     "лайнер", "еретик", "администратор", "крыса", "аллира", "анубис",
+    *_PACK_CHARS,
 }
+
+
+def pick_pack_focus(day_index: int, run_key: str) -> str | None:
+    """Собака стаи — герой дня (чистая, детерминированная на день функция).
+
+    Прогоняет детерминированную ротацию по дням и возвращает собаку дня
+    так, чтобы она не повторялась с фактическим выбором предыдущего дня.
+    run_key — стабильный ключ забега: у разных забегов разная ротация,
+    у одного забега — предсказуемая и без повторов подряд.
+    """
+    if day_index < 1:
+        return None
+    pack = sorted(_PACK_CHARS)
+
+    def _idx(d: int) -> int:
+        digest = hashlib.sha1(f"{run_key}:pack:{d}".encode()).digest()
+        return int.from_bytes(digest[:4], "big") % len(pack)
+
+    last = _idx(1)
+    for d in range(2, day_index + 1):
+        cur = _idx(d)
+        if cur == last:
+            cur = (cur + 1) % len(pack)
+        last = cur
+    return pack[last]
+
+
+def pack_focus_line_for(day_index: int, run_key: str) -> str | None:
+    """Готовая строка фокуса дня: собака стаи выходит в центр сцены."""
+    name = pick_pack_focus(day_index, run_key)
+    if name is None:
+        return None
+    display = " ".join(word.capitalize() for word in name.split())
+    micro = CHARACTER_MICRO_PROMPTS.get(name, "")
+    return (
+        f"ФОКУС ДНЯ — {display} сегодня главная собака стаи: {micro} "
+        "Построй одну из сцен главы вокруг её действия: что она видит, решает "
+        "и чем рискует; остальные собаки стаи остаются фоном.\n"
+    )
 
 
 async def _build_dynamic_character_block(session) -> str:
@@ -1179,6 +1219,7 @@ async def generate_chapter(
     alignment_block: str | None = None,
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
+    pack_focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
@@ -1206,6 +1247,7 @@ async def generate_chapter(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        pack_focus_line=pack_focus_line,
         repeat_block=repeat_block,
         is_expanded=is_expanded,
         active_scar_keys=active_scar_keys,
@@ -1486,6 +1528,7 @@ def _build_story_prompt(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    pack_focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
@@ -1521,11 +1564,14 @@ def _build_story_prompt(
         else:
             law_line = (
                 f"Закон сегодняшнего дня уже объявлен игрокам с утра: {RULE_PHRASES[win_rule]}. "
-                "В главе он должен прозвучать голосом дневника как реплика в сцене "
-                "(шёпот, полуправда), а не сухой справкой за кадром. "
+                "В главе он должен прозвучать как реплика в сцене — шёпот, "
+                "полуправда из уст кого-то из стаи или самого мира — а не сухой "
+                "справкой за кадром. Дневник в этой роли каждый день — лишнее; "
+                "он вмешивается только в дни, когда запечатан или когда сам "
+                "выбрал заговорить. "
                 "ЗАПРЕЩЕНО цитировать формулировку дословно и называть механику "
                 "(«среднее число голосов», «большинство», «меньшинство») — "
-                "дневник передаёт правило образом страниц и тишины, игрок поймёт.\n"
+                "правило передаётся образом страниц, следа или тишины.\n"
             )
     villain_text = ""
     if villain_block:
@@ -1619,12 +1665,24 @@ def _build_story_prompt(
         logger.debug("GEPA: ген не загружен", exc_info=True)
     if not _gepa_active:
         logger.info("GEPA: ген не активен day=%d — используется базовый промпт", day_index)
+    if pack_focus_line:
+        _pack_rule = (
+            "В этот день одна собака стаи — герой дня: её действие и взгляд "
+            "ведут одну из сцен главы, стая идёт рядом. Остальные собаки — "
+            "фоновый бросок; новых главных персонажей не вводи. "
+        )
+    else:
+        _pack_rule = (
+            "Баркод, Стежка, Вектор, Пиксель и Безымянная — только фоновый "
+            "бросок, новых главных персонажей не вводи. "
+        )
     head = (
         "Ответь только JSON. Русский язык. Ежедневная сюжетная игра в духе D&D. "
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
         f"{season_text}"
         f"{focus_line + chr(10) if focus_line else ''}"
+        f"{pack_focus_line + chr(10) if pack_focus_line else ''}"
         f"{villain_text}"
         f"{echo_block}"
         f"{distant_block}"
@@ -1642,9 +1700,10 @@ def _build_story_prompt(
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
         "лица и в настоящем времени. Это история самой стаи игрока, а не чужих "
-        "героев: Баркод, Стежка, Вектор, Пиксель и Безымянная — только фоновый "
-        "бросок, новых главных персонажей не вводи. В дни пролога фокус сцены — "
-        "одно вводимое лицо; остальные постоянные лица молчат фоном без реплик.\n"
+        "героев: "
+        f"{_pack_rule}"
+        "В дни пролога фокус сцены — одно вводимое лицо; остальные постоянные "
+        "лица молчат фоном без реплик.\n"
         "Обязательный состав главы, по порядку:\n"
     )
     if pending_outcome:
@@ -1683,8 +1742,10 @@ def _build_story_prompt(
         "персонажа с его классовым стилем (Рейнджер считает, Разбойник чувствует, "
         "Варвар кричит, Оккультист видит, Варлок молчит, Бард торгует, Жрец "
         "объявляет, Палладин.rules);\n"
-        "(3) Закон дня звучит голосом дневника как реплика в сцене — с его "
-        "полуправдой и шёпотом, а не сухой справкой;\n"
+        "(3) Закон дня звучит как реплика в сцене из уст кого-то из стаи "
+        "(старого пса, следопыта) или знака самого мира — с полуправдой и "
+        "недомолвками, а не сухой справкой; дневник остаётся в тени, если "
+        "день не запечатан;\n"
         "(4) Напряжение выбора: конкретная дилемма «вагонетки» — стая должна "
         "выбрать, кого спасти, чем пожертвовать, какой ценой заплатить. "
         "Финальная строка главы — крючок: недоговорённость, звук или вопрос, "
@@ -1796,6 +1857,7 @@ async def _free_story_llm(
     pending_outcome: bool = False,
     alignment_block: str | None = None,
     focus_line: str | None = None,
+    pack_focus_line: str | None = None,
     repeat_block: str | None = None,
     is_expanded: bool = False,
     active_scar_keys: set[str] | None = None,
@@ -1828,6 +1890,7 @@ async def _free_story_llm(
         villain_block=villain_block, sealed=sealed, pending_outcome=pending_outcome,
         alignment_block=alignment_block,
         focus_line=focus_line,
+        pack_focus_line=pack_focus_line,
         repeat_block=repeat_block,
         is_expanded=is_expanded,
         active_scar_keys=active_scar_keys,
@@ -1843,7 +1906,7 @@ async def _free_story_llm(
     # Динамический промпт: подбираем NPC под сцену
     _text_blocks = (
         season_block or "", villain_block or "", alignment_block or "",
-        focus_line or "", " ".join(previous_beats[-3:]),
+        focus_line or "", pack_focus_line or "", " ".join(previous_beats[-3:]),
     )
     # AI-микро-промпты из профилей
     _micro_prompts = None

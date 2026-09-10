@@ -359,6 +359,7 @@ async def cmd_lore(message: Message) -> None:
 
     async with SessionLocal() as session:
         beats = (await session.execute(select(StoryBeat).order_by(StoryBeat.day_index))).scalars().all()
+        chronicle = await _pack_chronicle(session)
     if not beats:
         await message.answer(
             f"{hint_mark('lore-empty')} Канон троп ещё пуст — первый След появится "
@@ -368,7 +369,30 @@ async def cmd_lore(message: Message) -> None:
     text, truncated = _canon_text(beats)
     if truncated:
         text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме коридоров.\n\n" + text
-    await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}")
+    await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}" + (
+        "\n\n📜 Дневник стаи:\n" + "\n".join(chronicle) if chronicle else ""
+    ))
+
+
+async def _pack_chronicle(session, limit: int = 12) -> list[str]:
+    """Хроника стаи: заголовки глав последних закрытых дней."""
+    from app.models import Card
+
+    rows = (
+        await session.execute(
+            select(Round.chapter_title, Card.tag, Round.day_index)
+            .join(Card, Card.round_id == Round.id)
+            .where(Round.status == RoundStatus.CLOSED, Card.position == Round.winner_card)
+            .order_by(Round.day_index.desc())
+            .limit(limit)
+        )
+    ).all()
+    lines = []
+    for title, tag, day in rows:
+        tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(tag or "", "·")
+        head = f"Д{day} · «{title}»" if title else f"Д{day}"
+        lines.append(f"  {tag_emoji} {head}")
+    return lines
 
 
 def _canon_text(beats) -> tuple[str, bool]:
