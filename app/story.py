@@ -1311,14 +1311,20 @@ async def _chat_completion_core(
     providers: list[tuple[str, str, list[str]]] = []
     if settings.llm_api_key:
         providers.append((settings.llm_base_url, settings.llm_api_key, settings.llm_model_chain))
-    pollinations_url = "https://text.pollinations.ai/openai"
-    pollinations_key = ""
-    if settings.pollinations_token:
-        # Токен — и в query (?token=), и как Bearer: разные версии эндпоинта
-        # читают из разных мест; анонимный общий IP Render ловит 402.
-        pollinations_url += "?token=" + quote(settings.pollinations_token)
-        pollinations_key = settings.pollinations_token
-    providers.append((pollinations_url, pollinations_key, settings.story_model_chain))
+    # Pollinations: новый gen.pollinations.ai (требует ключ) → основной провайдер.
+    # Старый text.pollinations.ai deprecated (402/404), оставлен как запасной fallback.
+    pollinations_key = settings.pollinations_token
+    providers.append((
+        "https://gen.pollinations.ai/v1/chat/completions",
+        pollinations_key,
+        settings.story_model_chain,
+    ))
+    if pollinations_key:
+        providers.append((
+            "https://text.pollinations.ai/openai?token=" + quote(pollinations_key),
+            pollinations_key,
+            ["openai"],
+        ))
     for overall_attempt in range(1, 3):
         for base_url, key, models in providers:
             if _breaker_status(base_url):
@@ -1347,6 +1353,14 @@ async def _chat_completion_core(
                             logger.warning("LLM %s @ %s: 429 — пауза %d с, следующая модель", model, base_url, pause)
                             await asyncio.sleep(pause)
                             raise _LLMRateLimited()
+                        if response.status_code == 401 and "gen.pollinations.ai" in base_url:
+                            logger.warning(
+                                "Pollinations gen API: нет ключа (401). Получите ключ на https://enter.pollinations.ai/keys → Render POLLINATIONS_TOKEN"
+                            )
+                        if response.status_code == 402 and "text.pollinations.ai" in base_url:
+                            logger.warning(
+                                "Pollinations legacy API deprecated (402). Переход на gen.pollinations.ai/v1, см. POLLINATIONS_TOKEN в Render"
+                            )
                         if response.status_code == 400 and "response_format" in body:
                             logger.warning(
                                 "LLM %s @ %s: 400 на json-режим — повтор без него", model, base_url

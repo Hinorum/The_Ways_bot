@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     # нейросетью, а не фолбэками. Настраивается из Environment.
     llm_timeout_seconds: int = 75
     image_timeout_seconds: int = 90
-    story_models: str = "openai-fast,openai,mistral"
+    story_models: str = "openai,mistralai/mistral-small-4,openai/gpt-5.4-nano"
     # Параметры генерации: температура, лимит токенов, штрафы за повтор.
     # temperature 0.85 — баланс между креативностью и связностью.
     # frequency_penalty 0.3 — штраф за повтор одних и тех же токенов.
