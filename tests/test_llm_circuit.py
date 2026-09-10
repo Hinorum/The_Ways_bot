@@ -15,7 +15,7 @@ from app.config import settings
 # тестируем РЕАЛЬНУЮ функцию, поэтому держим ссылку, взятую при импорте.
 _REAL_CHAT = story._chat_completion
 
-_POLLINATIONS = "https://text.pollinations.ai/openai"
+_POLLINATIONS = "https://gen.pollinations.ai/v1/chat/completions"
 
 
 async def _no_op_sleep(_s):

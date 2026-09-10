@@ -319,16 +319,10 @@ def format_results(
         stake_nano = stakes.get(position, 0)
         stake_str = f" ({from_nano(stake_nano):.2f} Gram)" if stake_nano > 0 else ""
 
-        # Стоимость выбора
+        # Эффект выбора (урон и трата ресурсов отключены — только доверие)
         card = next((c for c in round_row.cards if c.position == position), None)
         cost_parts = []
         if card:
-            if (card.food_cost or 0) > 0:
-                cost_parts.append(f"−{card.food_cost} еда")
-            if (card.water_cost or 0) > 0:
-                cost_parts.append(f"−{card.water_cost} вода")
-            if (card.health_risk or 0) > 0:
-                cost_parts.append(f"⚡{card.health_risk} урон")
             if (card.trust_change or 0) != 0:
                 sign = "+" if card.trust_change > 0 else ""
                 cost_parts.append(f"{sign}{card.trust_change} доверие")

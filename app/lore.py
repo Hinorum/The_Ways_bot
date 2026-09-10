@@ -1597,16 +1597,15 @@ def _cards(
 
 # ── Деривация богатых полей офлайн-карт (слой 6: единый конвейер) ─────────
 #
-# LLM-карты приходят с food_cost/water_cost/health_risk/trust_change/
-# emotional_consequence/npc_reactions. Офлайн-тропы (и карты главы без этих
-# полей) выравниваются той же схемой: профиль-архетип + детерминированная
-# вариация по (день, соль, название) — одна и та же карта в один и тот же
-# день стоит одинаково, между днями дышит.
+# LLM-карты приходят с trust_change/emotional_consequence/npc_reactions.
+# Офлайн-тропы (и карты главы без этих полей) выравниваются той же схемой:
+# профиль-архетип + детерминированная вариация по (день, соль, название).
+# Трата ресурсов и урон отключены: food_cost/water_cost/health_risk = 0.
 
 _TAG_RICH = {
-    "risk": {"food_cost": (1, 3), "water_cost": (0, 1), "health_risk": (2, 5), "trust_change": (-2, 1)},
-    "care": {"food_cost": (1, 3), "water_cost": (0, 1), "health_risk": (0, 1), "trust_change": (1, 3)},
-    "cunning": {"food_cost": (0, 1), "water_cost": (0, 1), "health_risk": (1, 3), "trust_change": (-1, 0)},
+    "risk": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (-2, 1)},
+    "care": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (1, 3)},
+    "cunning": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (-1, 0)},
 }
 
 _EMOTION_SKELETONS = {
@@ -1649,10 +1648,9 @@ _NPC_REACTIONS = {
 def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> dict:
     """Богатые поля карты по архетипу и названию — детерминированно.
 
-    Соблюдает тот же контракт, что и _CHOICES_BLOCK для LLM-карт: risk
-    health_risk>=2 и food_cost>=1; care food_cost>=1 и trust_change>=1;
-    cunning health_risk>=1 и trust_change<=0; каждой карте есть чем
-    заплатить. Тэг уходит в care на неизвестном архетипе.
+    Соблюдает тот же контракт, что и _CHOICES_BLOCK для LLM-карт: затрат
+    ресурсов и урона нет, варьируется только trust_change. Тэг уходит в care
+    на неизвестном архетипе.
     """
     tag = tag if tag in _TAG_RICH else "care"
     profile = _TAG_RICH[tag]
@@ -1661,9 +1659,9 @@ def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> d
     def roll(rng, lo_hi):
         return rng.randint(*lo_hi)
 
-    food_cost = roll(rng, profile["food_cost"])
-    water_cost = roll(rng, profile["water_cost"])
-    health_risk = roll(rng, profile["health_risk"])
+    food_cost = 0
+    water_cost = 0
+    health_risk = 0
     trust_change = roll(rng, profile["trust_change"])
     t = str(title).strip() or "выбор"
     emotions = _EMOTION_SKELETONS[tag]

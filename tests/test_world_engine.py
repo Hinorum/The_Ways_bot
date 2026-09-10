@@ -215,38 +215,21 @@ def test_parse_ai_choices_truncation():
 # ── Tests: _fallback_choices ───────────────────────────────────────────────
 
 
-def test_fallback_choices_high_hunger():
-    """Фолбэк-выборы при высоком голоде."""
-    ctx = WorldContext(
-        day_index=1,
-        recent_choices=[],
-        active_locations=[],
-        active_characters=[],
-        world_mood="tense",
-        open_threads=[],
-        pack_needs={"hunger": 8, "thirst": 5, "health": 10},
-        season="unknown",
-    )
-    choices = _fallback_choices(ctx)
-    assert len(choices) == 3
-    assert any("Голодный" in c.title for c in choices)
-
-
-def test_fallback_choices_low_health():
-    """Фолбэк-выборы при низком здоровье."""
-    ctx = WorldContext(
-        day_index=1,
-        recent_choices=[],
-        active_locations=[],
-        active_characters=[],
-        world_mood="tense",
-        open_threads=[],
-        pack_needs={"hunger": 5, "thirst": 5, "health": 3},
-        season="unknown",
-    )
-    choices = _fallback_choices(ctx)
-    assert len(choices) == 3
-    assert any("Целительный" in c.title for c in choices)
+def test_fallback_choices_ignores_pack_needs():
+    """Фолбэк не зависит от голода/здоровья: урон и трата ресурсов отключены."""
+    base = {
+        "day_index": 1,
+        "recent_choices": [],
+        "active_locations": [],
+        "active_characters": [],
+        "world_mood": "tense",
+        "open_threads": [],
+        "season": "unknown",
+    }
+    hungry = _fallback_choices(WorldContext(**base, pack_needs={"hunger": 8, "health": 3}))
+    sated = _fallback_choices(WorldContext(**base, pack_needs={"hunger": 1, "health": 10}))
+    assert len(hungry) == 3
+    assert [c.title for c in hungry] == [c.title for c in sated]
 
 
 def test_fallback_choices_always_3():
@@ -371,8 +354,8 @@ def test_build_world_prompt_with_recent_choices():
     assert "Идти вперёд" in prompt
 
 
-def test_build_world_prompt_with_needs():
-    """Промпт содержит потребности стаи."""
+def test_build_world_prompt_survival_off():
+    """Потребности стаи вынесены из промпта: урон и трата ресурсов отключены."""
     ctx = WorldContext(
         day_index=1,
         recent_choices=[],
@@ -384,9 +367,9 @@ def test_build_world_prompt_with_needs():
         season="unknown",
     )
     prompt = _build_world_prompt(ctx)
-    assert "голод=8" in prompt
-    assert "жажда=3" in prompt
-    assert "здоровье=7" in prompt
+    assert "голод" not in prompt
+    assert "жажда" not in prompt
+    assert "здоровье" not in prompt
 
 
 # ── Tests: DB Operations (async) ───────────────────────────────────────────

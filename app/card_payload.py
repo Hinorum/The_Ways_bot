@@ -17,13 +17,10 @@ from app.lore import _cards, card_rich_payload
 def _card_payload(card: dict, position: int, day_index: int) -> dict:
     """Payload-словарь под Card-модель.
 
-    Единая нормализация для любых карт: LLM-карты главы несут свои
-    food_cost/water_cost/health_risk/trust_change/emotional_consequence/
-    npc_reactions — явные значения (включая осознанный 0) уважаются;
-    настоящие пустоты (None/пустая строка/отсутствие) выравниваются
-    деривацией lore.card_rich_payload по архетипу и названию, так что даже
-    офлайн-троп дня платит едой/водой/риском и реагирует на NPC, а не ходит
-    «бесплатной» картой-пустышкой.
+    Трата ресурсов и урон отключены: food_cost/water_cost/health_risk всегда 0.
+    LLM-карты главы несут trust_change/emotional_consequence/npc_reactions —
+    явные значения уважаются; настоящие пустоты (None/пустая строка/отсутствие)
+    выравниваются деривацией lore.card_rich_payload по архетипу и названию.
     """
 
     def _taken(key, fallback):
@@ -48,9 +45,9 @@ def _card_payload(card: dict, position: int, day_index: int) -> dict:
         "consequence": str(card.get("consequence", "")),
         "tag": card.get("tag", "care"),
         "image_path": "",
-        "food_cost": _taken("food_cost", rich["food_cost"]),
-        "water_cost": _taken("water_cost", rich["water_cost"]),
-        "health_risk": _taken("health_risk", rich["health_risk"]),
+        "food_cost": 0,
+        "water_cost": 0,
+        "health_risk": 0,
         "trust_change": _taken("trust_change", rich["trust_change"]),
         "emotional_consequence": str(
             card.get("emotional_consequence") or rich["emotional_consequence"]

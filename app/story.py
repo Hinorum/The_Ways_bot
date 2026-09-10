@@ -1185,7 +1185,6 @@ async def generate_chapter(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
-    needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
@@ -1213,7 +1212,6 @@ async def generate_chapter(
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
-        needs_block=needs_block,
         characters_block=characters_block,
         npc_profiles=npc_profiles,
         with_choices=with_choices,
@@ -1436,9 +1434,6 @@ def _normalize_cards(cards: list) -> list[dict]:
                 "tag": tag,
                 "characters_involved": characters if isinstance(characters, list) else [],
                 "location": str(card["location"])[:80] if card.get("location") else None,
-                "food_cost": _coerce_int(card.get("food_cost")),
-                "water_cost": _coerce_int(card.get("water_cost")),
-                "health_risk": _coerce_int(card.get("health_risk")),
                 "trust_change": _coerce_int(card.get("trust_change")),
                 "emotional_consequence": str(card.get("emotional_consequence", ""))[:500],
                 "npc_reactions": npc_reactions,
@@ -1498,7 +1493,6 @@ def _build_story_prompt(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
-    needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
@@ -1561,11 +1555,9 @@ def _build_story_prompt(
     # меньше «воды ради скелета», больше крючка дня.
     chapter_low, chapter_high = (1300, 1600) if is_expanded else (1000, 1300)
     villain_text = villain_text if villain_block else ""
-    # alignment_block уже внутри season_text (через season.py:527),
-    # но если season_block передан без него — добавляем отдельно.
-    align_text = ""
-    if alignment_block and alignment_block not in (season_block or ""):
-        align_text = f"{alignment_block}\n"
+    # alignment_block жил отдельным блоком в тексте главы, но уже содержится
+    # внутри season_text (через season.py:527) и в примерах речи voice cards —
+    # дублировать его в промпт не нужно (шум без сюжетной пользы).
     # Анти-репетиция: список последних начальных предложений для избегания
     avoid_block = ""
     if _RECENT_OPENINGS:
@@ -1635,7 +1627,6 @@ def _build_story_prompt(
         f"День {day_index}. Канон прошлых дней:\n{history}\n"
         f"{law_line}"
         f"{season_text}"
-        f"{align_text}"
         f"{focus_line + chr(10) if focus_line else ''}"
         f"{villain_text}"
         f"{echo_block}"
@@ -1649,7 +1640,6 @@ def _build_story_prompt(
         f"{emotion_block + chr(10) if emotion_block else ''}"
         f"{branches_block + chr(10) if branches_block else ''}"
         f"{dynamic_rules_block + chr(10) if dynamic_rules_block else ''}"
-        f"{needs_block + chr(10) if needs_block else ''}"
         f"{characters_block + chr(10) if characters_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
@@ -1733,20 +1723,20 @@ _CHOICES_BLOCK = (
     "- РОВНО 3 карты; без метакомментариев и моральных резюме;\n"
     "- каждая — трудная дилемма «вагонетки» без очевидно правильного ответа;\n"
     "- tag — строго одно из: risk | care | cunning;\n"
-    "- consequence — что произойдёт при выборе: последствие влияет на мир, "
-    "потребности или доверие NPC;\n"
+    "- consequence — что произойдёт при выборе: последствие влияет на мир "
+    "или доверие NPC;\n"
     "- title (2-5 слов), description (1-2 предложения), consequence "
     "(1-2 предложения);\n"
     '- поля: "title", "description", "consequence", "tag", '
     '"characters_involved" (имена постоянных NPC стаи, до 2 имён), '
-    '"location" (место дня или null), "food_cost" (0-3), "water_cost" (0-3), '
-    '"health_risk" (0-5), "trust_change" (-3..3), "emotional_consequence" '
+    '"location" (место дня или null), "trust_change" (-3..3), '
+    '"emotional_consequence" '
     '(одна фраза), "npc_reactions" (до 3 объектов '
     '{"name": имя NPC, "reaction": фраза}).\n'
     'Формат блока: "cards": [{"title": "...", "description": "...", '
     '"consequence": "...", "tag": "risk", "characters_involved": ["Лайнер"], '
-    '"location": "Место дня или null", "food_cost": 0, "water_cost": 0, '
-    '"health_risk": 0, "trust_change": 0, "emotional_consequence": "...", '
+    '"location": "Место дня или null", "trust_change": 0, '
+    '"emotional_consequence": "...", '
     '"npc_reactions": [{"name": "Лайнер", "reaction": "..."}]}, ...]\n'
 )
 
@@ -1817,7 +1807,6 @@ async def _free_story_llm(
     emotion_block: str | None = None,
     branches_block: str | None = None,
     dynamic_rules_block: str | None = None,
-    needs_block: str | None = None,
     characters_block: str | None = None,
     npc_profiles: dict[str, dict] | None = None,
     with_choices: bool = False,
@@ -1851,7 +1840,6 @@ async def _free_story_llm(
         emotion_block=emotion_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
-        needs_block=needs_block,
         characters_block=characters_block,
         npc_profiles=npc_profiles,
         with_choices=with_choices,

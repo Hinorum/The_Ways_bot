@@ -16,6 +16,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import LoreEcho, Round
 
 logger = logging.getLogger(__name__)
@@ -85,45 +86,48 @@ async def collect_due_echoes(session: AsyncSession, day_index: int, limit: int =
         echo.status = "surfaced"
         echo.surfaced_day = day_index
         surfaced.append(echo)
-        if echo.strength >= 3:
-            parent_gen_m = _GEN_RE.search(echo.description)
-            parent_gen = int(parent_gen_m.group(1)) if parent_gen_m else 1
-            if parent_gen >= _MAX_CHAIN_GEN:
-                continue
-            child_gen = parent_gen + 1
-            gen_tag = f"[gen:{child_gen}]"
-            chain_rng = random.Random(f"chain:{echo.id}:{day_index}")
-            # AI-генерация фразы цепочки с фолбэком к хардкоду
-            phrase = await generate_chain_phrase_ai(echo.title, echo.kind, child_gen)
-            if phrase is None:
-                chain_phrases = {
-                    2: (
-                        "Теперь это примета мира, которую трудно не заметить.",
-                        "Лабиринт подхватил след — теперь он звучит громче.",
-                        "Эхо отозвалось в соседнем коридоре и вернулось иным.",
-                    ),
-                    3: (
-                        "Третий рубеж пройден — мир запомнил этот путь навсегда.",
-                        "Лабиринт прошептал имя следа. Теперь он — часть канона.",
-                        "Глубина хватила: это уже не след, а тропа, которую не стереть.",
-                    ),
-                }
-                phrases = chain_phrases.get(child_gen, chain_phrases[3])
-                phrase = chain_rng.choice(phrases)
-            base_desc = _GEN_RE.sub("", echo.description).strip()
-            child_title = f"{echo.title}: след {child_gen}го поколения"[:160]
-            session.add(
-                LoreEcho(
-                    born_day=day_index,
-                    source_day=echo.source_day,
-                    kind=echo.kind,
-                    title=child_title,
-                    description=f"{gen_tag} {base_desc} {phrase}",
-                    strength=max(2, 3 - child_gen + 1),
-                    earliest_day=day_index + chain_rng.randint(2, 4),
-                    status="dormant",
-                )
+        # Цепочки поколений выключены (settings.echo_chains=False): след просто
+        # всплывает текстом, без дорогого LLM-размножения дочерних эхо.
+        if not settings.echo_chains or echo.strength < 3:
+            continue
+        parent_gen_m = _GEN_RE.search(echo.description)
+        parent_gen = int(parent_gen_m.group(1)) if parent_gen_m else 1
+        if parent_gen >= _MAX_CHAIN_GEN:
+            continue
+        child_gen = parent_gen + 1
+        gen_tag = f"[gen:{child_gen}]"
+        chain_rng = random.Random(f"chain:{echo.id}:{day_index}")
+        # AI-генерация фразы цепочки с фолбэком к хардкоду
+        phrase = await generate_chain_phrase_ai(echo.title, echo.kind, child_gen)
+        if phrase is None:
+            chain_phrases = {
+                2: (
+                    "Теперь это примета мира, которую трудно не заметить.",
+                    "Лабиринт подхватил след — теперь он звучит громче.",
+                    "Эхо отозвалось в соседнем коридоре и вернулось иным.",
+                ),
+                3: (
+                    "Третий рубеж пройден — мир запомнил этот путь навсегда.",
+                    "Лабиринт прошептал имя следа. Теперь он — часть канона.",
+                    "Глубина хватила: это уже не след, а тропа, которую не стереть.",
+                ),
+            }
+            phrases = chain_phrases.get(child_gen, chain_phrases[3])
+            phrase = chain_rng.choice(phrases)
+        base_desc = _GEN_RE.sub("", echo.description).strip()
+        child_title = f"{echo.title}: след {child_gen}го поколения"[:160]
+        session.add(
+            LoreEcho(
+                born_day=day_index,
+                source_day=echo.source_day,
+                kind=echo.kind,
+                title=child_title,
+                description=f"{gen_tag} {base_desc} {phrase}",
+                strength=max(2, 3 - child_gen + 1),
+                earliest_day=day_index + chain_rng.randint(2, 4),
+                status="dormant",
             )
+        )
     return surfaced
 
 

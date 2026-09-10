@@ -113,12 +113,19 @@ async def test_every_choice_spawns_echoes(session) -> None:
 
 
 async def test_echo_surfaces_and_chains(session) -> None:
+    from app.config import settings
+
     round_row = await _make_round(session)
     for pid, pos in [(1, 0), (2, 1), (3, 1)]:
         await _add_player_and_vote(session, pid, round_row.id, pos)
     finished, _closed = await finish_tally(session, round_row)
     day = finished.day_index + 5
-    due = await collect_due_echoes(session, day)
+    prev = settings.echo_chains
+    settings.echo_chains = True  # ветка цепочек проверяется явно
+    try:
+        due = await collect_due_echoes(session, day)
+    finally:
+        settings.echo_chains = prev
     assert due
     assert all(e.status == "surfaced" for e in due)
     assert any(e.strength == 3 for e in due)
@@ -126,6 +133,21 @@ async def test_echo_surfaces_and_chains(session) -> None:
         await session.execute(select(LoreEcho).where(LoreEcho.born_day == day))
     ).scalars().all()
     assert any("след" in e.title for e in chained)
+
+
+async def test_echo_chains_off_by_default(session) -> None:
+    """settings.echo_chains=False: следы всплывают, но не размножаются LLM-цепочками."""
+    round_row = await _make_round(session)
+    for pid, pos in [(1, 0), (2, 1), (3, 1)]:
+        await _add_player_and_vote(session, pid, round_row.id, pos)
+    finished, _closed = await finish_tally(session, round_row)
+    day = finished.day_index + 5
+    due = await collect_due_echoes(session, day)
+    assert due
+    chained = (
+        await session.execute(select(LoreEcho).where(LoreEcho.born_day == day))
+    ).scalars().all()
+    assert chained == []  # только всплывшие следы, дочерних эхо нет
 
 
 async def test_weak_echoes_may_fade(session) -> None:

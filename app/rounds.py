@@ -383,14 +383,6 @@ async def _plan_and_render(
     и обложка.
     """
     ctx = await _safe_db(session, "build_day_context", build_day_context, session, day_index, opens_hint)
-    if ctx.game_over:
-        return {
-            "title": "Конец",
-            "text": "Стая погибла. Мир стих.",
-            "cards": [],
-            "image_prompt": "dark empty maze, no dogs, silence",
-            "game_over": True,
-        }
     salt = secrets.token_hex(16)
 
     # Сезонные краски: нрав стаи красит промпт и кадр (SeasonBlock — в sblock).
@@ -403,11 +395,7 @@ async def _plan_and_render(
     world_block = None
     try:
         from app.world_engine import get_world_context
-        needs_dict = {
-            "hunger": ctx.pack_needs.hunger,
-            "thirst": ctx.pack_needs.thirst,
-            "health": ctx.pack_needs.health,
-        }
+        needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
         world_ctx = await get_world_context(session, day_index, needs_dict, season=ctx.key)
         world_block = _world_block_text(world_ctx)
         logger.info(
@@ -451,9 +439,9 @@ async def _plan_and_render(
             world_mood="tense",
             open_threads=[],
             pack_needs={
-                "hunger": ctx.pack_needs.hunger,
-                "thirst": ctx.pack_needs.thirst,
-                "health": ctx.pack_needs.health,
+                "hunger": 5,
+                "thirst": 5,
+                "health": 10,
             },
             season=ctx.key,
         )
@@ -477,7 +465,6 @@ async def _plan_and_render(
             emotion_block=ctx.emotion_block,
             branches_block=ctx.branches_block,
             dynamic_rules_block=ctx.dynamic_rules_block,
-            needs_block=ctx.needs_block,
             characters_block=ctx.characters_block,
             npc_profiles=ctx.npc_profiles,
             is_expanded=ctx.day_index == 1 or ctx.twist,

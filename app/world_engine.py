@@ -196,13 +196,6 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
             parts.append(f"- День {choice['day']}: {choice['text'][:80]}{won_mark}")
         parts.append("")
 
-    # Потребности стаи
-    needs = ctx.pack_needs
-    parts.append(
-        f"ПОТРЕБНОСТИ СТАИ: голод={needs.get('hunger', 5)}, "
-        f"жажда={needs.get('thirst', 5)}, здоровье={needs.get('health', 10)}"
-    )
-
     if ctx.open_threads:
         parts.append(f"НЕЗАВЕРШЁННЫЕ СЮЖЕТЫ: {'; '.join(ctx.open_threads[:3])}")
 
@@ -218,9 +211,6 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         '      "tag": "risk|care|cunning",',
         '      "characters_involved": ["имя"],',
         '      "location": "название локации или null",',
-        '      "food_cost": 0,',
-        '      "water_cost": 0,',
-        '      "health_risk": 0,',
         '      "trust_change": 0,',
         '      "emotional_consequence": "Эмоциональное описание (1-3 предложения)",',
         '      "npc_reactions": [{"name": "имя", "reaction": "что сказал/подумал"}]',
@@ -228,10 +218,7 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         '  ]',
         '}',
         "",
-        "СТОИМОСТЬ ВЫБОРА (обязательные поля):",
-        "- food_cost: сколько еды тратится (0-3). 0 = бесплатно, 3 = дорого",
-        "- water_cost: сколько воды тратится (0-3)",
-        "- health_risk: максимальный урон здоровью (0-5). 0 = безопасно, 5 = смертельно",
+        "ДОВЕРИЕ (опционально):",
         "- trust_change: изменение доверия (-3 до +3). -3 = предательство, +3 = героизм",
         "",
         "ЭМОЦИОНАЛЬНОЕ ОПИСАНИЕ (обязательно):",
@@ -249,15 +236,12 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         "- 1-2 предложения на персонажа",
         "",
         "ПРАВИЛА ДЛЯ ЦЕН:",
-        "- risk: health_risk >= 2, food_cost >= 1",
-        "- care: trust_change >= 1, food_cost >= 1",
-        "- cunning: health_risk >= 1, trust_change <= 0",
-        "- Каждый выбор должен иметь ХОТЯ БЫ ОДНУ ненулевую стоимость",
-        "- Дорогие выборы дают больше награды (опиши в consequence)",
+        "- Выборы не тратят ресурсов и не наносят урона — цена решения только "
+        "в последствиях и в доверии NPC",
         "",
         "ТРЕБОВАНИЯ К TAG:",
         "- risk: опасный путь, шанс потерять или получить много",
-        "- care: забота, помощь, но ценой",
+        "- care: забота, тепло, укрепление доверия и связей",
         "- cunning: хитрость, обман, но может не сработать",
         "",
         "Каждый выбор должен:",
@@ -265,7 +249,7 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         "2. Иметь конкретные последствия",
         "3. Вовлекать хотя бы одного персонажа",
         "4. Происходить в определённой локации",
-        "5. Иметь конкретную стоимость (еда/вода/здоровье/доверие)",
+        "5. Иметь понятное доверие (trust_change) или оставить 0",
         "6. Иметь эмоциональное описание",
         "7. Иметь реакции NPC",
     ])
@@ -396,15 +380,10 @@ def _fallback_choices(ctx: WorldContext) -> list[AIChoice]:
     Берёт богатый пул _cards(): ~29 троп на архетип + эхо-сужение по истории
     выборов (механика _narrowed_card) + анти-повторы по недавним названиям.
     День и история выборов дают соль, поэтому каждое утро стая видит новый
-    расклад, а перезапуск дня не возвращает ту же тройку. Потребности стаи
-    подмешивают профильную карту («Голодный путь» / «Целительный лист»).
+    расклад, а перезапуск дня не возвращает ту же тройку.
     """
 
     from app.lore import _cards, _rng
-
-    needs = ctx.pack_needs
-    hunger = needs.get("hunger", 5)
-    health = needs.get("health", 10)
 
     history_tags = [str(c.get("tag", "")) for c in ctx.recent_choices if c.get("tag")]
     recent_titles = {
@@ -436,25 +415,6 @@ def _fallback_choices(ctx: WorldContext) -> list[AIChoice]:
         for card in cards
     ]
 
-    if hunger > 7:
-        choices[0] = AIChoice(
-            title="Голодный путь",
-            description="Стая стоит перед развилкой: влево — тёмный коридор с запахом еды, вправо — светлый проход в никуда.",
-            consequence="Если пойдём на запах — может быть еда, а может быть ловушка. Если в светлый — точно не еда, но безопасно.",
-            tag="risk",
-            characters_involved=[],
-            location=location,
-        )
-    elif health < 7:
-        choices[1] = AIChoice(
-            title="Целительный лист",
-            description="На стене растёт блестящий мох. Он выглядит как лекарство — но кто знает.",
-            consequence="Мох светится зелёным. Если съесть — может помочь. Если нет — будет хуже.",
-            tag="care",
-            characters_involved=[],
-            location=location,
-        )
-
     return choices[:3]
 
 
@@ -468,7 +428,7 @@ async def record_choice(
     votes_count: int = 0,
     won: bool = False,
 ) -> WorldChoice:
-    """Записывает выбор в БД и применяет стоимость к стае."""
+    """Записывает выбор в БД. Ресурсы/урон стаи больше не применяются."""
 
     world_choice = WorldChoice(
         day_index=day_index,
@@ -481,31 +441,6 @@ async def record_choice(
         won=won,
     )
     session.add(world_choice)
-
-    # Применяем стоимость к PackState (только для выигравшего выбора)
-    if won:
-        from app.models import PackState
-        from sqlalchemy import select as sa_select
-
-        q = sa_select(PackState).limit(1)
-        result = await session.execute(q)
-        pack = result.scalar_one_or_none()
-
-        if pack:
-            # Еда: +2 за выбор, -cost
-            pack.hunger = max(0, min(10, pack.hunger + 2 - choice.food_cost))
-            # Вода: +2 за выбор, -cost
-            pack.thirst = max(0, min(10, pack.thirst + 2 - choice.water_cost))
-            # Здоровье: -risk (рандомно от 0 до health_risk)
-            import random
-            actual_damage = random.randint(0, choice.health_risk) if choice.health_risk > 0 else 0
-            pack.health = max(0, min(10, pack.health - actual_damage))
-            pack.last_updated_day = day_index
-
-            logger.info(
-                "AIWorldEngine: выбор '%s' применён: hunger=%d, thirst=%d, health=%d (урон=%d)",
-                choice.title, pack.hunger, pack.thirst, pack.health, actual_damage,
-            )
 
     await session.flush()
     return world_choice

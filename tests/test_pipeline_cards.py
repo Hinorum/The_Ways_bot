@@ -36,16 +36,13 @@ def test_prompt_with_choices_still_builds_chapter() -> None:
     assert "Формат:" in prompt
 
 
-def test_normalize_cards_whitelists_tags_and_coerces_costs() -> None:
+def test_normalize_cards_whitelists_tags_and_coerces_trust() -> None:
     raw = [
         {
             "title": "Ворваться",
             "description": "Короткий путь через гараж.",
             "consequence": "Шум разбудит зиму.",
             "tag": "risk",
-            "food_cost": "2",
-            "water_cost": 1,
-            "health_risk": "4",
             "trust_change": "-1",
             "npc_reactions": [{"name": "Лайнер", "reaction": "Фыркает."}],
         },
@@ -75,10 +72,9 @@ def test_normalize_cards_whitelists_tags_and_coerces_costs() -> None:
     by_title = {card["title"]: card for card in normalized}
     first = by_title["Ворваться"]
     assert first["tag"] == "risk"
-    assert first["food_cost"] == 2
-    assert first["water_cost"] == 1
-    assert first["health_risk"] == 4
     assert first["trust_change"] == -1
+    assert "food_cost" not in first  # урон и трата ресурсов убраны из схемы
+    assert "health_risk" not in first
     assert first["npc_reactions"] == [{"name": "Лайнер", "reaction": "Фыркает."}]
     assert by_title["Крадучись"]["tag"] == "cunning"
     assert by_title["12"]["tag"] == "care"  # не из белого списка
@@ -126,7 +122,7 @@ def test_parse_chapter_normalizes_cards_inline() -> None:
     assert len(cards) == 3
     assert {card["tag"] for card in cards} == {"risk", "care", "cunning"}
     rich = next(card for card in cards if card["tag"] == "risk")
-    assert rich["food_cost"] == 2
+    assert "food_cost" not in rich
     assert rich["npc_reactions"][0]["name"] == "Лайнер"
     assert rich["location"] == "Гараж"
 
@@ -156,7 +152,8 @@ def test_assemble_cards_uses_chapter_then_fills_offline() -> None:
     assert len(cards) == 3
     assert [card["position"] for card in cards] == [0, 1, 2]
     assert cards[0]["title"] == "Дельта"
-    assert cards[0]["food_cost"] == 1
+    assert cards[0]["food_cost"] == 0  # трата ресурсов отключена
+    assert cards[0]["health_risk"] == 0  # урон отключён
     assert json.loads(cards[0]["npc_reactions_json"])[0]["name"] == "Лайнер"
     third = cards[2]
     assert third["title"] and third["description"]
@@ -172,8 +169,10 @@ def test_assemble_cards_empty_chapter_uses_offline_pool() -> None:
         assert card["position"] == cards.index(card)
         assert card["title"] and card["description"]
         assert card["tag"] in {"risk", "care", "cunning"}
-        # Офлайн-троп тоже платит: богатые поля деривируются по архетипу
-        # (слой 6 — единый конвейер), а не обнуляются.
-        assert card["food_cost"] or card["water_cost"] or card["health_risk"]
+        # Офлайн-троп больше не платит: урон и трата ресурсов отключены,
+        # богатые поля (эмоции/NPC-реакции) деривируются по архетипу (слой 6).
+        assert card["food_cost"] == 0
+        assert card["water_cost"] == 0
+        assert card["health_risk"] == 0
         assert card["emotional_consequence"]
         assert json.loads(card["npc_reactions_json"])

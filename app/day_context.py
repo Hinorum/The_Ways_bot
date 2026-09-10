@@ -20,7 +20,6 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -282,8 +281,6 @@ class DayContext:
     active_scar_keys: frozenset[str]
     yesterday_winner_tag: str | None
     emotion_block: str | None
-    pack_needs: Any  # PackNeeds из pack_state
-    needs_block: str | None
     branches_block: str | None
     dynamic_rules_block: str | None
     sblock: str  # сезон + призвания + тропа + отношения + арка + Еретик
@@ -301,7 +298,6 @@ class DayContext:
     run_salt: str
     key: str  # ключ забега ({anchor["key"]})
     open_moment: datetime
-    game_over: bool = False
 
 
 def _now() -> datetime:
@@ -328,65 +324,36 @@ async def build_day_context(
     beats = canon.lines
     echoes = canon.echoes
 
-    # Шрамы мира: загружаем активные и проверяем новые от вчерашнего выбора
-    from app.scar_rules import load_active_scars, process_round_scars
+    # Шрамы мира: контур выживания/урона отключён (settings.world_scars=False).
+    # Шрамы не создаются и не загружаются — сюжет ведёт без «боли мира».
     from app.lore import tags_from_beats
 
-    active_scars = await load_active_scars(session, day_index)
-    active_scar_keys = {s.scar_key for s in active_scars}
-
-    # Обработка шрамов от предыдущего раунда (вчерашний winning tag)
     history_tags = tags_from_beats(beats)
-    yesterday_winner_tag = None
-    if history_tags:
-        # Вчерашний тег = тег победившей карты за вчерашний день
-        yesterday_winner_tag = history_tags[-1] if history_tags else None
-        new_scars = await process_round_scars(session, yesterday_winner_tag, history_tags, day_index)
-        for scar in new_scars:
-            active_scar_keys.add(scar.scar_key)
+    yesterday_winner_tag = history_tags[-1] if history_tags else None
+    active_scar_keys: set[str] = set()
+    active_scars: list = []
+    if settings.world_scars:
+        from app.scar_rules import load_active_scars, process_round_scars
 
-    # Эмоциональный профиль: обработка от вчерашнего выбора
-    from app.emotional_state import process_round_emotions, emotion_block_for_prompt
+        active_scars = await load_active_scars(session, day_index)
+        active_scar_keys = {s.scar_key for s in active_scars}
+        if yesterday_winner_tag is not None:
+            new_scars = await process_round_scars(session, yesterday_winner_tag, history_tags, day_index)
+            for scar in new_scars:
+                active_scar_keys.add(scar.scar_key)
 
-    emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
-    emotion_block = emotion_block_for_prompt(emotion_profile)
+    # Эмоциональный профиль: выключен (settings.emotion_system=False) — профиль
+    # остаётся в дефолте, поэтому блок усталости/паранойи в промпт не попадает.
+    from app.emotional_state import EmotionProfile
 
-    # Потребности стаи: голод, жажда, здоровье
-    from app.pack_state import process_round_needs, get_needs_block, check_death
+    if settings.emotion_system:
+        from app.emotional_state import emotion_block_for_prompt, process_round_emotions
 
-    pack_needs = await process_round_needs(session, yesterday_winner_tag, day_index)
-    needs_block = get_needs_block(pack_needs)
-
-    # Проверяем смерть стаи
-    if check_death(pack_needs):
-        return DayContext(
-            day_index=day_index,
-            beats=beats,
-            echoes=echoes,
-            active_scar_keys=frozenset(active_scar_keys),
-            yesterday_winner_tag=yesterday_winner_tag,
-            emotion_block=emotion_block,
-            pack_needs=pack_needs,
-            needs_block=needs_block,
-            branches_block=None,
-            dynamic_rules_block=None,
-            sblock="",
-            places_block=None,
-            villain=None,
-            twist=False,
-            rule=WinRule.MAJORITY,
-            distant=[],
-            focus_line=None,
-            repeat_block=None,
-            characters_block="",
-            npc_profiles=None,
-            order_axis=0,
-            moral_axis=0,
-            run_salt="",
-            key="",
-            open_moment=_now(),
-            game_over=True,
-        )
+        emotion_profile = await process_round_emotions(session, yesterday_winner_tag, day_index)
+        emotion_block = emotion_block_for_prompt(emotion_profile)
+    else:
+        emotion_profile = EmotionProfile()
+        emotion_block = None
 
     # Деревья последствий: загрузка активных ветвей
     from app.consequence_trees import (
@@ -693,8 +660,6 @@ async def build_day_context(
         active_scar_keys=frozenset(active_scar_keys),
         yesterday_winner_tag=yesterday_winner_tag,
         emotion_block=emotion_block,
-        pack_needs=pack_needs,
-        needs_block=needs_block,
         branches_block=branches_block,
         dynamic_rules_block=dynamic_rules_block,
         sblock=sblock,

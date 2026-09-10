@@ -101,11 +101,14 @@ def test_finale_line_uses_lowercased_label() -> None:
 def test_story_prompt_includes_alignment_block() -> None:
     from app.story import _build_story_prompt
 
+    # Нрав стаи жил отдельным align_text, но уже дублируется внутри season_block
+    # (season.build_season_block). Фаза 3 убрала дубль: одиночный alignment_block
+    # больше не вклеивается в текст главы (в боевом пути он внутри sblock).
     prompt = _build_story_prompt(
         5,
         ["Костёр стаи: появился общий костёр"],
         None,
-        season_block="Сезон: акт 1.",
+        season_block="Сезон: акт 1.\nНРАВ СТАИ — Хаотичная-злая. Тестовая директива.",
         alignment_block="НРАВ СТАИ — Хаотичная-злая. Тестовая директива.",
     )
     assert "НРАВ СТАИ — Хаотичная-злая" in prompt
