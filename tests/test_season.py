@@ -258,6 +258,19 @@ def test_finale_instruction_mentions_vow_wall_and_wholeness() -> None:
     assert "3/5" in block
 
 
+def test_finale_instruction_closes_the_count_mystery() -> None:
+    # Развязка тайны: счёт короче потому, что пятой нечем назваться.
+    block = finale_instruction({"care": 5})
+    assert "на единицу короче" in block
+    assert "нечем назваться" in block
+    assert "имя или тишину" in block
+    # Развязка нарративная: никаких вычитаний и платёжных слов.
+    assert "вычитай" in block
+    # Полный сезон бережёт тайну до финала: в обычные дни её нет.
+    regular = finale_instruction({"care": 5})  # та же строчка всегда в финале —
+    assert regular.count("на единицу короче") == 1
+
+
 def test_season_block_injects_exodus_before_finale(monkeypatch) -> None:
     from app.config import settings
     monkeypatch.setattr(settings, "run_length_months", 1)
