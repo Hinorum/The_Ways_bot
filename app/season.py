@@ -466,6 +466,7 @@ def finale_instruction(
     alignment: str | None = None,
     vow_count: int = 0,
     healed_memories: int = 0,
+    season: int | None = None,
 ) -> str:
     """Блок финала: две честные цены, исход зависит от характера стаи.
 
@@ -512,6 +513,16 @@ def finale_instruction(
         "что сделает стая: имя или тишину. Числа не вычитай и не начисляй — это "
         "вздох мира, а не платёж."
     )
+    heretic_line = ""
+    if season and season >= 2:
+        heretic_line = (
+            " В этот финальный час рядом со стаей стоит тот, кого пересчёт "
+            "однажды пропустил: Еретик. Его линия подходит к той же развилке, "
+            "что и счёт стаи, — и финал может дать ему ровно то, чего ему не "
+            "хватало: быть в счёте. Не решай за него и не объявляй победителя — "
+            "пусть сам Лай решит, войдёт ли он в имя или останется тишиной. Это "
+            "не второй приз и не бонус: одна честная цена, а дверей двое."
+        )
     return (
         "СЕГОДНЯ — ДЕНЬ ПЕРВОГО ЛАЯ, финал сезона. Стая стоит у источника зова. "
         f"Все три карты — три прочтения Лая: {cards_hint}. Ни одно не подаётся "
@@ -520,6 +531,7 @@ def finale_instruction(
         "за одну платит мир, за другую — стая. В этот финальный час смысл первого "
         "Лая изменяется тем, что выберет стая: то, что было зовом, становится ответом. "
         + recount_line
+        + heretic_line
         + vow_line
         + whole_line
         + " "
@@ -655,6 +667,7 @@ def season_block(
                 alignment=alignment_label(order_axis, moral_axis),
                 vow_count=vow_count,
                 healed_memories=healed_memories,
+                season=season,
             )
             return finale + ("\n" + lens if lens else "")
         exodus = exodus_instruction(
@@ -695,6 +708,14 @@ def season_block(
         block += "\n" + _MIDPOINT_BLOCK
     if recount_day(run_day, total):
         block += "\n" + _RECOUNT_BLOCK
+        if vow_count:
+            block += (
+                f"\nОтложенные клятвы у тропы ({vow_count}) сегодня звучат "
+                "отчётливее обычного: пересчёт как будто пересчитывает не только "
+                "старый счёт, но и то, что стая решила оставить в стороне. Не "
+                "заставляй их выбирать — просто пусть они звучат тише, но "
+                "назойливее: этот день рассчитывается не только за стенами."
+            )
     if crisis_act(run_day, total):
         block += "\n" + _CULMINATION_BLOCK
     return block

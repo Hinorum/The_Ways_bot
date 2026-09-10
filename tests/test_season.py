@@ -373,3 +373,26 @@ def test_heretic_prompt_block_season2_hint() -> None:
     # Опциональная сигнатура остаётся совместимой.
     legacy = heretic_prompt_block("2026-08", 2, run_day=10)
     assert legacy is not None and "ПРАВИЛА ЕРЕТИКА" in legacy
+
+
+def test_finale_season2_closes_heretic_line() -> None:
+    s2 = finale_instruction({"care": 5}, season=2)
+    assert "Еретик" in s2
+    assert "быть в счёте" in s2
+    # Сезон 1 — Еретика нет в финале.
+    s1 = finale_instruction({"care": 5}, season=1)
+    assert "Еретик" not in s1
+
+
+def test_recount_day_with_vows_adds_prose(monkeypatch) -> None:
+    from app.config import settings
+    monkeypatch.setattr(settings, "run_length_months", 2)
+    monkeypatch.setattr(settings, "first_season_months", 2)
+    ANCHOR = {"dom": 1, "key": "2026-08"}
+    # Пересчёт на 3/4 пути (run_day 45) + клятвы: про звук клятв от пересчёта.
+    block45 = season_block(anchor=ANCHOR, moment=_utc(2026, 9, 14, 11, 0), vow_count=3)
+    assert "ПЕРЕСЧЁТ" in block45
+    assert "клятвы" in block45
+    # Без клятв — только ПЕРЕСЧЁТ, без касания клятв.
+    block45_no_vows = season_block(anchor=ANCHOR, moment=_utc(2026, 9, 14, 11, 0), vow_count=0)
+    assert "клятвы" not in block45_no_vows
