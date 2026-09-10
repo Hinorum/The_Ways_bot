@@ -312,3 +312,51 @@ async def test_healed_memories_counts_accepted_layers(session) -> None:
     await session.commit()
 
     assert await healed_memories_count(session) == 1
+
+
+# ── Волна 4: тайна мира — пересчёт, эвакуация, Еретик сезона 2+ ──
+
+from app.season import recount_day  # noqa: E402
+
+
+def test_recount_day_once_before_crisis(monkeypatch) -> None:
+    # Один длинный забег: пересчёт на ~3/4 пути, но никогда в кризис/пролог.
+    for run_day, total in (
+        (23, 31),  # 3/4 от 31 = 23 — пересчёт
+        (24, 31),
+        (22, 31),
+        (1, 31),
+        (30, 31),
+        (8, 31),
+    ):
+        mark = recount_day(run_day, total)
+        assert isinstance(mark, bool)
+    assert recount_day(23, 31) is True
+    assert recount_day(24, 31) is False
+    assert recount_day(30, 31) is False  # кризис
+    assert recount_day(3, 31) is False   # пролог
+
+
+def test_season_block_injects_recount_once_in_long_run(monkeypatch) -> None:
+    from app.config import settings
+    monkeypatch.setattr(settings, "run_length_months", 2)
+    monkeypatch.setattr(settings, "first_season_months", 2)
+    ANCHOR = {"dom": 1, "key": "2026-08"}
+
+    # Двухмесячная арка: 24 авг → 23 окт = 61 день. Пересчёт ≈ 45.
+    block45 = season_block(anchor=ANCHOR, moment=_utc(2026, 9, 14, 11, 0))  # run_day 45
+    assert "ПЕРЕСЧЁТ" in block45
+    block46 = season_block(anchor=ANCHOR, moment=_utc(2026, 9, 15, 11, 0))  # run_day 46
+    assert "ПЕРЕСЧЁТ" not in block46
+
+
+def test_heretic_prompt_block_season2_hint() -> None:
+    from app.season import heretic_prompt_block
+
+    s1 = heretic_prompt_block("2026-08", 2, run_day=10, season=1)
+    s2 = heretic_prompt_block("2026-08", 2, run_day=10, season=2)
+    assert "ПРАВИЛА ЕРЕТИКА" in s1 and "ПЕРЕСЧЁТ ЗНАЕТ ЕГО ИНАЧЕ" not in s1
+    assert "ПЕРЕСЧЁТ ЗНАЕТ ЕГО ИНАЧЕ" in s2
+    # Опциональная сигнатура остаётся совместимой.
+    legacy = heretic_prompt_block("2026-08", 2, run_day=10)
+    assert legacy is not None and "ПРАВИЛА ЕРЕТИКА" in legacy

@@ -562,8 +562,11 @@ async def build_day_context(
     # генератора главы не раздувается.
     if "heretic" in guests:
         try:
+            from app.season import current_season as _season_now
+
             heretic_block = heretic_prompt_block(
-                key, season_villain_stage(run_day_now, total_now), run_day_now
+                key, season_villain_stage(run_day_now, total_now), run_day_now,
+                season=_season_now(anchor, open_moment),
             )
         except Exception:
             logger.warning("Блок Еретика не собран (день продолжится без него)", exc_info=True)
