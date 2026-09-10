@@ -376,7 +376,15 @@ async def _cmd_wallet_impl(message: Message) -> None:
             reply_markup=_personal_keyboard("wallet:view", "Мой кошелёк"),
         )
         return
-    await _bind_wallet(message, parts[1])
+    if message.chat.type == ChatType.PRIVATE:
+        await _bind_wallet(message, parts[1])
+        return
+    await message.answer(
+        "Адрес кошелька — личные данные: привязывать его в группе не буду, "
+        "чтобы не показать всем. Напиши мне в личные сообщения «/wallet» — "
+        "дальше подскажу, а адрес пришлёшь там же.\n\n"
+        "Подсказка: просто открой чат с ботом через профиль и нажми «Start»."
+    )
 
 
 @router.callback_query(F.data == "wallet:view")

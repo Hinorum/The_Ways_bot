@@ -17,6 +17,7 @@ import json
 import random
 from datetime import date, datetime, timedelta, timezone
 
+from app.async_utils import unwrap_llm_json
 from app.core.registry import RUN_START_KEY, VILLAIN_KEY  # noqa: F401 (ре-экспорт для app.rounds)
 
 # Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
@@ -816,13 +817,11 @@ async def _generate_villain_events_via_llm(stage: int, llm_caller) -> list[str] 
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:500] for s in data if isinstance(s, str) and len(s) > 20][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:500] for s in data["strings"] if isinstance(s, str) and len(s) > 20][:5]
 
     return None
 
@@ -896,13 +895,11 @@ async def _generate_heretic_events_via_llm(stage: int, llm_caller) -> list[str] 
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:500] for s in data if isinstance(s, str) and len(s) > 20][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:500] for s in data["strings"] if isinstance(s, str) and len(s) > 20][:5]
 
     return None
 

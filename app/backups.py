@@ -87,9 +87,11 @@ async def backup_now(keep: int = KEEP) -> Path | None:
         dest = directory / f"backup-{stamp}.db"
 
         def _sqlite_copy() -> None:
-            src_conn = sqlite3.connect(str(source))
+            # Живая БД в этот момент пишется тиком: без timeout при заблокированной
+            # базе копия вылетала бы «database is locked». 30с — запас на всплеск.
+            src_conn = sqlite3.connect(str(source), timeout=30.0)
             try:
-                dst_conn = sqlite3.connect(str(dest))
+                dst_conn = sqlite3.connect(str(dest), timeout=30.0)
                 try:
                     src_conn.backup(dst_conn)
                 finally:

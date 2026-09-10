@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Router
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,6 +15,11 @@ from app.rounds import ensure_current_round, get_active_round
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+# Диалог привязки кошелька живёт 15 минут: начал — сразу пришли адрес.
+# Дольше открытую «сессию» считаем забытой, чтобы случайное сообщение
+# спустя день не трактовалось как попытка привязки.
+_WALLET_DIALOG_TTL_SECONDS = 15 * 60
 
 
 async def _ensure_round():
@@ -48,16 +54,33 @@ async def _dialog_open(uid: int) -> bool:
     if uid <= 0:
         return False
     async with SessionLocal() as session:
-        return await session.get(WalletDialog, uid) is not None
+        row = await session.get(WalletDialog, uid)
+        if row is None:
+            return False
+        since = row.since
+        if since is not None and since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if since is not None and (
+            datetime.now(timezone.utc) - since
+        ).total_seconds() > _WALLET_DIALOG_TTL_SECONDS:
+            # Просроченный диалог закрываем и для других путей (бутстрап и т.п.).
+            await session.delete(row)
+            await session.commit()
+            return False
+        return True
 
 
 async def _dialog_start(uid: int) -> None:
     if uid <= 0:
         return
     async with SessionLocal() as session:
-        if await session.get(WalletDialog, uid) is None:
+        row = await session.get(WalletDialog, uid)
+        if row is None:
             session.add(WalletDialog(player_id=uid))
-            await session.commit()
+        else:
+            # Повторный старт продлевает окно ожидания адреса.
+            row.since = datetime.now(timezone.utc)
+        await session.commit()
 
 
 async def _dialog_close(uid: int) -> None:

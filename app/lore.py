@@ -13,10 +13,11 @@ import random
 from collections import deque
 from dataclasses import dataclass, replace
 
+from app.async_utils import unwrap_llm_json
 from app.story_arc import arc_card_titles, arc_details_from_block, mission_scene
 
 
-# Окно дедупликации атмосферных строк: последние 7 дней не повторяют
+# Окно дедупликации атмосферных строк: последние 12 дней не повторяют
 # одни и те же «atmospheric» пады. Ключ — phase (early/mid/late),
 # значение — deque из кортежей (day_index, pad_text).
 _RECENT_ATMOSPHERIC: dict[str, deque[tuple[int, str]]] = {}
@@ -1767,13 +1768,11 @@ async def _generate_atmospheric_via_llm(phase: str, llm_caller) -> list[str] | N
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 10][:20]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 10][:20]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:200] for s in data if isinstance(s, str) and len(s) > 10][:20]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:200] for s in data["strings"] if isinstance(s, str) and len(s) > 10][:20]
 
     return None
 
@@ -1905,13 +1904,11 @@ async def _generate_voice_examples_via_llm(npc_key: str, llm_caller) -> list[str
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 5][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 5][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:200] for s in data if isinstance(s, str) and len(s) > 5][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:200] for s in data["strings"] if isinstance(s, str) and len(s) > 5][:5]
 
     return None
 
@@ -2057,13 +2054,11 @@ async def _generate_voice_banned_via_llm(npc_key: str, llm_caller) -> list[str] 
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:100] for s in response if isinstance(s, str) and len(s) > 3][:3]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:100] for s in items if isinstance(s, str) and len(s) > 3][:3]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:100] for s in data if isinstance(s, str) and len(s) > 3][:3]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:100] for s in data["strings"] if isinstance(s, str) and len(s) > 3][:3]
 
     return None
 
@@ -2178,13 +2173,11 @@ async def _generate_inner_thoughts_via_llm(npc_key: str, llm_caller) -> list[str
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 5][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 5][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:200] for s in data if isinstance(s, str) and len(s) > 5][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:200] for s in data["strings"] if isinstance(s, str) and len(s) > 5][:5]
 
     return None
 
@@ -2320,7 +2313,7 @@ async def _generate_dog_pad_via_llm(npc_key: str, phase: str, llm_caller) -> lis
     """Генерирует dog pad через LLM."""
     style = _DOG_PAD_STYLE.get(npc_key, "собака в лабиринте")
     _PHASE_DESC = {
-        "early": "ранняя фаза — любопытство, осторожность, стaya только вошла",
+        "early": "ранняя фаза — любопытство, осторожность, стая только вошла",
         "mid": "средняя фаза — напряжение растёт, мир ломается",
         "late": "поздняя фаза — тишина, прощание, последние дни",
     }
@@ -2341,13 +2334,11 @@ async def _generate_dog_pad_via_llm(npc_key: str, phase: str, llm_caller) -> lis
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:500] for s in response if isinstance(s, str) and len(s) > 20][:1]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:500] for s in items if isinstance(s, str) and len(s) > 20][:1]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:500] for s in data if isinstance(s, str) and len(s) > 20][:1]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:500] for s in data["strings"] if isinstance(s, str) and len(s) > 20][:1]
 
     return None
 
@@ -2356,7 +2347,7 @@ async def _generate_dog_pad_via_llm(npc_key: str, phase: str, llm_caller) -> lis
 _FALLBACK_DOG_PADS = {
     "Баркод": {
         "early": "Баркод-Следопыт провёл когтем по пыли черту и сел рядом: цифры сегодня подождут. Он считает не дни, а ставки — его глаза блестят, когда кто-то рискует.",
-        "mid": "Баркод-Следопыт сидит у порога и считает прохожих. Он считает всех — даже тех, кого нет. А ещё считает шансы:他知道概率今天对谁有利, но молчит — азартнее того, кто ставит.",
+        "mid": "Баркод-Следопыт сидит у порога и считает прохожих. Он считает всех — даже тех, кого нет. А ещё считает шансы: знает, на чью сторону сегодня склоняется удача, но молчит — азартнее того, кто ставит.",
         "late": "Баркод-Следопыт молчит и считает. Цифры уже не сходятся — он знает это, но молчит. Он давно перестал считать дни: он считает победы, и каждая проигранная — нож в бок.",
     },
     "Стежка": {
@@ -2485,13 +2476,11 @@ async def _generate_echo_tones_via_llm(tone: str, llm_caller) -> list[str] | Non
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:300] for s in response if isinstance(s, str) and len(s) > 10][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:300] for s in items if isinstance(s, str) and len(s) > 10][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:300] for s in data if isinstance(s, str) and len(s) > 10][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:300] for s in data["strings"] if isinstance(s, str) and len(s) > 10][:5]
 
     return None
 
@@ -2610,13 +2599,11 @@ async def _generate_weather_via_llm(llm_caller) -> list[str] | None:
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, list):
-        return [str(s)[:200] for s in response if isinstance(s, str) and len(s) > 10][:5]
-    if isinstance(response, dict) and "strings" in response:
-        items = response["strings"]
-        if isinstance(items, list):
-            return [str(s)[:200] for s in items if isinstance(s, str) and len(s) > 10][:5]
+    data = unwrap_llm_json(result)
+    if isinstance(data, list):
+        return [str(s)[:200] for s in data if isinstance(s, str) and len(s) > 10][:5]
+    if isinstance(data, dict) and isinstance(data.get("strings"), list):
+        return [str(s)[:200] for s in data["strings"] if isinstance(s, str) and len(s) > 10][:5]
 
     return None
 
@@ -2722,9 +2709,9 @@ async def _generate_place_via_llm(index: int, llm_caller) -> list[dict] | None:
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict) and "to" in response and "scene" in response:
-        return [{"to": str(response["to"])[:200], "scene": str(response["scene"])[:200], "scar_key": None}]
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict) and "to" in data and "scene" in data:
+        return [{"to": str(data["to"])[:200], "scene": str(data["scene"])[:200], "scar_key": None}]
 
     return None
 

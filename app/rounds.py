@@ -1277,7 +1277,9 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
         .where(RevoteGrant.round_id == round_row.id, RevoteGrant.status == "granted")
         .values(status="expired")
     )
-    await session.commit()
+    # Один коммит в конце: статус, сгоревшие гранты, победитель и эхо-следы
+    # дня фиксируются атомарно — день не должен зависать в TALLYING, если
+    # подсчёт упадёт на середине.
     # Следы дня рождаются сразу при закрытии голосования, а не в конце часа
     # подсчёта: следующий день рендерится уже после вскрытия итогов, и эхо
     # победителя (earliest_day=завтра) обязано существовать к моменту старта

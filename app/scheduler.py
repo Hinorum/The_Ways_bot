@@ -723,6 +723,11 @@ async def _watch_job() -> None:
     await watch_once(bot=_bot)
 
 
+async def _watch_job_guarded() -> None:
+    """Обёртка _watch_job с алертом при падении."""
+    await _alert_guarded("ton-watch", _watch_job)
+
+
 async def _ton_maintenance() -> None:
     """Финализация дней, очередь выплат, ретраи, копилки недели и месяца."""
     from app.leaderboard import settle_month_if_due, settle_week_if_due
@@ -747,6 +752,11 @@ async def _ton_maintenance() -> None:
             logger.warning("Аномалии: %s", "; ".join(problems))
     except Exception:
         logger.exception("Проверка аномалий упала (не мешает обслуживанию)")
+
+
+async def _ton_maintenance_guarded() -> None:
+    """Обёртка _ton_maintenance с алертом при падении."""
+    await _alert_guarded("ton-settle", _ton_maintenance)
 
 
 async def boot_maintenance() -> None:
@@ -857,8 +867,8 @@ def start_scheduler() -> None:
         minute=17,
     )
     if settings.ton_enabled:
-        _register_job("ton-watch", _watch_job, "interval", seconds=60)
-        _register_job("ton-settle", _ton_maintenance, "interval", seconds=120)
+        _register_job("ton-watch", _watch_job_guarded, "interval", seconds=60)
+        _register_job("ton-settle", _ton_maintenance_guarded, "interval", seconds=120)
     # Шлифовка картинок-заглушек: каждые 2 часа, окно 24 часа с момента дня.
     from app.rounds import polish_stub_images
 

@@ -77,7 +77,7 @@ async def track_chat(event: ChatMemberUpdated) -> None:
     logger.info("Чат %s (%s): статус бота %s, active=%s", chat.id, chat.type, status, active)
 
 
-@router.message(Command("advance"))
+@router.message(Command("advance"), F.chat.type == ChatType.PRIVATE)
 async def cmd_advance(message: Message) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
@@ -134,11 +134,10 @@ async def cmd_advance(message: Message) -> None:
         return
     delivered = await announce_new_day(message.bot, nxt, round_row if closed_here else None)
     # Заглушки картинок дорисовываются фоном — как и в автопереходе.
-    import asyncio as _asyncio
-
+    from app.async_utils import spawn
     from app.scheduler import _image_upgrade_job
 
-    _asyncio.create_task(_image_upgrade_job(nxt.day_index))
+    spawn(_image_upgrade_job(nxt.day_index), label="image-upgrade@advance")
     if delivered:
         await message.answer(f"День {nxt.day_index} объявлен в {len(delivered)} чат(ах).")
     else:
@@ -159,7 +158,7 @@ async def cmd_advance(message: Message) -> None:
         )
 
 
-@router.message(Command("resetgame"))
+@router.message(Command("resetgame"), F.chat.type == ChatType.PRIVATE)
 async def cmd_resetgame(message: Message) -> None:
     """Сброс игры — только для хранителя. Два режима:
     /resetgame confirm — всё с нуля, включая канон истории;
@@ -246,7 +245,7 @@ async def _resolve_player_arg(session, raw: str) -> int | None:
     return row.id if row is not None else None
 
 
-@router.message(Command("dispute"))
+@router.message(Command("dispute"), F.chat.type == ChatType.PRIVATE)
 async def cmd_dispute(message: Message) -> None:
     """Жалоба на итог дня. Хранителю доступны open/resolve/reject/compensate."""
     from app import disputes as dispute_mod
@@ -320,7 +319,7 @@ async def cmd_dispute(message: Message) -> None:
     await message.answer(reply)
 
 
-@router.message(Command("disputes"))
+@router.message(Command("disputes"), F.chat.type == ChatType.PRIVATE)
 async def cmd_disputes(message: Message) -> None:
     """Список открытых споров. Только для хранителя."""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -474,7 +473,7 @@ async def _apply_adjustment(bot, direction: str, amount_nanotons: int | None, no
     return result
 
 
-@router.message(Command("adjust"))
+@router.message(Command("adjust"), F.chat.type == ChatType.PRIVATE)
 async def cmd_adjust(message: Message) -> None:
     """Сверка казны: меню разбора расхождения баланса с ожиданиями БД.
 
@@ -537,7 +536,7 @@ async def on_adjust_action(callback: CallbackQuery) -> None:
     await callback.answer("Записано.")
 
 
-@router.message(Command("finalize"))
+@router.message(Command("finalize"), F.chat.type == ChatType.PRIVATE)
 async def cmd_finalize(message: Message) -> None:
     """Ручная финализация ставок застрявших дней: /finalize или /finalize 40"""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -646,7 +645,7 @@ async def cmd_finalize(message: Message) -> None:
     await message.answer("\n".join(results))
 
 
-@router.message(Command("refinalize"))
+@router.message(Command("refinalize"), F.chat.type == ChatType.PRIVATE)
 async def cmd_refinalize(message: Message) -> None:
     """Принудительная перефинализация: сбрасывает finalized, удаляет старые
     невыполненные выплаты, пересоздаёт всё заново. /refinalize 1"""
@@ -720,7 +719,7 @@ async def cmd_refinalize(message: Message) -> None:
         await message.answer(f"Ошибка отправки: {exc!r}")
 
 
-@router.message(Command("pause"))
+@router.message(Command("pause"), F.chat.type == ChatType.PRIVATE)
 async def cmd_pause(message: Message) -> None:
     """Стоп-кран: дни замирают, входящие переводы автоматически возвращаются."""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
@@ -741,7 +740,7 @@ async def cmd_pause(message: Message) -> None:
     )
 
 
-@router.message(Command("resume"))
+@router.message(Command("resume"), F.chat.type == ChatType.PRIVATE)
 async def cmd_resume(message: Message) -> None:
     """Снимает стоп-кран: следующий тик откроет новый день сам."""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:

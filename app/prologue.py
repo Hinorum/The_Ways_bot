@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from app.async_utils import unwrap_llm_json
+
 # Фокус дня пролога: короткий титул для статусной строки и блок-задание
 # для Ведущего. Канон лиц синхронизирован с DM_SYSTEM_PROMPT.
 PROLOGUE_BEATS: dict[int, dict[str, str]] = {
@@ -197,11 +199,11 @@ async def _generate_prologue_beat_via_llm(day_index: int, season: int, llm_calle
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict) and all(k in response for k in ("title", "block")):
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict) and all(k in data for k in ("title", "block")):
         return {
-            "title": response["title"][:80],
-            "block": response["block"][:500],
+            "title": data["title"][:80],
+            "block": data["block"][:500],
         }
 
     return None

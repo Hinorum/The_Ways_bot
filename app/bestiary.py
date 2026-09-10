@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.async_utils import unwrap_llm_text
 from app.models import BestiarySighting, Round
 from app.season import villain_stage
 
@@ -162,13 +163,8 @@ async def _generate_ai_entry(
         if result is None:
             return None
 
-        response = result[0] if isinstance(result, tuple) else result
-        if isinstance(response, dict):
-            # Пытаемся извлечь текст из ответа
-            text = response.get("text") or response.get("content") or response.get("message", {}).get("content", "")
-        elif isinstance(response, str):
-            text = response
-        else:
+        text = unwrap_llm_text(result)
+        if text is None:
             return None
 
         text = text.strip()

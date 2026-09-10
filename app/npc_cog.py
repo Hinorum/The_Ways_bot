@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app.async_utils import unwrap_llm_json
 from app.relations import _TONES
 
 if TYPE_CHECKING:
@@ -91,7 +92,7 @@ _INNER_THOUGHTS = {
         "devoted": [
             "Каждый голос — запись в дневнике. Я храню их историю.",
             "Стая создаёт запись, а я — её свидетель.",
-            "Дневник растёт с каждым днём. Это beautiful.",
+            "Дневник растёт с каждым днём. Это красиво.",
         ],
         "cautious": [
             "Данные говорят одно, но сердце стаи — другое.",
@@ -174,7 +175,7 @@ _MOTIVATIONS = {
         "devoted": "Помочь стае пройти лабиринт по кратчайшему пути",
         "cautious": "Пересчитать риски и предложить безопасный маршрут",
         "wary": "Принять контроль, потому что стая не справляется",
-        "hostile": "Запереть лабиринт, чтобы стaya потерялась навсегда",
+        "hostile": "Запереть лабиринт, чтобы стая потерялась навсегда",
     },
     "heretic": {
         "devoted": "Научить стаю нарушать правила, которые её ограничивают",
@@ -504,14 +505,14 @@ async def _generate_npc_profile_via_llm(npc_key: str, llm_caller) -> dict | None
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict) and all(k in response for k in ("name", "personality")):
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict) and all(k in data for k in ("name", "personality")):
         return {
-            "name": response["name"][:80],
-            "personality": response["personality"][:300],
-            "speech_style": response.get("speech_style", "")[:150],
-            "appearance": response.get("appearance", "")[:150],
-            "default_mood": response.get("default_mood", "neutral"),
+            "name": data["name"][:80],
+            "personality": data["personality"][:300],
+            "speech_style": data.get("speech_style", "")[:150],
+            "appearance": data.get("appearance", "")[:150],
+            "default_mood": data.get("default_mood", "neutral"),
         }
 
     return None

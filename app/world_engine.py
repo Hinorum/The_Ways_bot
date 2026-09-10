@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.async_utils import unwrap_llm_json
 from app.models import (
     WorldChoice,
     WorldCharacter,
@@ -320,12 +321,21 @@ async def generate_ai_choices(
         logger.warning("AIWorldEngine: LLM не ответил: %s", e)
         result = None
 
-    if not result or "choices" not in (result[0] if isinstance(result, tuple) else result):
+    if result is None:
         # Фолбэк: генерируем простые выборы на основе контекста
         return _fallback_choices(ctx)
 
-    response = result[0] if isinstance(result, tuple) else result
-    choices_text = response.get("choices", response)
+    data = unwrap_llm_json(result)
+    if data is None:
+        return _fallback_choices(ctx)
+
+    if isinstance(data, list):
+        choices_text = data
+    elif isinstance(data, dict):
+        choices_text = data.get("choices", data)
+    else:
+        return _fallback_choices(ctx)
+
     if isinstance(choices_text, str):
         choices = _parse_ai_choices(choices_text)
     else:
@@ -545,12 +555,12 @@ async def create_world_snapshot(
     world_trend = ""
 
     if result:
-        response = result[0] if isinstance(result, tuple) else result
-        if isinstance(response, dict):
-            mood = response.get("mood", mood)
-            summary = response.get("summary", summary)
-            open_threads = response.get("open_threads", open_threads)
-            world_trend = response.get("world_trend", world_trend)
+        data = unwrap_llm_json(result)
+        if isinstance(data, dict):
+            mood = data.get("mood", mood)
+            summary = data.get("summary", summary)
+            open_threads = data.get("open_threads", open_threads)
+            world_trend = data.get("world_trend", world_trend)
 
     snapshot = WorldSnapshot(
         day_index=day_index,
@@ -672,20 +682,20 @@ async def generate_ai_location(
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict):
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict):
         # Уже dict — напрямую
-        if all(k in response for k in ("name", "description", "atmosphere")):
+        if all(k in data for k in ("name", "description", "atmosphere")):
             return AILocation(
-                name=response["name"][:120],
-                description=response["description"][:500],
-                atmosphere=response.get("atmosphere", "")[:300],
-                dangers=response.get("dangers", "")[:200],
-                resources=response.get("resources", "")[:200],
-                scene=response.get("scene", "dark labyrinth corridor")[:200],
+                name=data["name"][:120],
+                description=data["description"][:500],
+                atmosphere=data.get("atmosphere", "")[:300],
+                dangers=data.get("dangers", "")[:200],
+                resources=data.get("resources", "")[:200],
+                scene=data.get("scene", "dark labyrinth corridor")[:200],
             )
-    elif isinstance(response, str):
-        return _parse_ai_location(response)
+    elif isinstance(data, str):
+        return _parse_ai_location(data)
 
     return None
 
@@ -872,21 +882,21 @@ async def generate_ai_character(
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict):
-        if all(k in response for k in ("name", "personality")):
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict):
+        if all(k in data for k in ("name", "personality")):
             return AICharacter(
-                name=response["name"][:80],
-                role=response.get("role", "npc"),
-                personality=response["personality"][:300],
-                flaw=response.get("flaw", "")[:150],
-                virtue=response.get("virtue", "")[:150],
-                moral_alignment=response.get("moral_alignment", "neutral"),
-                mood=response.get("mood", "neutral"),
-                speech_style=response.get("speech_style", "")[:150],
+                name=data["name"][:80],
+                role=data.get("role", "npc"),
+                personality=data["personality"][:300],
+                flaw=data.get("flaw", "")[:150],
+                virtue=data.get("virtue", "")[:150],
+                moral_alignment=data.get("moral_alignment", "neutral"),
+                mood=data.get("mood", "neutral"),
+                speech_style=data.get("speech_style", "")[:150],
             )
-    elif isinstance(response, str):
-        return _parse_ai_character(response)
+    elif isinstance(data, str):
+        return _parse_ai_character(data)
 
     return None
 
@@ -1118,12 +1128,12 @@ async def generate_consequence_chain(
     if not result:
         return None
 
-    response = result[0] if isinstance(result, tuple) else result
-    if isinstance(response, dict):
+    data = unwrap_llm_json(result)
+    if isinstance(data, dict):
         # Уже dict — напрямую
-        if "chain" in response and isinstance(response["chain"], list):
+        if "chain" in data and isinstance(data["chain"], list):
             chain = []
-            for item in response["chain"]:
+            for item in data["chain"]:
                 if all(k in item for k in ("cause", "effect")):
                     chain.append(
                         AIConsequence(
@@ -1140,10 +1150,10 @@ async def generate_consequence_chain(
                 return AIConsequenceChain(
                     root_choice=chain[0].cause,
                     chain=chain,
-                    resolution=response.get("resolution", "")[:300],
+                    resolution=data.get("resolution", "")[:300],
                 )
-    elif isinstance(response, str):
-        return _parse_ai_consequence_chain(response)
+    elif isinstance(data, str):
+        return _parse_ai_consequence_chain(data)
 
     return None
 
