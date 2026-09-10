@@ -283,6 +283,74 @@ def _get_dynamic_places(
 
     return places if places else base_places  # fallback к оригиналу
 
+
+# Карта лабиринта «в камне»: мир от выборов, не от сюжета. Сожжённый коридор
+# остаётся сожжённым, открытый очаг — тёплым. /lore показывает, что выбор
+# стаи оставил на карте вечным.
+_MAP_SCAR_NAMES = {
+    "burned_path": "сожжённый путь",
+    "scorched_earth": "выжженная земля",
+    "fresh_wound": "свежая рана",
+    "warm_hearth": "тёплый очаг",
+    "sanctuary": "святилище",
+    "gentle_breath": "мягкое дыхание",
+    "labyrinth_doubt": "сомнение лабиринта",
+    "false_trails": "ложные тропы",
+    "whisper_of_trick": "шёпот обмана",
+}
+_MAP_SCAR_EMOJI = {
+    "burned_path": "🔥",
+    "scorched_earth": "🌑",
+    "fresh_wound": "🩸",
+    "warm_hearth": "🕯️",
+    "sanctuary": "🏛️",
+    "gentle_breath": "🍃",
+    "labyrinth_doubt": "🌀",
+    "false_trails": "🕳️",
+    "whisper_of_trick": "🗣️",
+}
+
+
+async def labyrinth_map_block(session) -> str | None:
+    """Карта лабиринта в камне: активные шрамы стаи как строки мира.
+
+    None — выбор ещё не оставил на карте следов. Шрамы читаются из БД
+    (активные на текущий день), а сами строки — это «камень», который
+    помнит, что сожжённый коридор остаётся сожжённым.
+    """
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.models import Round, WorldScar
+
+    day_result = await session.execute(
+        sa_select(sa_func.max(Round.day_index)).where(Round.status == "closed")
+    )
+    day_now = day_result.scalar() or 0
+
+    scars_result = await session.execute(sa_select(WorldScar))
+    all_scars = list(scars_result.scalars().all())
+
+    # Активные: не истёкшие. expires_day=None — вечный след.
+    active = [
+        scar for scar in all_scars
+        if scar.expires_day is None or scar.expires_day >= day_now
+    ]
+    if not active:
+        return None
+
+    lines = []
+    for scar in active[:8]:
+        emoji = _MAP_SCAR_EMOJI.get(scar.scar_key, "🗿")
+        name = _MAP_SCAR_NAMES.get(scar.scar_key, scar.scar_key)
+        meta = scar.metadata_json or ""
+        if meta and meta != "null":
+            lines.append(f"{emoji} {name} — {meta}")
+        else:
+            lines.append(f"{emoji} {name}")
+    return (
+        "🗺 Карта лабиринта в камне: что выбор стаи оставил навечно.\n"
+        + "\n".join(lines)
+    )
+
 # Заголовок, описание и последствие связаны намертво: карта называет то,
 # что делает, и последствие вытекает именно из этого действия. Никаких
 # общих вставных фраз между картами.
@@ -2754,3 +2822,33 @@ async def load_places(session, season: int) -> None:
                 pass
         if places:
             _places_cache = places
+
+
+def scarcity_breath_block(tags: list[str] | None) -> str | None:
+    """Мягкая нехватка как метафора, не как число.
+
+    Не трогает экономику и карты дня: ничего не списывается и не начисляется.
+    Просто когда стая долго не выбирает «заботу», промпт получает строку,
+    которая рисует мир немного скудеющим — создавай мирное стеснение в тоне,
+    не в ресурсах. Когда стая возвращается к дому — мир «оттаивает» той же
+    строкой-контртрастов.
+    """
+    if not tags or len(tags) < 4:
+        return None
+    recent = tags[-4:]
+    home = recent.count("care")
+    if home == 0:
+        return (
+            "МЯГКАЯ НЕХВАТКА (метафора, не цифры): четырежды подряд стая выбирала "
+            "не дом. Мир не штрафует — он просто отзывается более скудным светом, "
+            "более глухим эхом, более твёрдой землёй под лапами. Покажи это тоном "
+            "и пейзажем — без изменений ресурсов, без голода и урона."
+        )
+    if home == 4:
+        return (
+            "МЯГКИЙ ОТТЕПЕЛЬ (метафора, не цифры): четырежды подряд выбор падал "
+            "на дом. Мир не награждает количеством — он просто теплее отзывается: "
+            "мягкий свет, уступчивые тени, пахнет дымом жилья. Покажи это тоном, "
+            "не прибавляя ничего к карте."
+        )
+    return None

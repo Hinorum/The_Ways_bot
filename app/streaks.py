@@ -127,6 +127,8 @@ def streak_text(player: Player) -> str:
         lines.append(f"📈 До следующего титула: {nxt.emoji} {nxt.name} — ещё {remaining} {remaining_word(remaining)}")
     elif current >= TITLES[-1].correct_needed:
         lines.append("🏆 Ты достиг вершины. Стая идёт за тобой.")
+    if current >= 10:
+        lines.append("🧠 Ты помнишь дольше остальных — память лабиринта держится на тебе.")
 
     return "\n".join(lines)
 
@@ -211,9 +213,11 @@ async def calc_rank(session: AsyncSession, player_id: int) -> dict:
 
 
 async def path_legacy(session: AsyncSession, limit: int = 5) -> list[dict]:
-    """Возвращает последние не выбранные пути, которые могут вернуться как эхо.
+    """Возвращает отложенные клятвы — пути, которые стая не выбрала.
 
-    Ищет в StoryBeat Winning title и показывает проигравшие карточки.
+    В лабиринте нет забытых путей: каждый невыбранный вариант становится
+    отложенной клятвой. Он не исчезает — ждёт у края тропы, как эхо, и может
+    вернуться. Ищет в StoryBeat Winning title и показывает проигравшие карточки.
     """
     from app.models import Card, StoryBeat
 
@@ -239,7 +243,7 @@ async def path_legacy(session: AsyncSession, limit: int = 5) -> list[dict]:
                     "tag": getattr(card, "tag", "care"),
                 })
 
-    return legacy[:limit * 2]  # Берём до 2x непобеждённых путей
+    return legacy[:limit * 2]  # Берём до 2x отложенных клятв
 
 
 async def weekly_report(session: AsyncSession) -> str:

@@ -97,6 +97,8 @@ async def boot_game(bot) -> None:
             npc_count = await seed_npc_profiles(session, llm_caller=_chat_completion)
             prologue_count = await seed_prologue_beats(session, llm_caller=_chat_completion, season=1)
             arc_count = await seed_season_arcs(session, llm_caller=_chat_completion, season=1)
+            from app.dog_memories import seed_dog_memories
+            dogmem_count = await seed_dog_memories(session, season=1)
             from app.lore import (
                 seed_atmospheric_pools, load_all_atmospheric,
                 seed_voice_examples, load_all_voice_examples,
@@ -129,8 +131,8 @@ async def boot_game(bot) -> None:
             await load_villain_events(session, season=1)
             await load_heretic_events(session, season=1)
             log.info(
-                "AI World Engine: %d NPC, %d prologue, %d arcs, %d atm, %d voice, %d banned, %d thoughts, %d dogpad, %d echo, %d weather, %d places, %d villain, %d heretic",
-                npc_count, prologue_count, arc_count, atm_count, voice_count, banned_count, thoughts_count, dogpad_count, echo_count, weather_count, places_count, villain_count, heretic_count,
+                "AI World Engine: %d NPC, %d prologue, %d arcs, %d dogmem, %d atm, %d voice, %d banned, %d thoughts, %d dogpad, %d echo, %d weather, %d places, %d villain, %d heretic",
+                npc_count, prologue_count, arc_count, dogmem_count, atm_count, voice_count, banned_count, thoughts_count, dogpad_count, echo_count, weather_count, places_count, villain_count, heretic_count,
             )
             # Auto-regenerate: замена хардкод-фолбэков на AI-данные
             try:

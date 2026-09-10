@@ -868,6 +868,31 @@ class SeasonArc(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class DogMemory(Base):
+    """Личная память собаки стаи — подавленный слой до лабиринта.
+
+    У каждой собаки стаи была жизнь до лабиринта, и она не стёрта — она
+    подавлена. Шрам мира (WorldScar) и память связаны: когда выбор оставляет
+    на мире след, у одной из собак просыпается следующий слой. Память живёт
+    этапами: suppressed (подавлена) → remembered (всплыла) → healed (принята).
+    Исцеляющие шрамы (тёплый очаг, святилище, мягкое дыхание) снимают по
+    одной памяти со стаи.
+    """
+
+    __tablename__ = "dog_memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dog_key: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="birth")  # слой жизни до лабиринта
+    summary: Mapped[str] = mapped_column(Text)  # скрытая память до лабиринта
+    scar_key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    created_day: Mapped[int] = mapped_column(Integer, index=True)
+    state: Mapped[str] = mapped_column(String(16), default="suppressed")  # suppressed/remembered/healed
+    surfaced_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    healed_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AIGeneratedPool(Base):
     """Пул AI-сгенерированного контента: атмосферные пэды, голоса, мысли.
 

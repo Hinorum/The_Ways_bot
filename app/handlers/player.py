@@ -355,11 +355,13 @@ async def cmd_today(message: Message) -> None:
 
 @router.message(Command("lore"))
 async def cmd_lore(message: Message) -> None:
-    from app.lore import ARCHIVE_ORIGIN
+    from app.lore import ARCHIVE_ORIGIN, labyrinth_map_block
 
     async with SessionLocal() as session:
         beats = (await session.execute(select(StoryBeat).order_by(StoryBeat.day_index))).scalars().all()
         chronicle = await _pack_chronicle(session)
+        map_block = await labyrinth_map_block(session)
+        pack_memories = await _pack_memories_block(session)
     if not beats:
         await message.answer(
             f"{hint_mark('lore-empty')} Канон троп ещё пуст — первый След появится "
@@ -369,9 +371,30 @@ async def cmd_lore(message: Message) -> None:
     text, truncated = _canon_text(beats)
     if truncated:
         text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме коридоров.\n\n" + text
+    extra = []
+    if chronicle:
+        extra.append("📜 Дневник стаи:\n" + "\n".join(chronicle))
+    if pack_memories:
+        extra.append("🕯️ Память стаи:\n" + "\n".join(pack_memories))
+    if map_block:
+        extra.append(map_block)
     await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}" + (
-        "\n\n📜 Дневник стаи:\n" + "\n".join(chronicle) if chronicle else ""
+        "\n\n" + "\n\n".join(extra) if extra else ""
     ))
+
+
+async def _pack_memories_block(session, limit: int = 3) -> list[str]:
+    """Всплывшие/принятые личные памяти стаи для /lore."""
+    from app.dog_memories import dog_display_name, icon_memories
+
+    rows = await icon_memories(session, limit=limit)
+    lines = []
+    for mem in rows:
+        state = "принята" if mem.state == "healed" else "всплыла"
+        lines.append(f"  {dog_display_name(mem.dog_key)}: {mem.summary}")
+        if mem.surfaced_day:
+            lines[-1] += f" · день {mem.surfaced_day} · {state}"
+    return lines
 
 
 async def _pack_chronicle(session, limit: int = 12) -> list[str]:
@@ -502,7 +525,7 @@ async def _score_text(user) -> str:
     if stats is not None:
         text += f"\n{trail_line(stats)}"
     if legacy:
-        text += "\n\n🌫 Тропы, которые могут вернуться:"
+        text += "\n\n🌫 Отложенные клятвы:"
         for item in legacy[:3]:
             tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(item["tag"], "❓")
             text += f"\n  {tag_emoji} День {item['day']}: «{item['title']}»"

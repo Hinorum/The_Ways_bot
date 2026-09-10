@@ -618,12 +618,37 @@ async def build_day_context(
         focus_line = None
     # Фокус-день стаи: одна собака выходит в центр сцены главы дня.
     pack_focus_line = None
+    pack_focus_dog_key = None
     try:
-        from app.story import pack_focus_line_for
+        from app.story import pack_focus_line_for, pick_pack_focus
 
         pack_focus_line = pack_focus_line_for(day_index, key)
+        pack_focus_dog_key = pick_pack_focus(day_index, key)
     except Exception:
         logger.debug("Фокус-день стаи для дня %s не выбран", day_index, exc_info=True)
+    # Личная память стаи: заботливый/рискованный вчерашний день поднимает или
+    # принимает слой жизни собаки-героя. Затем сама память попадает в промпт.
+    try:
+        from app.dog_memories import day_dog_memory_sync, dog_memory_block_for
+
+        if pack_focus_dog_key is not None:
+            await day_dog_memory_sync(
+                session, pack_focus_dog_key, yesterday_winner_tag, day_index
+            )
+            memory_block = await dog_memory_block_for(session, pack_focus_dog_key)
+            if memory_block:
+                sblock = f"{sblock}\n{memory_block}"
+    except Exception:
+        logger.debug("Память стаи для дня %s не синхронизирована", day_index, exc_info=True)
+    # Мягкая нехватка как метафора: мир отзывается тоном, не числами.
+    try:
+        from app.lore import scarcity_breath_block
+
+        scarcity_block = scarcity_breath_block(history_tags)
+        if scarcity_block:
+            sblock = f"{sblock}\n{scarcity_block}"
+    except Exception:
+        logger.debug("Блок мягкой нехватки для дня %s не собран", day_index, exc_info=True)
     # AI World Engine: блок персонажей для промпта
     characters_block = ""
     try:
