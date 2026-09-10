@@ -246,6 +246,33 @@ async def path_legacy(session: AsyncSession, limit: int = 5) -> list[dict]:
     return legacy[:limit * 2]  # Берём до 2x отложенных клятв
 
 
+async def vow_wall_count(session: AsyncSession) -> int:
+    """Сколько отложенных клятв стая оставила у края тропы за весь канон.
+
+    Это не наказание и не ресурс: стена у выхода — чистый счётчик невыбранных
+    путей, который финал называет ценой выбора. Числа нигде не вычитаются.
+    """
+    from app.models import Card, StoryBeat
+
+    beats = (
+        await session.execute(
+            select(StoryBeat).order_by(StoryBeat.day_index)
+        )
+    ).scalars().all()
+    total = 0
+    for beat in beats:
+        cards = (
+            await session.execute(
+                select(Card).join(Round, Card.round_id == Round.id)
+                .where(Round.day_index == beat.day_index)
+            )
+        ).scalars().all()
+        for card in cards:
+            if card.title != beat.winning_title:
+                total += 1
+    return total
+
+
 async def weekly_report(session: AsyncSession) -> str:
     """Генерирует еженедельный отчёт стаи: статистика голосов, настроение, титулы."""
     from datetime import datetime, timedelta, timezone

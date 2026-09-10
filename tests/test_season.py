@@ -226,3 +226,89 @@ async def test_places_memory_lists_recent_named_rounds(session) -> None:
     assert block is not None
     assert "Мост из костей" in block and "Ярмарка Лайнеров" in block
     assert "след остался" in block
+
+
+# ── Волна 3: Исход из трёх дней, стена клятв, целостность стаи ──
+
+from app.season import exodus_phase, exodus_instruction  # noqa: E402
+
+
+def test_exodus_phase_layout() -> None:
+    # За 2 дня до Лая — фаза 1 (выбор двери), за день — фаза 2 (кто несёт свет),
+    # день Лая — фаза 3 (финал).
+    assert exodus_phase(29, 31) == 1
+    assert exodus_phase(30, 31) == 2
+    assert exodus_phase(31, 31) == 3
+    assert exodus_phase(28, 31) == 0
+    assert exodus_phase(1, 31) == 0
+
+
+def test_exodus_instruction_phases() -> None:
+    door = exodus_instruction(1, {"care": 5}, vow_count=3)
+    assert door is not None and "ВЫБОР ДВЕРИ" in door and "3" in door
+    light = exodus_instruction(2, {"care": 5}, healed_memories=2)
+    assert light is not None and "КТО НЕСЁТ СВЕТ" in light and "2/5" in light
+    assert exodus_instruction(3, {"care": 5}) is None
+
+
+def test_finale_instruction_mentions_vow_wall_and_wholeness() -> None:
+    block = finale_instruction({"care": 5}, vow_count=4, healed_memories=3)
+    assert "ДЕНЬ ПЕРВОГО ЛАЯ" in block
+    assert "4" in block and "стеной" in block
+    assert "3/5" in block
+
+
+def test_season_block_injects_exodus_before_finale(monkeypatch) -> None:
+    from app.config import settings
+    monkeypatch.setattr(settings, "run_length_months", 1)
+    ANCHOR = {"dom": 1, "key": "2026-08"}
+
+    finale = season_block(anchor=ANCHOR, moment=_utc(2026, 8, 31, 11, 0), balance={"care": 3})
+    assert "ДЕНЬ ПЕРВОГО ЛАЯ" in finale
+
+    phase1 = season_block(anchor=ANCHOR, moment=_utc(2026, 8, 29, 11, 0))
+    assert "ВЫБОР ДВЕРИ" in phase1
+
+    phase2 = season_block(anchor=ANCHOR, moment=_utc(2026, 8, 30, 11, 0))
+    assert "КТО НЕСЁТ СВЕТ" in phase2
+
+    # Обычный день не содержит блоков Исхода.
+    regular = season_block(anchor=ANCHOR, moment=_utc(2026, 8, 15, 11, 0))
+    assert "ВЫБОР ДВЕРИ" not in regular and "КТО НЕСЁТ СВЕТ" not in regular
+
+
+async def test_vow_wall_counts_unpicked_paths(session) -> None:
+    from app.streaks import vow_wall_count
+
+    for day, win, cards in (
+        (1, "Тропа А", [("Тропа А", "care"), ("Тропа B", "risk"), ("Тропа C", "cunning")]),
+        (2, "Тропа B", [("Тропа D", "care"), ("Тропа B", "risk")]),
+    ):
+        round_row = Round(
+            day_index=day, status=RoundStatus.CLOSED, win_rule=WinRule.MAJORITY,
+            rule_commitment="c", chapter_title="t", chapter_text="x", lore_summary="l",
+            opens_at=_utc(2026, 9, day, 11, 0), voting_ends_at=_utc(2026, 9, day + 1, 10, 0),
+            tally_ends_at=_utc(2026, 9, day + 1, 11, 0), winner_card=1, season="2026-09",
+        )
+        session.add(round_row)
+        await session.flush()
+        session.add(StoryBeat(day_index=day, winning_title=win, winning_text="x",
+                              win_rule="majority", vote_counts="{}"))
+        for pos, (title, tag) in enumerate(cards):
+            session.add(Card(round_id=round_row.id, position=pos, title=title, tag=tag,
+                             description="d", image_path="", consequence="c"))
+    await session.commit()
+
+    assert await vow_wall_count(session) == 3  # Тропа B, C (день 1) + Тропа D (день 2)
+
+
+async def test_healed_memories_counts_accepted_layers(session) -> None:
+    from app.dog_memories import healed_memories_count
+    from app.models import DogMemory
+
+    session.add(DogMemory(dog_key="баркод", kind="birth", summary="s", state="healed", created_day=0))
+    session.add(DogMemory(dog_key="стежка", kind="birth", summary="s", state="recalled", created_day=0))
+    session.add(DogMemory(dog_key="вектор", kind="birth", summary="s", state="suppressed", created_day=0))
+    await session.commit()
+
+    assert await healed_memories_count(session) == 1

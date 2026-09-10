@@ -235,6 +235,18 @@ async def icon_memories(
     return list(result.scalars().all())
 
 
+async def healed_memories_count(session: AsyncSession) -> int:
+    """Сколько личных слоёв стая уже приняла (state=healed).
+
+    Целостность стаи для финала: примированные памяти показывают, открывается
+    ли дверь цалой. Чистая статистика — не ресурс и не штраф.
+    """
+    result = await session.execute(
+        select(DogMemory.id).where(DogMemory.state == "healed")
+    )
+    return len(result.scalars().all())
+
+
 async def apply_scar_to_memory(
     session: AsyncSession,
     scar_key: str,

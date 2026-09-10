@@ -462,9 +462,17 @@ def tag_balance_line(balance: dict[str, int]) -> str:
 
 
 def finale_instruction(
-    balance: dict[str, int], alignment: str | None = None
+    balance: dict[str, int],
+    alignment: str | None = None,
+    vow_count: int = 0,
+    healed_memories: int = 0,
 ) -> str:
-    """Блок финала: две честные цены, исход зависит от характера стаи."""
+    """Блок финала: две честные цены, исход зависит от характера стаи.
+
+    vow_count — сколько отложенных клятв стая не выкупила за сезон (стена
+    у выхода); healed_memories — сколько личных памяти принято (целостность).
+    Цена выхода — нарративная, не числовая: никаких штрафов и ресурсов.
+    """
     dominant = max(balance, key=lambda tag: balance.get(tag, 0)) if balance else "care"
     flavour = {
         "risk": "Стая пришла сюда с обнажёнными клыками — и мир отвечает тем же.",
@@ -475,6 +483,21 @@ def finale_instruction(
         f"«{readable}» (tag {tag})" for tag, readable in FINALE_CARDS.items()
     )
     align_note = f" {alignment}" if alignment else ""
+    vow_line = ""
+    if vow_count:
+        vow_line = (
+            f" За сезон стая оставила у края тропы {vow_count} отложенных клятв: "
+            "они сложились у выхода стеной, и теперь каждая — цена. Не считай их "
+            "штрафом: мир не забирает, мир просит честно выбрать, какая клятва "
+            f"будет выкуплена этим финалом {'— или что останется невыкупленным навсегда' if vow_count else ''}."
+        )
+    whole_line = ""
+    if healed_memories:
+        whole_line = (
+            f" Память стаи приняла {healed_memories}/5 личных слоёв: дверь открывается "
+            "цалой ровно для тех, кто цел внутри. Не наказывай за непринятые — "
+            "покажи, что за ними остаётся свой честный выбор."
+        )
     return (
         "СЕГОДНЯ — ДЕНЬ ПЕРВОГО ЛАЯ, финал сезона. Стая стоит у источника зова. "
         f"Все три карты — три прочтения Лая: {cards_hint}. Ни одно не подаётся "
@@ -482,10 +505,71 @@ def finale_instruction(
         "Это не выбор между добром и злом — это выбор между двумя честными ценами: "
         "за одну платит мир, за другую — стая. В этот финальный час смысл первого "
         "Лая изменяется тем, что выберет стая: то, что было зовом, становится ответом. "
+        + vow_line
+        + whole_line
+        + " "
         + tag_balance_line(balance)
         + align_note
         + " Эпилог дня закроет сезон одним вздохом — чем он отозвался."
     )
+
+
+def exodus_phase(run_day: int, total: int) -> int:
+    """Фаза Исхода: 0 — не Исход; 1 — «выбор двери» (за 2 дня до Лая);
+    2 — «кто несёт свет» (за день до Лая); 3 — День Первого Лая (финал).
+
+    Исход — не отдельные правила, а рамка для промпта: мир не меняет чисел,
+    он называет дни. Сезон закрывается трёхдневным дыханием вместо одиночного
+    финала: сначала стая выбирает дверь, потом того, кто несёт свет, и только
+    затем — Лая, который открывает или не открывает его.
+    """
+    if run_day >= total:
+        return 3
+    if run_day == total - 1:
+        return 2
+    if run_day == total - 2:
+        return 1
+    return 0
+
+
+def exodus_instruction(
+    phase: int,
+    balance: dict[str, int],
+    vow_count: int = 0,
+    healed_memories: int = 0,
+) -> str | None:
+    """Блок предфинальных дней Исхода (фазы 1-2). phase 3 отдаёт финал обычным.
+
+    Фаза 1 — «выбор двери»: каждая отложенная клятва — проём, который надо
+    выбрать или оставить закрытым. Фаза 2 — «кто несёт свет»: стая решает,
+    кого нести впереди, и это меняет тон самого Лая.
+    """
+    if phase == 1:
+        base = (
+            "ИСХОД, ДЕНЬ ПЕРВЫЙ — ВЫБОР ДВЕРИ. До Лая два дня. У стаи "
+            "открывается не один выход, а столько, сколько было невыбранных путей: "
+            "каждая отложенная клятва ждёт у своего проёма. Сегодня выбор не "
+            "между «вперёд» и «назад», а между дверями. Пусть карты дня прозвучат "
+            "как разные проёмы — за какой из них лабиринт закрывает счёт окончательно."
+        )
+        if vow_count:
+            base += f" Отложенных клятв за сезон: {vow_count} — но сегодня стая выбирает не сколько заплатить, а какую дверь помнить."
+        return base
+    if phase == 2:
+        base = (
+            "ИСХОД, ДЕНЬ ВТОРОЙ — КТО НЕСЁТ СВЕТ. До Лая один день. Стая "
+            "стоит перед спуском: кто идёт первым, кто несёт свет, кто остаётся "
+            "замыкающим, чтобы закрыть за стаей дверь. В этом выборе нет проигравших "
+            "собак — есть разные честные способы нести одну стаю. Завтра этот "
+            "порядок станет голосом Лая: тот, кто впереди, услышит его первым."
+        )
+        if healed_memories:
+            base += (
+                f" Из пятерых память приняли {healed_memories}/5: примировавшие с собой "
+                "несут свет иначе, чем те, кто ещё только вспоминает. Не суди их — покажи разницу тоном."
+            )
+        return base
+    return None
 
 
 def opener_instruction(previous_finale_summary: str | None, season: int = 1) -> str:
@@ -535,20 +619,38 @@ def season_block(
     previous_season_summary: str | None = None,
     db_prologue_beats: dict | None = None,
     db_season_arc: list[dict] | None = None,
+    vow_count: int = 0,
+    healed_memories: int = 0,
 ) -> str:
     """Готовый блок для промпта главы по якорю забега.
     db_prologue_beats: AI-сгенерированные биты пролога из БД (опционально).
     db_season_arc: AI-сгенерированная арка сезона из БД (опционально).
+    vow_count: отложенные клятвы сезона (стена у выхода).
+    healed_memories: принятые личные памяти стаи (целостность).
     """
     run_day, total = run_position(anchor, moment)
     season = current_season(anchor, moment)
     order_axis, moral_axis = anchor_axes(anchor)
     lens = season_lens_line(season)
-    if is_run_finale(run_day, total):
-        finale = finale_instruction(
-            balance or {}, alignment=alignment_label(order_axis, moral_axis)
+    phase = exodus_phase(run_day, total)
+    if phase:
+        if phase == 3:
+            finale = finale_instruction(
+                balance or {},
+                alignment=alignment_label(order_axis, moral_axis),
+                vow_count=vow_count,
+                healed_memories=healed_memories,
+            )
+            return finale + ("\n" + lens if lens else "")
+        exodus = exodus_instruction(
+            phase, balance or {}, vow_count=vow_count, healed_memories=healed_memories
         )
-        return finale + ("\n" + lens if lens else "")
+        if exodus:
+            block = exodus
+            if lens:
+                block += "\n" + lens
+            align = alignment_block(order_axis, moral_axis)
+            return f"{block}\n{align}"
     block = act_line(run_day, total, season)
     if lens:
         block += "\n" + lens

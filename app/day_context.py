@@ -403,6 +403,23 @@ async def build_day_context(
     if day_index <= 2:
         prev_summary = await previous_season_summary(session, key)
 
+    # Стена отложенных клятв и целостность стаи: финал называет их ценой выбора,
+    # но нигде не вычитает числа (мир не штрафует — он просит честно решить).
+    try:
+        from app.streaks import vow_wall_count
+
+        vow_wall = await vow_wall_count(session)
+    except Exception:
+        logger.debug("Стена клятв для дня %s не посчитана", day_index, exc_info=True)
+        vow_wall = 0
+    try:
+        from app.dog_memories import healed_memories_count
+
+        healed_memories = await healed_memories_count(session)
+    except Exception:
+        logger.debug("Целостность стаи для дня %s не посчитана", day_index, exc_info=True)
+        healed_memories = 0
+
     # Load AI-generated prologue beats and season arc from DB
     db_prologue_beats = None
     db_season_arc = None
@@ -426,6 +443,8 @@ async def build_day_context(
         previous_season_summary=prev_summary,
         db_prologue_beats=db_prologue_beats,
         db_season_arc=db_season_arc,
+        vow_count=vow_wall,
+        healed_memories=healed_memories,
     )
     places_block = (
         await places_memory_block(session) if "places" in guests else None
