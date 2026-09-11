@@ -238,13 +238,15 @@ async def icon_memories(
 async def healed_memories_count(session: AsyncSession) -> int:
     """Сколько личных слоёв стая уже приняла (state=healed).
 
-    Целостность стаи для финала: примированные памяти показывают, открывается
-    ли дверь цалой. Чистая статистика — не ресурс и не штраф.
+    Целостность стаи для финала: принятые памяти показывают, открывается
+    ли дверь целой. Чистая статистика — не ресурс и не штраф.
     """
+    from sqlalchemy import func
+
     result = await session.execute(
-        select(DogMemory.id).where(DogMemory.state == "healed")
+        select(func.count()).select_from(DogMemory).where(DogMemory.state == "healed")
     )
-    return len(result.scalars().all())
+    return int(result.scalar() or 0)
 
 
 async def apply_scar_to_memory(
