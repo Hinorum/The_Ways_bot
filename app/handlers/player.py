@@ -861,6 +861,9 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
             await callback.answer("Сегодня архив уже закрыл твой вопрос.", show_alert=True)
             return
         echoes = await surfaced_echoes_for_round(session, day_index)
+        if not echoes:
+            await callback.answer("Этот след уже выветрился: дня больше нет в архиве.", show_alert=True)
+            return
         true_titles = [echo.title for echo in echoes]
         # Пересобираем тот же расклад: серверу нечего хранить в кнопке.
         from sqlalchemy import select as _select
@@ -876,6 +879,9 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
             title for title, day in beats if day not in source_days and (day < min(source_days) - 1 or day > max(source_days) + 1)
         ]
         quiz = build_memory_quiz(player.id, round_id, true_titles, decoys)
+        if quiz is None:
+            await callback.answer("Архив слишком мал, чтобы проверять память. Позже.", show_alert=True)
+            return
         correct = correct_memory_choice(quiz, index)
         session.add(WatcherState(key=marker, value="1"))
         if correct:

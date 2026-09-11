@@ -173,3 +173,114 @@ async def test_on_remember_builds_quiz_without_crashing() -> None:
     assert "Дневник шепчет" in text
     callback.answer.assert_awaited_once()
 
+
+async def test_on_remember_pick_empty_echoes_is_safe() -> None:
+    # Регресс-ловушка: кнопка «помню» переживает день, а эха — нет (пик после
+    # /resetgame с прежним day_index). Раньше min(source_days) на пустом
+    # множестве ронял ValueError; теперь — вежливый ответ и тихий выход.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import delete, select
+
+    from app.core.registry import memquiz_key
+    from app.db import SessionLocal
+    from app.handlers import player as player_mod
+    from app.models import LoreEcho, StoryBeat, WatcherState
+
+    async with SessionLocal() as db:
+        await db.execute(delete(StoryBeat))
+        await db.execute(delete(LoreEcho))
+        await db.commit()
+
+    user = SimpleNamespace(id=9002, username="tester", first_name="T")
+    callback = SimpleNamespace(
+        data="remember:pick:99:4:0",
+        from_user=user,
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await player_mod.on_remember_pick(callback)
+    callback.answer.assert_awaited_once()
+    assert "выветрился" in callback.answer.call_args.args[0]
+    async with SessionLocal() as db:
+        marker = memquiz_key(user.id, 99)
+        assert (await db.execute(select(WatcherState).where(WatcherState.key == marker))).scalar_one_or_none() is None
+
+
+async def test_on_remember_pick_correct_answers_credit_player() -> None:
+    # Полнота пути ответа: верный вариант реально создаёт MemoryHit,
+    # добавляет вдохновение и закрывает попытку маркером — не только
+    # показывает фразу «галочку». Расклад квиза детерминирован игрок+день,
+    # поэтому правильный индекс тест пересобирает теми же функциями.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import delete, func, select
+
+    from app.core.registry import memquiz_key
+    from app.db import SessionLocal
+    from app.echoes import build_memory_quiz, surfaced_echoes_for_round
+    from app.handlers import player as player_mod
+    from app.models import LoreEcho, MemoryHit, Player, StoryBeat, WatcherState
+
+    async with SessionLocal() as db:
+        await db.execute(delete(StoryBeat))
+        await db.execute(delete(LoreEcho))
+        await db.execute(delete(MemoryHit))
+        await db.execute(delete(Player))
+        await db.commit()
+        db.add_all(
+            [
+                StoryBeat(day_index=1, winning_title="Старый приют", winning_text="t", win_rule="risk", vote_counts="{}"),
+                StoryBeat(day_index=2, winning_title="Гулкий мост", winning_text="t", win_rule="risk", vote_counts="{}"),
+                StoryBeat(day_index=3, winning_title="Тёплые миски", winning_text="t", win_rule="care", vote_counts="{}"),
+                StoryBeat(day_index=9, winning_title="Давний портал", winning_text="t", win_rule="cunning", vote_counts="{}"),
+                LoreEcho(born_day=1, source_day=1, kind="память", title="Старый приют",
+                         description="d", strength=3, earliest_day=2, status="surfaced", surfaced_day=4),
+            ]
+        )
+        await db.commit()
+
+    user = SimpleNamespace(id=9003, username="tester", first_name="T")
+    pid = user.id
+
+    async with SessionLocal() as db:
+        echo_data = await surfaced_echoes_for_round(db, 4)
+        truths = [e.title for e in echo_data]
+        src = {e.source_day for e in echo_data}
+        beats = (
+            await db.execute(
+                select(StoryBeat.winning_title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+            )
+        ).all()
+        decoys = [
+            title for title, day in beats
+            if day not in src and (day < min(src) - 1 or day > max(src) + 1)
+        ]
+        quiz = build_memory_quiz(pid, 99, truths, decoys)
+        assert quiz is not None
+        right = next(iter(quiz["correct"]))
+
+    callback = SimpleNamespace(
+        data=f"remember:pick:99:4:{right}",
+        from_user=user,
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await player_mod.on_remember_pick(callback)
+
+    async with SessionLocal() as db:
+        marker = memquiz_key(pid, 99)
+        assert (await db.execute(select(WatcherState).where(WatcherState.key == marker))).scalar_one_or_none() is not None
+        hit_count = (
+            await db.execute(
+                select(func.count()).select_from(MemoryHit).where(
+                    MemoryHit.player_id == pid, MemoryHit.round_id == 99
+                )
+            )
+        ).scalar_one()
+        assert hit_count == 1
+        player = await db.get(Player, pid)
+        assert player is not None and player.inspiration >= 1
+
