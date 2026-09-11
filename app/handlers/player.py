@@ -818,7 +818,7 @@ async def on_remember(callback: CallbackQuery) -> None:
         source_days = {echo.source_day for echo in echoes}
         beats = (
             await session.execute(
-                _select(StoryBeat.title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+                _select(StoryBeat.winning_title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
             )
         ).all()
         decoys = [
@@ -868,7 +868,7 @@ async def on_remember_pick(callback: CallbackQuery) -> None:
 
         beats = (
             await session.execute(
-                _select(StoryBeat.title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+                _select(StoryBeat.winning_title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
             )
         ).all()
         source_days = {echo.source_day for echo in echoes}

@@ -78,3 +78,99 @@ def test_correct_memory_choice_uses_index_not_text() -> None:
     for index in wrong:
         assert correct_memory_choice(quiz, index) is False
 
+
+async def test_remember_decoys_query_uses_real_column(session) -> None:
+    # Регресс-ловушка (продакшн-инцидент): on_remember слал
+    # select(StoryBeat.title, ...) — колонки «title» у StoryBeat нет,
+    # быстрый канон зовётся winning_title. Тест выполняет ровно ту же
+    # выборку, что упавший handler, и падал бы AttributeError до фикса.
+    from sqlalchemy import select
+
+    from app.models import StoryBeat
+
+    session.add_all(
+        [
+            StoryBeat(day_index=1, winning_title="Старый приют", winning_text="t", win_rule="risk", vote_counts="{}"),
+            StoryBeat(day_index=2, winning_title="Гулкий мост", winning_text="t", win_rule="risk", vote_counts="{}"),
+            StoryBeat(day_index=10, winning_title="Тёплые миски", winning_text="t", win_rule="care", vote_counts="{}"),
+        ]
+    )
+    await session.commit()
+    beats = (
+        await session.execute(
+            select(StoryBeat.winning_title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+        )
+    ).all()
+    assert beats == [("Старый приют", 1), ("Гулкий мост", 2), ("Тёплые миски", 10)]
+
+
+async def test_remember_decoys_exclude_nearby_source_days(session) -> None:
+    # Логика приманок из on_remember: в квиз идут только победившие титулы
+    # дней, далёких от дней рождения всплывших эх (иначе расклад предсказуем).
+    from sqlalchemy import select
+
+    from app.models import LoreEcho, StoryBeat
+
+    session.add_all(
+        [
+            StoryBeat(day_index=1, winning_title="Старый приют", winning_text="t", win_rule="risk", vote_counts="{}"),
+            StoryBeat(day_index=2, winning_title="Гулкий мост", winning_text="t", win_rule="risk", vote_counts="{}"),
+            StoryBeat(day_index=4, winning_title="Давний портал", winning_text="t", win_rule="cunning", vote_counts="{}"),
+            LoreEcho(born_day=1, source_day=1, kind="память", title="Старый приют",
+                     description="d", strength=3, earliest_day=5, status="surfaced", surfaced_day=6),
+        ]
+    )
+    await session.commit()
+    echoes = await surfaced_echoes_for_round(session, 6)
+    source_days = {echo.source_day for echo in echoes}
+    beats = (
+        await session.execute(
+            select(StoryBeat.winning_title, StoryBeat.day_index).order_by(StoryBeat.day_index.asc())
+        )
+    ).all()
+    decoys = [
+        title for title, day in beats
+        if day not in source_days and (day < min(source_days) - 1 or day > max(source_days) + 1)
+    ]
+    # День 2 (source_day+1) — ближайший, не приманка; день 4 — далёкий.
+    assert decoys == ["Давний портал"]
+
+
+async def test_on_remember_builds_quiz_without_crashing() -> None:
+    # Регресс-ловушка продакшн-инцидента: on_remember читал
+    # select(StoryBeat.title, ...), а колонка называется winning_title —
+    # квиз памяти выбрасывал AttributeError и «Я помню этот след» не
+    # работал. Handler-тест гоняет ровно тот же путь, что упал в проде.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.db import SessionLocal
+    from app.handlers import player as player_mod
+    from app.models import LoreEcho, StoryBeat
+
+    async with SessionLocal() as db:
+        db.add_all(
+            [
+                StoryBeat(day_index=1, winning_title="Старый приют", winning_text="t", win_rule="risk", vote_counts="{}"),
+                StoryBeat(day_index=2, winning_title="Гулкий мост", winning_text="t", win_rule="risk", vote_counts="{}"),
+                StoryBeat(day_index=3, winning_title="Тёплые миски", winning_text="t", win_rule="care", vote_counts="{}"),
+                StoryBeat(day_index=9, winning_title="Давний портал", winning_text="t", win_rule="cunning", vote_counts="{}"),
+                LoreEcho(born_day=1, source_day=1, kind="память", title="Старый приют",
+                         description="d", strength=3, earliest_day=2, status="surfaced", surfaced_day=4),
+            ]
+        )
+        await db.commit()
+
+    user = SimpleNamespace(id=9001, username="tester", first_name="T")
+    callback = SimpleNamespace(
+        data="remember:99:4",
+        from_user=user,
+        message=SimpleNamespace(answer=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await player_mod.on_remember(callback)
+    callback.message.answer.assert_awaited_once()
+    text = callback.message.answer.call_args.args[0]
+    assert "Дневник шепчет" in text
+    callback.answer.assert_awaited_once()
+
