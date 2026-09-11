@@ -210,8 +210,13 @@ async def previous_season_summary(session: AsyncSession, current_key: str) -> st
     return summary[:180]
 
 
-async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | None:
-    """Память мест для промпта: где стая уже была и что там изменилось."""
+async def places_memory_block(session: AsyncSession, limit: int = 10, exclude_recent: int = 0) -> str | None:
+    """Память мест для промпта: где стая уже была и что там изменилось.
+
+    exclude_recent > 0: не показывать места, увиденные в последние N дней, —
+    их уже перечисляет банк повторов (recent_repeats_block), дубль в промпте
+    не нужен. По умолчанию 0 (полный список, прежнее поведение).
+    """
     result = await session.execute(
         select(Round.place, Round.day_index)
         .where(Round.place.is_not(None))
@@ -220,6 +225,8 @@ async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | N
     )
     seen: dict[str, int] = {}
     for place, day_index in result.all():
+        if exclude_recent and day_index is not None and day_index > exclude_recent:
+            continue
         seen.setdefault(place, day_index)
         if len(seen) >= limit:
             break
@@ -460,7 +467,9 @@ async def build_day_context(
         healed_memories=healed_memories,
     )
     places_block = (
-        await places_memory_block(session) if "places" in guests else None
+        await places_memory_block(session, exclude_recent=day_index - 7)
+        if "places" in guests
+        else None
     )
     # Призвания стаи: Ведущий может показать их одним касанием в сцене.
     from app.callings import callings_prompt_block
