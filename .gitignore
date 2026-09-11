@@ -10,4 +10,8 @@ data/
 media/generated/
 *.log
 out.txt
+*_out.txt
+test_dump*.txt
+t*.txt
+analysis_output.txt
 .DS_Store
