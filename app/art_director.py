@@ -512,24 +512,6 @@ def check_prompt_dedup(
     return False
 
 
-async def get_recent_image_prompts(
-    session: "AsyncSession",
-    limit: int = 3,
-) -> list[str]:
-    """Загружает последние N промптов обложек из БД."""
-    from sqlalchemy import select as sa_select
-    from app.models import Round
-
-    q = (
-        sa_select(Round.cover_image_prompt)
-        .where(Round.cover_image_prompt.isnot(None))
-        .order_by(Round.day_index.desc())
-        .limit(limit)
-    )
-    result = await session.execute(q)
-    return [row[0] for row in result.all() if row[0]]
-
-
 # ── Quality Gate: Laplacian variance ────────────────────────────────────────
 
 def calculate_laplacian_variance(image_path: str | Path) -> float:
