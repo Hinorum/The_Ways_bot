@@ -586,8 +586,71 @@ async def test_results_message_shows_day_economics(session) -> None:
     assert "Банк дня: 3.00 Gram" in text
     assert "📊 Пути:" not in text
     assert "×2.90" in text
-    assert "Месяц: ушло 0.02 Gram" in text
-    assert "в банке месяца 1.34 Gram" in text
+    # Ставки по каждому пути + коэффициент — в самом посте итогов.
+    assert "C1: 9 (2.00 Gram) ← 🏆 След" in text
+    assert "C0: 2 (1.00 Gram)" in text
+    # Неделя и месяц не вываливают: баланс видят по выплатам.
+    assert "Неделя: ушло" not in text
+    assert "Месяц: ушло" not in text
+    assert "Фонде Стаи" not in text
+
+
+async def test_results_message_sans_session_shows_stakes_and_coefficient() -> None:
+    """Реальная рассылка (announce_new_day) зовёт итоги БЕЗ сессии — ставки по
+    путям и коэффициент должны прийти и из собственной сессии, иначе в чатах
+    игра видела графу без Gram и без коэффициента."""
+    from app.broadcast import results_message
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.models import Payout, Player, Stake, Vote
+
+    async with SessionLocal() as db:
+        rnd = Round(
+            day_index=41,
+            status=RoundStatus.CLOSED,
+            win_rule=WinRule.MAJORITY,
+            rule_commitment="c",
+            chapter_title="t",
+            chapter_text="text",
+            lore_summary="lore",
+            opens_at=datetime.now(timezone.utc),
+            voting_ends_at=datetime.now(timezone.utc),
+            tally_ends_at=datetime.now(timezone.utc),
+            winner_card=0,
+            vote_counts_json='{"0": 3, "1": 1, "2": 1}',
+            pot_nanotons=2_000_000_000,
+        )
+        rnd.cards = [
+            Card(position=i, title=f"C{i}", description="d", consequence="Канон.",
+                 tag="care", image_path="")
+            for i in range(3)
+        ]
+        db.add(rnd)
+        await db.flush()
+        gambler = Player(id=9104, username="solo", score=0)
+        db.add(gambler)
+        await db.flush()
+        net = settings.ton_network
+        db.add_all(
+            [
+                Vote(round_id=rnd.id, player_id=gambler.id, card_position=0),
+                Stake(round_id=rnd.id, player_id=gambler.id, amount_nanotons=2_000_000_000,
+                      tx_hash="sans-session-1", status="confirmed", network=net),
+                Payout(round_id=rnd.id, player_id=gambler.id, kind="prize",
+                       amount_nanotons=4_000_000_000, dest_address="EQ" + "b" * 46, network=net),
+            ]
+        )
+        await db.commit()
+        round_id = rnd.id
+
+    text = await results_message(rnd)
+    assert "C0: 3 (2.00 Gram) ← 🏆 След" in text
+    assert "🎯 Коэффициент: ×2.00" in text
+    assert "Банк дня: 2.00 Gram" in text
+
+    async with SessionLocal() as cleanup:
+        await cleanup.execute(Round.__table__.delete().where(Round.id == round_id))
+        await cleanup.commit()
 
 
 async def test_results_message_refund_day_has_no_multiplier(session) -> None:

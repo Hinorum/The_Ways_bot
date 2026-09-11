@@ -59,8 +59,14 @@ def cards_keyboard(round_id: int, remember: bool = False, day_index: int | None 
 
 
 def _clamp(text: str, limit: int) -> str:
-    """Обрезка с многоточием, чтобы служебные строки не вытеснялись из поста."""
-    return text if len(text) <= limit else text[: limit - 1].rstrip(" ,.;:") + "…"
+    """Обрезка по словам, чтобы служебные строки не вытеснялись из поста."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    tail = cut.rsplit(" ", 1)
+    if len(tail) == 2:
+        cut = tail[0]
+    return cut.rstrip(" ,.;:") + "…"
 
 
 def _utc(value: datetime) -> datetime:
@@ -360,32 +366,20 @@ async def results_body(finished: Round, session=None) -> str:
     except Exception:
         logger.warning("Карты дня %s не подгружены для итогов", getattr(finished, "day_index", "?"), exc_info=True)
 
-    # Собираем ставки по путям и коэффициент (async)
-    path_stakes: dict[int, int] = {}
-    multiplier: float | None = None
+    # Ставки по путям и коэффициент считается один раз — и в реальной рассылке
+    # (announce_new_day зовёт results_message БЕЗ сессии), поэтому открываем свою.
+    # Без этого пути и коэффициент в итогах просто не появлялись.
     economics_stats: dict | None = None
-    if session is not None:
-        try:
-            from sqlalchemy import func as sa_func, select as sa_select
-            from app.models import Vote, Stake
-            from app.config import settings
-            path_stakes_rows = await session.execute(
-                sa_select(Vote.card_position, sa_func.coalesce(sa_func.sum(Stake.amount_nanotons), 0))
-                .join(Stake, Stake.player_id == Vote.player_id)
-                .where(
-                    Vote.round_id == finished.id,
-                    Stake.round_id == finished.id,
-                    Stake.status == "confirmed",
-                    Stake.network == settings.ton_network,
-                )
-                .group_by(Vote.card_position)
-            )
-            path_stakes = {int(p): int(v) for p, v in path_stakes_rows.all()}
-            # Считаем экономику, чтобы получить коэффициент
+    try:
+        if session is not None:
             economics_stats = await day_economics(session, finished)
-            multiplier = economics_stats.get("multiplier")
-        except Exception:
-            logger.warning("Экономика дня %s не собрана — пост без коэффициента", getattr(finished, "day_index", "?"), exc_info=True)
+        else:
+            economics_stats = await _economics_own_session(finished)
+    except Exception:
+        logger.warning("Экономика дня %s не собрана — пост без коэффициента", getattr(finished, "day_index", "?"), exc_info=True)
+
+    path_stakes = (economics_stats or {}).get("path_stakes", {})
+    multiplier = (economics_stats or {}).get("multiplier")
 
     # AI-генерация фразы раскрытия
     reveal_phrase = None
@@ -405,21 +399,9 @@ async def results_body(finished: Round, session=None) -> str:
         logger.warning("AI-фраза раскрытия дня %s не сгенерирована", getattr(finished, "day_index", "?"), exc_info=True)
 
     text = format_results(finished, path_stakes, multiplier, reveal_override=reveal_phrase)
-    round_id = getattr(finished, "id", None)
-    if round_id is not None and economics_stats is not None:
+    if economics_stats is not None:
         try:
             economics = format_economics(economics_stats)
-            if economics:
-                text += f"\n\n{economics}"
-        except Exception:
-            logger.exception("Экономика дня %s не посчитана", getattr(finished, "day_index", "?"))
-    elif round_id is not None:
-        try:
-            if session is not None:
-                stats = await day_economics(session, finished)
-            else:
-                stats = await _economics_own_session(finished)
-            economics = format_economics(stats)
             if economics:
                 text += f"\n\n{economics}"
         except Exception:
@@ -495,7 +477,8 @@ async def _deliver_day(
         chat_id,
         status_text(
             round_row,
-            show_title=not story_in_caption,
+            # Заголовок всегда живёт на обложке — текстовый пост его не дублирует.
+            show_title=False,
             include_story=not story_in_caption,
         ),
         reply_markup=cards_keyboard(round_row.id, remember=remember, day_index=round_row.day_index),

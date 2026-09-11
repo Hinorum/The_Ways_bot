@@ -147,8 +147,8 @@ def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) ->
     rng = _random.Random(f"reveal:{winner_card}:{max_v}:{min_v}:{values}")
     if win_rule == WinRule.MAJORITY:
         phrases = (
-            f"большинство ({w} голосов) само провело этот путь",
-            f"стая кричала за этот путь чаще всех — {w} голосов",
+            f"большинство ({w} {_votes_word(w)}) само провело этот путь",
+            f"стая кричала за этот путь чаще всех — {w} {_votes_word(w)}",
             f"{w} хвостов решили всё: закон и толпа совпали",
         )
     elif win_rule == WinRule.MINORITY:
@@ -168,8 +168,8 @@ def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) ->
         median_v = values[len(values) // 2] if len(values) >= 3 else values[0]
         if w == median_v:
             phrases = (
-                f"середина ({w} голосов) взяла своё: крайности остались ни с чем",
-                f"закон выбрал меру — {w} голосов ровно посередине",
+                f"середина ({w} {_votes_word(w)}) взяла своё: крайности остались ни с чем",
+                f"закон выбрал меру — {w} {_votes_word(w)} ровно посередине",
             )
         else:
             phrases = ("счёт разошёлся с правилом так, что дневник промолчал",)
@@ -308,10 +308,10 @@ def format_results(
                 f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
                 "и тропа повела бы иначе."
             )
+    # Правило дня не дублируется: в постах голосования оно уже объявлено.
+    # Исключение — запечатанный день: закон скрыт до итогов и раскрывается здесь.
     if getattr(round_row, "sealed", False):
         lines.append(f"🗝 Запечатанное правило: {RULE_PHRASES[round_row.win_rule]}")
-    else:
-        lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):
@@ -569,7 +569,9 @@ def format_economics(stats: dict) -> str:
     """Текстовый блок экономики дня; без банка показывает только ставки.
 
     Явка и счёт путей уже есть в основном тексте итогов — здесь только
-    деньги, чтобы одна цифра не встречалась в посте дважды.
+    деньги, чтобы одна цифра не встречалась в посте дважды. Неделю и месяц
+    не вываливаем: их балансы видны по выплатам, а перегруз цифр съедает
+    внимание от сюжета.
     """
     lines: list[str] = []
     if stats["pot"] <= 0:
@@ -578,16 +580,6 @@ def format_economics(stats: dict) -> str:
     lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram")
     if stats["refunded"]:
         lines.append("🎯 На верный путь не поставил никто — все ставки возвращены игрокам")
-    if stats["week_today"] > 0 or stats["week_total"] > 0:
-        lines.append(
-            f"🗓 Неделя: ушло {ton(stats['week_today']):.2f} Gram"
-            f" · в банке недели {ton(stats['week_total']):.2f} Gram"
-        )
-    if stats["board_today"] > 0 or stats["bank_total"] > 0:
-        lines.append(
-            f"🏆 Месяц: ушло {ton(stats['board_today']):.2f} Gram"
-            f" · в банке месяца {ton(stats['bank_total']):.2f} Gram"
-        )
     if stats["fund_total"] > 0:
         lines.append(f"🐾 В Фонде Стаи: {ton(stats['fund_total']):.2f} Gram")
     return "\n".join(lines)
