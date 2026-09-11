@@ -653,24 +653,6 @@ class ConsequenceBranch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class PackState(Base):
-    """Состояние стаи: потребности и статус.
-
-    Хранит hunger, thirst, health на уровне стаи.
-    Обновляется каждый день автоматически.
-    """
-
-    __tablename__ = "pack_state"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hunger: Mapped[int] = mapped_column(Integer, default=5)
-    thirst: Mapped[int] = mapped_column(Integer, default=5)
-    health: Mapped[int] = mapped_column(Integer, default=10)
-    alive_count: Mapped[int] = mapped_column(Integer, default=5)
-    last_updated_day: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 # ── AI-generated world state ──────────────────────────────────────────────
 
 

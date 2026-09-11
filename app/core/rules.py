@@ -15,12 +15,6 @@
 from __future__ import annotations
 
 TAG_SHIFTS: dict[str, dict[str, dict[str, object]]] = {
-    # Потребности стаи (app/pack_state.py): hunger/thirst 0-10, health 0-10.
-    "needs": {
-        "risk": {"hunger": 1, "thirst": 1, "health": -1},
-        "care": {"hunger": -2, "thirst": -1, "health": 1},
-        "cunning": {"hunger": 0, "thirst": 1, "health": 0},
-    },
     # Эмоциональный профиль (app/emotional_state.py): fatigue/hope/paranoia 0-10.
     "emotions": {
         "risk": {"fatigue": 1, "hope": -1, "paranoia": 0},
@@ -42,7 +36,6 @@ TAG_SHIFTS: dict[str, dict[str, dict[str, object]]] = {
     },
 }
 
-NEED_SHIFTS = TAG_SHIFTS["needs"]
 EMOTION_SHIFTS = TAG_SHIFTS["emotions"]
 RELATION_SHIFTS = TAG_SHIFTS["relations"]
 ALIGNMENT_DRIFT = TAG_SHIFTS["alignment"]

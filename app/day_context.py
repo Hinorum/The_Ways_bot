@@ -360,33 +360,40 @@ async def build_day_context(
         emotion_profile = EmotionProfile()
         emotion_block = None
 
-    # Деревья последствий: загрузка активных ветвей
-    from app.consequence_trees import (
-        load_active_branches, format_active_branches,
-        create_branch, CONSEQUENCE_TREES,
-    )
+    # Деревья последствий + динамические правила: заморожены (settings.branch_system).
+    # Раньше активные ветви сканировались каждый день (2 запроса), но advance_branch
+    # не вызывался — созданная ветвь вечно висела в промпте на нулевой стадии.
+    # При выключенном флаге блоки пусты.
+    active_branches: list = []
+    branches_block = ""
+    dynamic_rules_block = ""
+    if settings.branch_system:
+        from app.consequence_trees import (
+            load_active_branches, format_active_branches,
+            create_branch, CONSEQUENCE_TREES,
+        )
 
-    active_branches = await load_active_branches(session, day_index)
-    branches_block = format_active_branches(active_branches)
-
-    # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
-    if beats:
-        last_beat = beats[-1] if beats else ""
-        existing_keys = {b.branch_key for b in active_branches}
-        for tree in CONSEQUENCE_TREES.values():
-            if tree.trigger_card in last_beat and tree.key not in existing_keys:
-                new_branch = await create_branch(session, tree, day_index)
-                active_branches.append(new_branch)
-                existing_keys.add(tree.key)
+        active_branches = await load_active_branches(session, day_index)
         branches_block = format_active_branches(active_branches)
 
-    # Динамические правила: определяем активные переопределения
-    from app.dynamic_rules import (
-        get_active_overrides, get_dynamic_rule_text,
-    )
+        # Проверяем, нужно ли создать новую ветвь от вчерашнего выбора
+        if beats:
+            last_beat = beats[-1] if beats else ""
+            existing_keys = {b.branch_key for b in active_branches}
+            for tree in CONSEQUENCE_TREES.values():
+                if tree.trigger_card in last_beat and tree.key not in existing_keys:
+                    new_branch = await create_branch(session, tree, day_index)
+                    active_branches.append(new_branch)
+                    existing_keys.add(tree.key)
+            branches_block = format_active_branches(active_branches)
 
-    dynamic_overrides = get_active_overrides(active_scars, emotion_profile, active_branches, day_index)
-    dynamic_rules_block = get_dynamic_rule_text(dynamic_overrides)
+        # Динамические правила: определяем активные переопределения
+        from app.dynamic_rules import (
+            get_active_overrides, get_dynamic_rule_text,
+        )
+
+        dynamic_overrides = get_active_overrides(active_scars, emotion_profile, active_branches, day_index)
+        dynamic_rules_block = get_dynamic_rule_text(dynamic_overrides)
 
     # Сезонная рамка: арка привязана к забегу (от сброса), финал — День
     # Первого Лая на длине месяца старта забега.

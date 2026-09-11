@@ -1425,20 +1425,10 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     try:
         from app.world_engine import process_choice_consequences, get_world_context
         from app.story import _chat_completion
-        from app.models import PackState as PackStateModel
-        from sqlalchemy import select as sa_select
 
-        # Загружаем потребности стаи из БД или дефолты
-        try:
-            ps_result = await session.execute(sa_select(PackStateModel).limit(1))
-            ps = ps_result.scalar_one_or_none()
-            needs_dict = {
-                "hunger": ps.hunger if ps else 5,
-                "thirst": ps.thirst if ps else 5,
-                "health": ps.health if ps else 10,
-            }
-        except Exception:
-            needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
+        # Контур выживания отключён: потребности стаи больше не обновляются
+        # (pack_state удалён), всегда берём дефолты.
+        needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
 
         ctx = await get_world_context(session, round_row.day_index, needs_dict, season=round_row.season)
         chain = await process_choice_consequences(
