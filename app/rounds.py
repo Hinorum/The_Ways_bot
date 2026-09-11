@@ -420,21 +420,23 @@ async def _plan_and_render(
         from app.models import WorldCharacter
 
         existing = (
-            await session.execute(
+            world_ctx.active_characters
+            if world_ctx is not None
+            else await (await session.execute(
                 select(WorldCharacter).where(WorldCharacter.is_alive == True)
-            )
-        ).scalars().all()
+            )).scalars().all()
+        )
         char_ctx = WorldContext(
             day_index=day_index,
             recent_choices=[],
             active_locations=[],
             active_characters=[
                 {
-                    "name": c.name,
-                    "role": c.role,
-                    "personality": c.personality[:80],
-                    "mood": c.mood,
-                    "trust_stay": c.trust_stay,
+                    "name": c["name"],
+                    "role": c["role"],
+                    "personality": (c.get("personality") or "")[:80],
+                    "mood": c.get("mood", "neutral"),
+                    "trust_stay": c.get("trust_stay", 5),
                 }
                 for c in existing
             ],
@@ -1289,6 +1291,9 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     # генерации, иначе оно системно всплывало бы на день позже замысла. Исход
     # дня при этом не раскрывается: ни StoryBeat, ни счётчики не публикуются.
     counts = await count_votes_for_tally(session, round_row.id)
+    # Голоса заморожены (статус → TALLYING): счётчики дня не меняются до
+    # закрытия, finish_tally переиспользует их вместо повторного GROUP BY.
+    round_row._tally_counts = counts
     seed = f"{round_row.rule_commitment}:{round_row.day_index}"
     round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed)
     if not await _echoes_already_spawned(session, round_row.day_index):
@@ -1311,7 +1316,9 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     if round_row.status != RoundStatus.TALLYING:
         loaded = await get_round(session, round_row.id)
         return (loaded or round_row), False
-    counts = await count_votes_for_tally(session, round_row.id)
+    counts = getattr(round_row, "_tally_counts", None) or await count_votes_for_tally(
+        session, round_row.id
+    )
     # Жребий сеется утренним обязательством: игроки не могут знать исход
     # ничьей заранее, но после вскрытия обязательства результат проверяем.
     seed = f"{round_row.rule_commitment}:{round_row.day_index}"

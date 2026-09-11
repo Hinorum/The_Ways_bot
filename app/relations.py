@@ -154,13 +154,19 @@ async def npc_focus_line_ai(
     )
 
 
-async def get_npc_titles(session: AsyncSession | None = None) -> dict[str, str]:
-    """Возвращает словарь {npc_key: display_name} из БД или хардкода."""
-    if session is None:
-        return dict(NPC_TITLES)
+async def get_npc_titles(
+    session: AsyncSession | None = None,
+    db_names: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Возвращает словарь {npc_key: display_name} из БД или хардкода.
+
+    db_names — уже загруженные имена (npc_key → name) из load_all_npc_profiles:
+    при передаче БД не опрашивается (в день профили грузятся один раз).
+    """
     try:
-        from app.npc_cog import get_npc_names
-        db_names = await get_npc_names(session)
+        if db_names is None and session is not None:
+            from app.npc_cog import get_npc_names
+            db_names = await get_npc_names(session)
         if db_names:
             # Объединяем: БД > хардкод
             result = dict(NPC_TITLES)

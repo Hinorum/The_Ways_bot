@@ -510,11 +510,20 @@ async def build_day_context(
     except Exception:
         logger.debug("Trail-блок дня %s не собран", day_index, exc_info=True)
     # Отношения NPC к стае: канон последних дней в одной строке тона.
+    # Профили NPC читаются ОДИН раз на день и переиспользуются и титулами
+    # (relations/npc_focus), и voice cards — вместо трёх полных select'ов.
+    npc_profiles = {}
+    try:
+        from app.npc_cog import load_all_npc_profiles
+        npc_profiles = await load_all_npc_profiles(session)
+    except Exception:
+        logger.debug("AI-профили NPC дня %s не загружены", day_index, exc_info=True)
     from app.relations import load_relations, relations_prompt_block, get_npc_titles
 
     try:
         npc_sentiments = await load_relations(session)
-        npc_titles = await get_npc_titles(session)
+        db_names = {key: prof["name"] for key, prof in npc_profiles.items() if prof.get("name")}
+        npc_titles = await get_npc_titles(session, db_names=db_names)
         relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
@@ -648,7 +657,7 @@ async def build_day_context(
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
-        npc_titles = await get_npc_titles(session)
+        npc_titles = await get_npc_titles(session, db_names=db_names)
         focus_line = (
             await npc_focus_line_ai(
                 run_day_now,
@@ -704,13 +713,9 @@ async def build_day_context(
     # Банк повторов: формулировки и места последних дней — модель не должна
     # дублировать их дословно (литературный де-дуп, окно 7 дней).
     repeat_block = await recent_repeats_block(session, day_index)
-    # AI-профили NPC из БД для voice cards
-    npc_profiles = None
-    try:
-        from app.npc_cog import load_all_npc_profiles
-        npc_profiles = await load_all_npc_profiles(session)
-    except Exception:
-        logger.debug("AI-профили NPC дня %s не загружены", day_index, exc_info=True)
+    # AI-профили NPC из БД для voice cards (уже загружены выше — переиспользуем)
+    if not npc_profiles:
+        npc_profiles = None
     # AI-кэши из БД
     try:
         from app.lore import (
