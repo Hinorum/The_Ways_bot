@@ -225,12 +225,16 @@ async def places_memory_block(session: AsyncSession, limit: int = 10) -> str | N
             break
     if not seen:
         return None
+    beats = (
+        await session.execute(
+            select(StoryBeat.day_index, StoryBeat.winning_text)
+            .where(StoryBeat.day_index.in_(list(seen.values())))
+        )
+    ).all()
+    snippet_by_day = dict(beats)
     lines: list[str] = []
     for place, day_index in seen.items():
-        beat = (
-            await session.execute(select(StoryBeat).where(StoryBeat.day_index == day_index))
-        ).scalar_one_or_none()
-        snippet = beat.winning_text[:90] if beat else ""
+        snippet = (snippet_by_day.get(day_index) or "")[:90]
         lines.append(f"- «{place}»: {snippet}")
     return "\n".join(lines)
 

@@ -221,27 +221,33 @@ async def path_legacy(session: AsyncSession, limit: int = 5) -> list[dict]:
     """
     from app.models import Card, StoryBeat
 
-    result = await session.execute(
-        select(StoryBeat).order_by(StoryBeat.day_index.desc()).limit(limit)
-    )
-    beats = result.scalars().all()
-
-    legacy = []
-    for beat in beats:
-        # Получаем карточки раунда
-        cards_result = await session.execute(
-            select(Card).join(Round, Card.round_id == Round.id)
-            .where(Round.day_index == beat.day_index)
-            .order_by(Card.position)
+    beats = (
+        await session.execute(
+            select(StoryBeat.day_index, StoryBeat.winning_title)
+            .order_by(StoryBeat.day_index.desc())
+            .limit(limit)
         )
-        cards = cards_result.scalars().all()
-        for card in cards:
-            if card.title != beat.winning_title:
-                legacy.append({
-                    "day": beat.day_index,
-                    "title": card.title,
-                    "tag": getattr(card, "tag", "care"),
-                })
+    ).all()
+    if not beats:
+        return []
+
+    day_titles = dict(beats)
+    cards = (
+        await session.execute(
+            select(Card.title, Card.tag, Card.position, Round.day_index)
+            .join(Round, Card.round_id == Round.id)
+            .where(Round.day_index.in_(day_titles))
+            .order_by(Round.day_index.desc(), Card.position)
+        )
+    ).all()
+    legacy = []
+    for title, tag, _position, day in cards:
+        if title != day_titles[day]:
+            legacy.append({
+                "day": day,
+                "title": title,
+                "tag": tag,
+            })
 
     return legacy[:limit * 2]  # Берём до 2x отложенных клятв
 
