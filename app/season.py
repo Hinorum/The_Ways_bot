@@ -18,7 +18,9 @@ import random
 from datetime import date, datetime, timedelta, timezone
 
 from app.async_utils import unwrap_llm_json
-from app.core.registry import RUN_START_KEY, VILLAIN_KEY  # noqa: F401 (ре-экспорт для app.rounds)
+# Реэкспорт для app.rounds/app.leaderboard: канонические ключи watcher_state.
+from app.core.registry import RUN_START_KEY as RUN_START_KEY
+from app.core.registry import VILLAIN_KEY as VILLAIN_KEY
 
 # Прочтения Первого Лая на финальном дне — ровно по одному на тег карты.
 FINALE_CARDS = {

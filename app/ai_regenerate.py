@@ -58,7 +58,7 @@ async def _regenerate_pools(session: "AsyncSession", llm_caller, season: int) ->
     from app.models import AIGeneratedPool
 
     q = sa_select(AIGeneratedPool).where(
-        AIGeneratedPool.is_ai_generated == False,  # noqa: E712
+        AIGeneratedPool.is_ai_generated == False,
         AIGeneratedPool.season == season,
     )
     result = await session.execute(q)
@@ -150,7 +150,7 @@ async def _regenerate_npc_profiles(session: "AsyncSession", llm_caller) -> int:
     from app.models import NPCProfile
     from app.npc_cog import _generate_npc_profile_via_llm
 
-    q = sa_select(NPCProfile).where(NPCProfile.is_ai_generated == False)  # noqa: E712
+    q = sa_select(NPCProfile).where(NPCProfile.is_ai_generated == False)
     result = await session.execute(q)
     rows = result.scalars().all()
 
@@ -184,7 +184,7 @@ async def _regenerate_prologue_beats(session: "AsyncSession", llm_caller, season
     from app.prologue import _generate_prologue_beat_via_llm
 
     q = sa_select(PrologueBeat).where(
-        PrologueBeat.is_ai_generated == False,  # noqa: E712
+        PrologueBeat.is_ai_generated == False,
         PrologueBeat.season == season,
     )
     result = await session.execute(q)
@@ -217,7 +217,7 @@ async def _regenerate_season_arcs(session: "AsyncSession", llm_caller, season: i
     from app.story_arc import _generate_season_stage_via_llm
 
     q = sa_select(SeasonArc).where(
-        SeasonArc.is_ai_generated == False,  # noqa: E712
+        SeasonArc.is_ai_generated == False,
         SeasonArc.season == season,
     )
     result = await session.execute(q)

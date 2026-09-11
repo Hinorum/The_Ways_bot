@@ -152,7 +152,6 @@ def test_story_prompt_carries_season_and_place_fields() -> None:
 
 
 async def test_season_tag_balance_counts_winner_tags(session) -> None:
-    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
 
     async def mk_round(day: int, season: str, winner: int, tags: list[str], closed=True):
         round_row = Round(
@@ -230,7 +229,7 @@ async def test_places_memory_lists_recent_named_rounds(session) -> None:
 
 # ── Волна 3: Исход из трёх дней, стена клятв, целостность стаи ──
 
-from app.season import exodus_phase, exodus_instruction  # noqa: E402
+from app.season import exodus_phase, exodus_instruction
 
 
 def test_exodus_phase_layout() -> None:
@@ -329,7 +328,7 @@ async def test_healed_memories_counts_accepted_layers(session) -> None:
 
 # ── Волна 4: тайна мира — пересчёт, эвакуация, Еретик сезона 2+ ──
 
-from app.season import recount_day  # noqa: E402
+from app.season import recount_day
 
 
 def test_recount_day_once_before_crisis(monkeypatch) -> None:

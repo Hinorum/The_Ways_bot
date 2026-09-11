@@ -87,7 +87,6 @@ def test_format_top_lists_leaders_and_pot() -> None:
 
 
 async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> None:
-    from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
 
     from app.voting import upsert_player
 

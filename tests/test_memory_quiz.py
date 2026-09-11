@@ -53,7 +53,6 @@ def test_quiz_none_without_truth() -> None:
 
 
 def test_keyboard_remember_is_conditional() -> None:
-    from aiogram.utils.keyboard import InlineKeyboardBuilder  # noqa: F401
 
     from app.broadcast import cards_keyboard
 

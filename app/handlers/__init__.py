@@ -255,7 +255,7 @@ from .panel import (
     cmd_panel,
     on_panel_action,
 )
-from .fallback import on_private_fallback  # noqa: E402 (ЛС-перехват последним)
+from .fallback import on_private_fallback
 from .bootstrap import (
     _LAST_UPDATE_ERROR_ALERT,
     _PLAYER_ERROR_TEXT,
@@ -266,4 +266,4 @@ from .bootstrap import (
     handle_update_error,
 )
 
-import time as time  # noqa: F401 — re-export: тесты патчат app.handlers.time.monotonic
+import time as time
