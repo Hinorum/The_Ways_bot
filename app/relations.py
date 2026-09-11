@@ -248,7 +248,7 @@ async def generate_npc_reaction(
 ) -> str | None:
     """AI генерирует уникальную реакцию NPC на основе настроения и событий.
 
-    Возвращает 1-2 предложения от第三人称 или None при ошибке.
+    Возвращает 1-2 предложения от третьего лица или None при ошибке.
     """
     from app.story import _chat_completion
 

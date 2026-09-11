@@ -572,7 +572,7 @@ def check_image_quality(
         min_variance: минимальная допустимая дисперсия
 
     Returns:
-        (passed, variance) — прошло ли проверку и 실제 дисперсия
+        (passed, variance) — прошло ли проверку и фактическая дисперсия
     """
     try:
         variance = calculate_laplacian_variance(image_path)

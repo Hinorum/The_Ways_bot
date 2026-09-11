@@ -151,7 +151,7 @@ def coherence_score(text: str) -> float:
     words = text.split()
     bigrams = list(zip(words[:-1], words[1:]))
     bg_div = len(set(bigrams)) / max(len(bigrams), 1)
-    bg_score = min(1.0, bg_div / 0.7)  # нормализуем к 0.7 как理想
+    bg_score = min(1.0, bg_div / 0.7)  # нормализуем к 0.7 как к идеалу
     # Kolmogorov
     kol = kolmogorov_score(text)
     return 0.4 * ent + 0.3 * bg_score + 0.3 * kol

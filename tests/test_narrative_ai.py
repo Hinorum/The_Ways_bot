@@ -31,7 +31,7 @@ class TestTextEntropy:
 
     def test_repetitive(self) -> None:
         ent = text_entropy("aaa aaa aaa aaa")
-        assert ent < 2.0  #很低 — повторы
+        assert ent < 2.0  # очень низкая из-за повторов
 
     def test_diverse(self) -> None:
         text = "Скала дрогнула. Тень упала на броню. Лай разнёс пыль."
@@ -105,7 +105,7 @@ class TestKolmogorovRatio:
             "Дым поднялся столбом, смешиваясь с звёздной пылью.",
             "Ветер принёс запах гнилой древесины и.remote соли.",
             "Шрам на морде блестел в отблесках костра.",
-            "Перья дрейфовали в воздухе, застывая в не自然ных позах.",
+            "Перья дрейфовали в воздухе, застывая в неестественных позах.",
         ]
         text = " ".join(sentences)
         ratio = kolmogorov_ratio(text)

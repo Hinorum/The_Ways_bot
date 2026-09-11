@@ -535,7 +535,7 @@ async def build_day_context(
         logger.debug("NPC CoG не собран", exc_info=True)
     # ── Plugin prompt blocks ──
     # Плагины декларируют prompt_block capability и инжектируют данные
-    # в季节ный блок. Это позволяет добавлять механики без изменения
+    # в сезонный блок. Это позволяет добавлять механики без изменения
     # основного pipeline сборки промпта.
     try:
         from app.plugins import PluginContext, registry as _plugin_registry

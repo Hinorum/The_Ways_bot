@@ -116,7 +116,7 @@ def emotion_block_for_prompt(profile: EmotionProfile) -> str | None:
     descriptions = {
         "exhausted": (
             f"УСТАЛОСТЬ СТАИ ({profile.fatigue}/10): стая на пределе. "
-            "Осторожные действия, тихие голоса,沉重ные лапы. "
+            "Осторожные действия, тихие голоса, тяжёлые лапы. "
             "Мир кажется медленным и тяжёлым."
         ),
         "inspired": (
