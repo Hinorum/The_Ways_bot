@@ -887,8 +887,11 @@ def start_scheduler() -> None:
         hour=3,
         minute=30,
     )
-    # Напоминание о голосовании: 1 раз в 10:00 UTC (за час до закрытия в 11:00)
-    _register_job("vote-reminder", _vote_reminder_job, "cron", hour=10, minute=0)
+    # Напоминание о голосовании: 10:00 UTC (за час до закрытия в 11:00 UTC)
+    _register_job(
+        "vote-reminder", _vote_reminder_job, "cron",
+        hour=10, minute=0, timezone="UTC",
+    )
     # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
     from app.style_review import run_weekly_review_and_notify
 
