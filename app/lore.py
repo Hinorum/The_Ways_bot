@@ -1739,7 +1739,7 @@ def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> d
     reactions = _NPC_REACTIONS[tag]
     count = 1 + (emotions_rng.randrange(3) != 0)
     picked = []
-    for i in range(count):
+    for _i in range(count):
         name, reaction = reactions[emotions_rng.randrange(len(reactions))]
         picked.append({"name": name, "reaction": reaction})
     return {

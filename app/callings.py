@@ -261,7 +261,7 @@ async def callings_prompt_block(session: AsyncSession) -> str | None:
     }
 
     style_lines = []
-    for key, count in rows:
+    for key, _ in rows:
         if key in CALLING_STYLES:
             style_lines.append(f"- {CALLING_STYLES[key]}")
 

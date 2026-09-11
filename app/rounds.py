@@ -858,7 +858,7 @@ async def upgrade_stub_images(day_index: int) -> int:
     remaining_cover = bool(stubs.get("cover"))
     remaining_cards: list[int] = []
     results = await asyncio.gather(*(_pull(slot, p, s, d, sd) for slot, d, p, s, sd in jobs))
-    for (slot, _dest, _p, _s, _sd), ok in zip(jobs, results):
+    for (slot, _dest, _p, _s, _sd), ok in zip(jobs, results, strict=False):
         if ok:
             upgraded += 1
             continue

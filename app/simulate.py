@@ -24,7 +24,7 @@ async def simulate(days: int, skip_images: bool) -> None:
     Path(settings.media_dir).mkdir(parents=True, exist_ok=True)
     await init_db()
     async with SessionLocal() as session:
-        for day in range(1, days + 1):
+        for _day in range(1, days + 1):
             round_row = await create_next_round(session)
             print("=" * 60)
             print(round_row.chapter_title)

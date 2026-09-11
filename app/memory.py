@@ -178,7 +178,7 @@ def _normalize_to_dim(vector: list[float], dim: int) -> list[float]:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 def similarity(query: str, text: str) -> float:

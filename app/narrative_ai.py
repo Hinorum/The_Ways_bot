@@ -58,7 +58,7 @@ def bigram_diversity(text: str) -> float:
     words = text.split()
     if len(words) < 2:
         return 0.0
-    bigrams = list(zip(words[:-1], words[1:]))
+    bigrams = list(zip(words[:-1], words[1:], strict=False))
     return len(set(bigrams)) / max(len(bigrams), 1)
 
 
@@ -149,7 +149,7 @@ def coherence_score(text: str) -> float:
     ent = entropy_score(text)
     # Bigram diversity
     words = text.split()
-    bigrams = list(zip(words[:-1], words[1:]))
+    bigrams = list(zip(words[:-1], words[1:], strict=False))
     bg_div = len(set(bigrams)) / max(len(bigrams), 1)
     bg_score = min(1.0, bg_div / 0.7)  # нормализуем к 0.7 как к идеалу
     # Kolmogorov

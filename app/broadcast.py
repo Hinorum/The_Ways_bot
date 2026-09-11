@@ -854,7 +854,7 @@ async def send_personal_echoes(bot: Bot | None, finished) -> int:
                 *(_echo_ai(calling) for _pid, calling in calling_rows),
                 return_exceptions=True,
             )
-            for (pid, calling), tail in zip(calling_rows, tails):
+            for (pid, calling), tail in zip(calling_rows, tails, strict=False):
                 if isinstance(tail, str) and tail:
                     tail_map[pid] = tail
                 else:

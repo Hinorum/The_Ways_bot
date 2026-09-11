@@ -459,7 +459,7 @@ async def _chronicle(session, player_id: int, limit: int = 7) -> list[str]:
         )
     ).all()
     lines = []
-    for day, title, tag, won, winner_card, chapter in rows:
+    for day, title, tag, won, winner_card, _chapter in rows:
         tag_emoji = {"risk": "⚔️", "care": "💚", "cunning": "🦊"}.get(tag or "", "·")
         status = "🏆" if won else ("❌" if winner_card is not None else "·")
         lines.append(f"  {tag_emoji} Д{day} · «{title}» {status}")

@@ -71,7 +71,7 @@ def bigram_diversity(text: str) -> float:
     words = text.split()
     if len(words) < 2:
         return 0.0
-    bigrams = list(zip(words[:-1], words[1:]))
+    bigrams = list(zip(words[:-1], words[1:], strict=False))
     return len(set(bigrams)) / len(bigrams)
 
 
@@ -86,7 +86,7 @@ def _check_word_frequency(text: str, max_per_1000: int = 8) -> list[str]:
         "от", "до", "из", "за", "под", "над", "при", "для", "о", "у",
         "а", "ни", "ли", "бы", "же", "вот", "тут", "там", "где",
         "его", "её", "их", "мне", "тебе", "нам", "вам", "ей", "ему",
-        "ей", "им", "них", "нем", "ней", "нём", "вас", "меня", "тебя",
+        "им", "них", "нем", "ней", "нём", "вас", "меня", "тебя",
         "себя", "свой", "мой", "твой", "наш", "ваш", "тот", "та", "те",
         "все", "вся", "всё", "каждый", "каждая", "каждое",
         "стая", "мир", "день", "дни", "путь", "мост", "кость",
@@ -685,7 +685,7 @@ def _gradient(size: tuple[int, int], top: tuple, bottom: tuple) -> Image.Image:
     strip = Image.new("RGB", (1, size[1]))
     for y in range(size[1]):
         t = y / max(size[1] - 1, 1)
-        strip.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+        strip.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom, strict=False)))
     return strip.resize(size)
 
 
@@ -1883,7 +1883,7 @@ async def _free_story_llm(
                 return_exceptions=True,
             )
             scar_descriptions_override = {
-                k: desc for k, desc in zip(active_scar_keys, results) if isinstance(desc, str) and desc
+                k: desc for k, desc in zip(active_scar_keys, results, strict=False) if isinstance(desc, str) and desc
             } or None
         except Exception:
             logger.warning("AI-описания шрамов для дня %s не сгенерированы", day_index, exc_info=True)
@@ -2012,8 +2012,8 @@ async def _free_story_llm(
                             _w1 = _card_texts[i].split()
                             _w2 = _card_texts[j].split()
                             if len(_w1) >= 2 and len(_w2) >= 2:
-                                _bg1 = set(zip(_w1[:-1], _w1[1:]))
-                                _bg2 = set(zip(_w2[:-1], _w2[1:]))
+                                _bg1 = set(zip(_w1[:-1], _w1[1:], strict=False))
+                                _bg2 = set(zip(_w2[:-1], _w2[1:], strict=False))
                                 _overlap = len(_bg1 & _bg2) / max(len(_bg1 | _bg2), 1)
                                 if _overlap > 0.50:
                                     logger.warning(
@@ -2246,7 +2246,7 @@ def _extract_json(content: str) -> dict:
                     return obj
             except json.JSONDecodeError:
                 continue
-        raise ValueError("JSON в ответе модели не разобран (обрезан?)")
+        raise ValueError("JSON в ответе модели не разобран (обрезан?)") from None
 
 
 def _truncation_points(body: str):

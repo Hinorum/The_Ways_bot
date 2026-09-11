@@ -438,7 +438,7 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
                 return False
             payments: list[tuple[int, str, int]] = []
             top_amount = _weighted_amounts(total, placed, weights)
-            for (player_id, _score, _gram, wallet), amount in zip(placed, top_amount):
+            for (player_id, _score, _gram, wallet), amount in zip(placed, top_amount, strict=False):
                 payments.append((player_id, wallet, amount))
         else:
             # Прежнее поведение: победители, набравшие максимум, делят ровно.
@@ -724,7 +724,7 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
         amounts, rolled = _week_prize_amounts(total, len(places))
         network = _active_network()
         paid: list[tuple[str, str, int]] = []
-        for place, ((pid, correct, _gram, wallet), amount) in enumerate(zip(places, amounts), 1):
+        for place, ((pid, correct, _gram, wallet), amount) in enumerate(zip(places, amounts, strict=False), 1):
             session.add(
                 Payout(
                     round_id=None,

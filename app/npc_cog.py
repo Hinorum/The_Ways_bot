@@ -661,7 +661,7 @@ async def generate_all_npc_cogs(
     loaded = await load_motives_from_db(session, pairs) if session else {}
 
     cogs = []
-    for (name, mood), sentiment in zip(pairs, relations.values()):
+    for (name, mood), sentiment in zip(pairs, relations.values(), strict=False):
         motive_override, thought_pool_override = loaded.get((name, mood), (None, None))
 
         cog = generate_npc_cog(

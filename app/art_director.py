@@ -608,7 +608,7 @@ async def fetch_image_with_quality_check(
     """
     from app.story import fetch_day_image
 
-    for attempt in range(max_retries):
+    for _attempt in range(max_retries):
         success = await fetch_day_image(
             prompt=prompt,
             short_prompt=short_prompt,

@@ -188,7 +188,7 @@ async def test_start_scheduler_registers_only_zero_arg_jobs(monkeypatch) -> None
         try:
             inspect.signature(fn).bind()
         except TypeError as exc:
-            raise AssertionError(f"джоба {job_id} требует аргументы: {exc}")
+            raise AssertionError(f"джоба {job_id} требует аргументы: {exc}") from exc
 
 
 def test_shutdown_scheduler_safe_when_never_started() -> None:
