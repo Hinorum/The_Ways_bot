@@ -858,7 +858,7 @@ def start_scheduler() -> None:
     from app.backups import backup_job
 
     _register_job("way-tick", tick, "interval", seconds=15)
-    # Суточный бэкап в «мёртвый» час: 04:17 UTC.
+    # Суточный бэкап в «мёртвый» час: 04:17 MSK.
     _register_job(
         "db-backup",
         partial(_alert_guarded, "db-backup", backup_job),
@@ -892,7 +892,7 @@ def start_scheduler() -> None:
         "vote-reminder", _vote_reminder_job, "cron",
         hour=10, minute=0, timezone="UTC",
     )
-    # Еженедельная L2-вычитка стиля: воскресенье 18:00 UTC, отчёт админам.
+    # Еженедельная L2-вычитка стиля: воскресенье 18:00 MSK.
     from app.style_review import run_weekly_review_and_notify
 
     _register_job(
@@ -903,7 +903,7 @@ def start_scheduler() -> None:
         hour=18,
         minute=0,
     )
-    # Еженедельный отчёт стаи: воскресенье 20:00 UTC
+    # Еженедельный отчёт стаи: воскресенье 20:00 MSK
     _register_job(
         "weekly-report",
         partial(_alert_guarded, "weekly-report", _weekly_report_job),
@@ -912,7 +912,7 @@ def start_scheduler() -> None:
         hour=20,
         minute=0,
     )
-    # GEPA: еженедельная эволюция промпт-генов: воскресенье 21:00 UTC
+    # GEPA: еженедельная эволюция промпт-генов: воскресенье 21:00 MSK
     _register_job(
         "gepa-evolution",
         partial(_alert_guarded, "gepa-evolution", _gepa_evolution_job),
