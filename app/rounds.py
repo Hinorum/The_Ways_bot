@@ -362,11 +362,11 @@ async def _load_day_bible(session: AsyncSession, day_index: int) -> dict | None:
         return None
 
 async def _safe_db(session: AsyncSession, label: str, fn, *args, **kwargs):
-    """Выполнить DB-функцию; при ошибке — логируем DIAG и пробрасываем дальше."""
+    """Выполнить DB-функцию; при ошибке — логируем и пробрасываем дальше."""
     try:
         return await fn(*args, **kwargs)
     except Exception:
-        logger.exception("DIAG: %s FAILED", label)
+        logger.exception("%s: DB-функция упала", label)
         raise
 
 
@@ -901,7 +901,7 @@ async def create_next_round_detailed(
     try:
         latest = await get_latest_round(session)
     except Exception:
-        logger.exception("DIAG: get_latest_round (1st) FAILED")
+        logger.exception("get_latest_round (1st) упал")
         await session.rollback()
         raise
     target_day = (
@@ -915,7 +915,7 @@ async def create_next_round_detailed(
             await session.execute(select(Round).where(Round.day_index == target_day).limit(1))
         ).scalar_one_or_none()
     except Exception:
-        logger.exception("DIAG: Round.day_index query FAILED (target_day=%s)", target_day)
+        logger.exception("Запрос Round.day_index упал (target_day=%s)", target_day)
         await session.rollback()
         raise
     if already is not None:
@@ -925,7 +925,7 @@ async def create_next_round_detailed(
     try:
         stale = await session.get(PreparedDay, target_day)
     except Exception:
-        logger.exception("DIAG: get PreparedDay (target_day=%s) FAILED", target_day)
+        logger.exception("Запрос PreparedDay упал (target_day=%s)", target_day)
         await session.rollback()
         raise
     if stale is not None:
@@ -933,7 +933,7 @@ async def create_next_round_detailed(
         try:
             await session.commit()
         except Exception:
-            logger.exception("DIAG: commit after stale PreparedDay delete FAILED")
+            logger.exception("Commit удаления устаревшего PreparedDay упал")
             await session.rollback()
             raise
 

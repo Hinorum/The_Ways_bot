@@ -121,7 +121,7 @@ async def _previous_round_stats(
     Возвращает (vote_counts, total_stakes_nanotons, player_count).
     Если предыдущего дня нет — дефолты (3, 0, 10).
     """
-    logger.warning("DIAG-PRS: ENTER _previous_round_stats")
+    logger.debug("ENTER _previous_round_stats")
     from app.models import Stake, Vote
 
     beat_row = (
@@ -320,7 +320,7 @@ async def build_day_context(
     же последовательности зависимостей, что и прежде, но результат — единый
     объект DayContext вместо десятка локальных переменных.
     """
-    logger.warning("DIAG-PR: ENTER day_index=%s", day_index)
+    logger.debug("build_day_context: ENTER day_index=%s", day_index)
     canon = await load_canon(session, day_index)
     beats = canon.lines
     echoes = canon.echoes
@@ -432,9 +432,11 @@ async def build_day_context(
         db_prologue_beats = await load_prologue_beats_from_db(session, season=season_num)
         db_season_arc = await load_season_arc_from_db(session, season=season_num)
     except Exception:
-        logger.warning("DIAG-PR: prologue/arc DB query failed — rolling back")
+        logger.warning(
+            "Данные пролога/дуги сезона не прочитались — сезонный блок соберётся из дефолтов",
+            exc_info=True,
+        )
         await session.rollback()
-        pass
 
     sblock = build_season_block(
         anchor=anchor,
@@ -456,9 +458,11 @@ async def build_day_context(
     try:
         callings_block = await callings_prompt_block(session)
     except Exception:
-        logger.warning("DIAG-PR: callings_prompt_block failed — rolling back")
+        logger.warning(
+            "Призвания стаи не собрались — блок опущен",
+            exc_info=True,
+        )
         await session.rollback()
-        pass
     if callings_block:
         sblock = f"{sblock}\n{callings_block}"
     # Характер стаи: определённый по голосованиям, влияет на тон повествования.
@@ -539,9 +543,8 @@ async def build_day_context(
         for block in plugin_blocks:
             sblock = f"{sblock}\n{block}"
     except Exception:
-        logger.warning("DIAG-PR: plugin blocks failed — rolling back")
+        logger.warning("Plugin prompt blocks не собраны", exc_info=True)
         await session.rollback()
-        logger.debug("Plugin prompt blocks не собраны", exc_info=True)
     # Позиция забега нужна и линии Еретика, и серединному повороту ниже.
     from app.season import midpoint_day as season_midpoint
     from app.season import run_position as season_run_position

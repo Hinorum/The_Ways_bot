@@ -600,7 +600,7 @@ async def tick(bot: Bot | None = None) -> None:
                     spawn(_announce_results_job(finished.id), "announce_results")
                     spawn(_finalize_new_day_job(finished.id), "finalize_new_day")
         except Exception:
-            logger.exception("DIAG: tick FAILED — rolling back")
+            logger.exception("тик закрытия дня упал — откат транзакции")
             await session.rollback()
 
 
@@ -626,7 +626,7 @@ async def _announce_results_job(finished_id: int) -> None:
                 return
             await announce_results(_bot, finished)
     except Exception:
-        logger.exception("DIAG: _announce_results_job FAILED (id=%s)", finished_id)
+        logger.exception("Рассылка итогов дня упала (id=%s)", finished_id)
 
 
 async def _finalize_new_day_job(finished_id: int) -> None:
@@ -702,7 +702,7 @@ async def _finalize_new_day_job(finished_id: int) -> None:
         if settings.personal_echo:
             spawn(_personal_echo_job(finished_id), "personal_echo")
     except Exception:
-        logger.exception("DIAG: _finalize_new_day_job FAILED (id=%s)", finished_id)
+        logger.exception("Финализация нового дня упала (id=%s)", finished_id)
 
 
 async def _payout_dispatch_job() -> None:
