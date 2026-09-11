@@ -308,10 +308,10 @@ def format_results(
                 f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
                 "и тропа повела бы иначе."
             )
-    # Правило дня не дублируется: в постах голосования оно уже объявлено.
-    # Исключение — запечатанный день: закон скрыт до итогов и раскрывается здесь.
     if getattr(round_row, "sealed", False):
         lines.append(f"🗝 Запечатанное правило: {RULE_PHRASES[round_row.win_rule]}")
+    else:
+        lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):
@@ -334,30 +334,6 @@ def format_results(
         lines.append(f"🎯 Коэффициент: ×{multiplier:.2f}")
     if getattr(round_row, "tie_note", None):
         lines.append(f"🤝 {round_row.tie_note}")
-    winner = names[round_row.winner_card or 0]
-    winner_card = next(
-        (card for card in round_row.cards if card.position == round_row.winner_card), None
-    )
-    consequence = _tg_escape(winner_card.consequence if winner_card else "")
-    lines += ["", f"📖 Запись дня: {winner}", _clip(consequence, 240)]
-    # Эмоциональное описание
-    if winner_card and winner_card.emotional_consequence:
-        lines.append("")
-        lines.append(f"💫 {_tg_escape(winner_card.emotional_consequence)}")
-    # Реакции NPC
-    if winner_card and winner_card.npc_reactions_json:
-        try:
-            import json
-            reactions = json.loads(winner_card.npc_reactions_json)
-            if reactions:
-                lines.append("")
-                for r in reactions[:3]:
-                    name = _tg_escape(str(r.get("name", "")))
-                    reaction = _tg_escape(str(r.get("reaction", "")))
-                    if name and reaction:
-                        lines.append(f"🐾 {name}: «{reaction}»")
-        except Exception:
-            logger.debug("Реакции NPC дня %s не прочитаны", round_row.day_index, exc_info=True)
     return "\n".join(lines)
 
 
