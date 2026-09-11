@@ -252,25 +252,24 @@ async def vow_wall_count(session: AsyncSession) -> int:
     Это не наказание и не ресурс: стена у выхода — чистый счётчик невыбранных
     путей, который финал называет ценой выбора. Числа нигде не вычитаются.
     """
-    from app.models import Card, StoryBeat
+    from app.models import Card, Round, StoryBeat
 
     beats = (
         await session.execute(
-            select(StoryBeat).order_by(StoryBeat.day_index)
+            select(StoryBeat.day_index, StoryBeat.winning_title).order_by(StoryBeat.day_index)
         )
-    ).scalars().all()
-    total = 0
-    for beat in beats:
-        cards = (
-            await session.execute(
-                select(Card).join(Round, Card.round_id == Round.id)
-                .where(Round.day_index == beat.day_index)
-            )
-        ).scalars().all()
-        for card in cards:
-            if card.title != beat.winning_title:
-                total += 1
-    return total
+    ).all()
+    if not beats:
+        return 0
+    day_titles = dict((b[0], b[1]) for b in beats)
+    cards = (
+        await session.execute(
+            select(Card.title, Round.day_index)
+            .join(Round, Card.round_id == Round.id)
+            .where(Round.day_index.in_(day_titles))
+        )
+    ).all()
+    return sum(1 for title, day in cards if title != day_titles[day])
 
 
 async def weekly_report(session: AsyncSession) -> str:
