@@ -197,6 +197,7 @@ async def snapshot() -> dict:
             payload["watcher_source"] = await _get_state(session, SOURCE_KEY)
         if latest is not None:
             payload["round"] = {
+                "id": latest.id,
                 "day_index": latest.day_index,
                 "status": latest.status.value if isinstance(latest.status, RoundStatus) else str(latest.status),
                 "voting_ends_at": latest.voting_ends_at.isoformat(),

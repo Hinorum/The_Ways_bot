@@ -46,6 +46,23 @@ async def test_panel_is_admin_only(monkeypatch) -> None:
     assert "только для хранителя" in outsider.answer.call_args.args[0]
 
 
+async def test_panel_is_private_chat_only(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    group = make_message(4242)
+    group.chat.type = "group"
+    await cmd_panel(group)
+    assert "только в личке" in group.answer.call_args.args[0]
+
+
+async def test_panel_callback_is_private_chat_only(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "admin_ids", "4242")
+    callback = make_callback(4242)
+    callback.message.chat.type = "group"
+    await on_panel_action(callback)
+    callback.answer.assert_awaited_once()
+    assert callback.answer.call_args.kwargs.get("show_alert") is True
+
+
 async def test_panel_builder_contains_core_sections(session, monkeypatch) -> None:
     """Панель читает ГЛОБАЛЬНУЮ базу (как прод): сеем туда и чистим после."""
     monkeypatch.setattr(settings, "admin_ids", "4242")
@@ -53,6 +70,7 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
     now = datetime.now(timezone.utc)
     async with SessionLocal() as db:
         db.add(Round(
+            id=975_001,
             day_index=97_500,
             status=RoundStatus.OPEN,
             win_rule=WinRule.MAJORITY,
@@ -75,7 +93,7 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
             last_error="have no alive peers: задай LITESERVER_CONFIG_URL"[:200],
         ))
         await db.commit()
-    _POT_CACHE[97_500] = (1_250_000_000, 3)
+    _POT_CACHE[975_001] = (1_250_000_000, 3)
 
     try:
         async with SessionLocal() as g:
@@ -91,7 +109,7 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         assert "LITESERVER_CONFIG_URL" in text  # причина видна прямо тут
         assert "/resetgame confirm" in text  # справочник команд на месте
     finally:
-        _POT_CACHE.pop(97_500, None)
+        _POT_CACHE.pop(975_001, None)
         from sqlalchemy import delete as _d
 
         async with SessionLocal() as db:
