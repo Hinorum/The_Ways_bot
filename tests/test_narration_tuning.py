@@ -35,6 +35,13 @@ def test_card_description_budget_unchanged() -> None:
     assert "description (1-2 предложения)" in prompt
 
 
+def test_prompt_requires_one_memorable_object() -> None:
+    prompt = _prompt("СЕЗОН: акт 1.")
+    assert "РЕДАКТОРСКИЙ ФОКУС ДНЯ" in prompt
+    assert "один конкретный физический объект" in prompt
+    assert "дилемма «вагонетки», связанная с" in prompt
+
+
 def test_prompt_block_budget_keeps_edges() -> None:
     block = "НАЧАЛО " + ("середина " * 80) + " СВЕЖИЙ_КОНТЕКСТ"
     compact = story._prompt_block(block, 120)
