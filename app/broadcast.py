@@ -92,13 +92,15 @@ def status_text(
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:
         phase = "🌙 День закрыт."
-    # Пути голосования читаются словами: заголовок + суть каждого.
+    # Пути голосования читаются словами: действие + короткая цена выбора.
     # (Раньше описания жили в подписях трёх фото-карт — генерацию карт
     # убрали, и текст снова стал носителем смысла развилки.)
     # Компактный профиль: промпт просит карту не длиннее 210 знаков, а показ
     # здесь даёт задел до 260 — текст развилки не режется многоточием.
     cards = "\n".join(
-        f"{POSITIONS[card.position]}. {_clamp(card.title, 80)} — {_clamp(card.description, 260)}"
+        f"{POSITIONS[card.position]}. {_clamp(card.title, 80)} — "
+        f"{_clamp(card.description, 220)}"
+        + (f"\n   Цена: {_clamp(card.consequence, 180)}" if card.consequence else "")
         for card in sorted(round_row.cards, key=lambda item: item.position)
     )
     bank_line = ""

@@ -82,7 +82,12 @@ class Settings(BaseSettings):
     # нейросетью, а не фолбэками. Настраивается из Environment.
     llm_timeout_seconds: int = 75
     image_timeout_seconds: int = 90
-    story_models: str = "openai,mistralai/mistral-small-4,openai/gpt-5.4-nano"
+    # Бесплатный HTTP-провайдер (HF Router / Pollinations) любит более
+    # стабильные и широко доступные имена. Новые alias-ы вроде
+    # "openai/gpt-5.4-nano" или узкоспециализированные Llama-релизы
+    # иногда не существуют в момент запроса или не поднимаются в бесплатном
+    # роутере, из-за чего весь список падает на "model unavailable".
+    story_models: str = "openai,meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3"
     # Параметры генерации: температура, лимит токенов, штрафы за повтор.
     # temperature 0.85 — баланс между креативностью и связностью.
     # frequency_penalty 0.3 — штраф за повтор одних и тех же токенов.
@@ -93,7 +98,7 @@ class Settings(BaseSettings):
     llm_presence_penalty: float = 0.2
     llm_api_key: str = ""
     llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"
-    llm_models: str = "meta-llama/Llama-3.3-70B-Instruct"
+    llm_models: str = "meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3"
 
     ton_enabled: bool = False
     ton_network: str = "mainnet"
@@ -326,7 +331,7 @@ class Settings(BaseSettings):
     @property
     def llm_model_chain(self) -> list[str]:
         models = [model.strip() for model in self.llm_models.split(",") if model.strip()]
-        return models or ["meta-llama/Llama-3.3-70B-Instruct"]
+        return models or ["meta-llama/Meta-Llama-3.1-8B-Instruct"]
 
     @property
     def async_database_url(self) -> str:

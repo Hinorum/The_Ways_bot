@@ -175,6 +175,7 @@ def test_status_carries_paths_and_media_is_single_cover(tmp_path) -> None:
     status = status_text(round_row)
     for position in range(3):
         assert f"{['I', 'II', 'III'][position]}. Путь {position} — описание" in status
+        assert "Цена: канон" in status
     assert len(status) <= 4096
 
     media = day_media_group(round_row)

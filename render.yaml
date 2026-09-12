@@ -31,7 +31,9 @@ services:
       - key: LLM_BASE_URL
         value: https://router.huggingface.co/v1/chat/completions
       - key: LLM_MODELS
-        value: meta-llama/Llama-3.3-70B-Instruct
+        value: meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3
+      - key: STORY_MODELS
+        value: openai,meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3
       - key: MEDIA_DIR
         value: ./media/generated
       - key: WEBHOOK_SECRET
