@@ -35,6 +35,15 @@ def test_card_description_budget_unchanged() -> None:
     assert "description (1-2 предложения)" in prompt
 
 
+def test_prompt_block_budget_keeps_edges() -> None:
+    block = "НАЧАЛО " + ("середина " * 80) + " СВЕЖИЙ_КОНТЕКСТ"
+    compact = story._prompt_block(block, 120)
+    assert len(compact) <= 160  # маркер сокращения добавляет служебную строку
+    assert compact.startswith("НАЧАЛО")
+    assert compact.endswith("СВЕЖИЙ_КОНТЕКСТ")
+    assert "сокращена" in compact
+
+
 def test_sniff_scene_appends_trail_tint() -> None:
     from app.callings import calling_by_key
     from app.handlers import compose_sniff_scene

@@ -1509,6 +1509,20 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     return data
 
 
+def _prompt_block(value: str | None, limit: int) -> str:
+    """Keep prompt context useful without letting one subsystem dominate it."""
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    head = max(1, int(limit * 0.65))
+    tail = max(1, limit - head)
+    return (
+        text[:head].rsplit(" ", 1)[0].rstrip()
+        + "\n[… средняя часть блока сокращена …]\n"
+        + text[-tail:].lstrip()
+    )
+
+
 def _build_story_prompt(
     day_index: int,
     previous_beats: list[str],
@@ -1543,7 +1557,7 @@ def _build_story_prompt(
     известные места, долгожители) — мега-промпт слышит накопленное состояние
     за день до генерации, без отдельного вызова AI-локации.
     """
-    history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
+    history = _prompt_block("\n".join(previous_beats[-8:]), 3200) or "история ещё не началась"
     law_line = ""
     if win_rule is not None:
         if sealed:
@@ -1589,7 +1603,7 @@ def _build_story_prompt(
             "лёгким касанием — одной фразой, без пересказа целиком:\n"
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
-    season_text = f"{season_block}\n" if season_block else ""
+    season_text = f"{_prompt_block(season_block, 3600)}\n" if season_block else ""
     # Эргономика чтения в ТГ: обычная глава 1000–1300 знаков (5–7 абзацев),
     # расширенная (пролог/поворот) 1300–1600. Короче прежнего, но насыщеннее —
     # меньше «воды ради скелета», больше крючка дня.
@@ -1689,7 +1703,7 @@ def _build_story_prompt(
         f"{emotion_block + chr(10) if emotion_block else ''}"
         f"{branches_block + chr(10) if branches_block else ''}"
         f"{dynamic_rules_block + chr(10) if dynamic_rules_block else ''}"
-        f"{characters_block + chr(10) if characters_block else ''}"
+        f"{_prompt_block(characters_block, 1600) + chr(10) if characters_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
@@ -1759,7 +1773,7 @@ def _build_story_prompt(
         '"cover_prompt":"english wide cinematic scene summarizing the whole day"}. '
         "Ссылайся на прошлый канон."
         + (_CHOICES_BLOCK if with_choices else "")
-        + ((_WORLD_BLOCK + world_block) if world_block else "")
+        + ((_WORLD_BLOCK + _prompt_block(world_block, 1800)) if world_block else "")
     )
 
 
