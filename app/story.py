@@ -1653,18 +1653,14 @@ def _build_story_prompt(
             )
     # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
-    _gepa_active = False
     try:
         _gene = get_active_gene()
         if _gene is not None:
             _gepa_block = _gene.to_prompt_block() + "\n"
-            _gepa_active = True
-            logger.info("GEPA: ген применяется day=%d gen=%d tone='%s' fitness=%.3f",
-                        day_index, _gene.generation, _gene.system_tone[:30], _gene.fitness)
+            logger.debug("GEPA: ген применяется day=%d tone='%s'",
+                         day_index, _gene.system_tone[:30])
     except Exception:
         logger.debug("GEPA: ген не загружен", exc_info=True)
-    if not _gepa_active:
-        logger.info("GEPA: ген не активен day=%d — используется базовый промпт", day_index)
     if pack_focus_line:
         _pack_rule = (
             "В этот день одна собака стаи — герой дня: её действие и взгляд "

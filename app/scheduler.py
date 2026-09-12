@@ -1008,20 +1008,22 @@ async def _weekly_report_job() -> None:
 
 async def _gepa_evolution_job() -> None:
     """GEPA: еженедельная эволюция промпт-генов.
-    
-    Собирает fitness-данные за неделю (энтропия, биграммы, голосование, стрики),
-    оценивает популяцию, запускает эволюцию, сохраняет лучший ген в watcher_state.
+
+    Собирает fitness-данные за неделю (энтропия, биграммы, реальные голоса,
+    стрики игроков), оценивает популяцию, запускает эволюцию, сохраняет
+    лучший ген в watcher_state и помечает его применяемым в следующей неделе.
     """
-    from app.models import StoryBeat, WatcherState
+    from app.models import Player, Round, StoryBeat, Vote, WatcherState
     from app.narrative_ai import GEPAPopulation, text_entropy, bigram_diversity
+    from sqlalchemy import func as _func
     from sqlalchemy import select as _select
 
     try:
         async with SessionLocal() as session:
-            # Собираем данные за последние 7 дней
+            # Собираем дни за последние 7 дней (номер дня + текст)
             beats = (
                 await session.execute(
-                    _select(StoryBeat.winning_text)
+                    _select(StoryBeat.day_index, StoryBeat.winning_text)
                     .order_by(StoryBeat.day_index.desc())
                     .limit(7)
                 )
@@ -1031,16 +1033,50 @@ async def _gepa_evolution_job() -> None:
                 logger.info("GEPA: недостаточно данных для эволюции (%d дней)", len(beats))
                 return
 
-            # Считаем средние метрики
+            week_days = {day for day, _ in beats}
+
+            # Считаем средние метрики качества текста
             entropies = []
             bigrams = []
-            for (text,) in beats:
+            for _, text in beats:
                 if text and len(text.split()) > 20:
                     entropies.append(text_entropy(text))
                     bigrams.append(bigram_diversity(text))
 
             avg_entropy = sum(entropies) / max(len(entropies), 1)
             avg_bigram = sum(bigrams) / max(len(bigrams), 1)
+
+            # Реальные метрики вовлечённости недели: сколько игроков голосовало
+            # и насколько у них живы стрики (не заглушки — запросы по данным).
+            rounds_row = (
+                await session.execute(
+                    _select(Round.id).where(Round.day_index.in_(week_days))
+                )
+            ).scalars().all()
+            week_round_ids = [rid for rid in rounds_row]
+
+            week_vote_rate = 0.0
+            week_streak_rate = 0.0
+            if week_round_ids:
+                voters = (
+                    await session.execute(
+                        _select(_func.count(_func.distinct(Vote.player_id)))
+                        .where(Vote.round_id.in_(week_round_ids))
+                    )
+                ).scalar_one()
+                total_players = (
+                    await session.execute(_select(_func.count(Player.id)))
+                ).scalar_one()
+                week_vote_rate = min(1.0, (voters or 0) / max(1, total_players))
+
+                active_rows = (
+                    await session.execute(
+                        _select(Player.current_streak)
+                        .where(Player.current_streak > 0)
+                    )
+                ).scalars().all()
+                avg_streak = sum(active_rows) / max(len(active_rows), 1)
+                week_streak_rate = min(1.0, avg_streak / 7.0)
 
             # Загружаем популяцию из watcher_state
             ws_result = await session.execute(
@@ -1052,16 +1088,22 @@ async def _gepa_evolution_job() -> None:
             else:
                 pop = GEPAPopulation()
 
-            # Fitness (без данных голосования — используем только качество текста)
+            # Fitness на реальных данных: применявшийся ген получает измеренный
+            # скор, остальные — прогноз качества.
             pop.evaluate_fitness(
                 week_entropy=avg_entropy,
                 week_bigram=avg_bigram,
-                week_vote_rate=0.5,  # нейтральная оценка без данных
-                week_streak_rate=0.5,
+                week_vote_rate=week_vote_rate,
+                week_streak_rate=week_streak_rate,
             )
 
             # Эволюция
             pop.evolve()
+
+            best = pop.best_gene()
+            # Помечаем лучший ген применяемым в следующей неделе: только ему
+            # будут измерять fitness по факту будущих голосов.
+            pop.active_key = best.signature
 
             # Сохраняем
             if ws_row is None:
@@ -1070,14 +1112,15 @@ async def _gepa_evolution_job() -> None:
             ws_row.value = pop.to_json()
             await session.commit()
 
-            best = pop.best_gene()
             # Обновляем кэш активного гена
             from app.narrative_ai import set_active_gene
             set_active_gene(best)
             logger.info(
-                "GEPA gen %d: best=%.3f tone='%s' sensory='%s' pacing='%s'",
+                "GEPA gen %d: best=%.3f tone='%s' sensory='%s' pacing='%s' "
+                "votes=%.2f streak=%.2f",
                 pop.generation, best.fitness,
                 best.system_tone, best.sensory_emphasis, best.pacing_style,
+                week_vote_rate, week_streak_rate,
             )
     except Exception as exc:
         logger.warning("GEPA эволюция не удалась: %s", exc)

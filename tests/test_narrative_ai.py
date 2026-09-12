@@ -272,3 +272,39 @@ class TestGEPAPopulation:
     def test_bad_json_fallback(self) -> None:
         pop = GEPAPopulation.from_json("invalid json {{{", seed="test")
         assert len(pop.genes) == 5  # дефолтная популяция
+
+    def test_signature(self) -> None:
+        a = PromptGene(system_tone="тёмная сказка")
+        b = PromptGene(system_tone="тёмная сказка", sensory_emphasis="свет и тень")
+        assert a.signature != b.signature
+        assert a.signature == ("тёмная сказка", "запахи и звуки", "медленное нарастание")
+
+    def test_active_gene_gets_measured_fitness(self) -> None:
+        pop = GEPAPopulation(seed="test")
+        pop.active_key = pop.genes[0].signature
+        pop.evaluate_fitness(
+            week_entropy=3.8,
+            week_bigram=0.65,
+            week_vote_rate=0.9,
+            week_streak_rate=0.9,
+        )
+        active = pop.genes[0]
+        inactive = pop.genes[1]
+        # Применявшийся ген получает измеренный скор с вовлечённостью,
+        # непробованные — только прогноз качества.
+        assert active.fitness > inactive.fitness
+
+    def test_active_key_survives_serialization(self) -> None:
+        pop = GEPAPopulation(seed="test")
+        pop.active_key = pop.genes[2].signature
+        restored = GEPAPopulation.from_json(pop.to_json(), seed="test")
+        assert restored.active_key == tuple(pop.genes[2].signature)
+
+    def test_evolution_is_active_after_evaluate(self) -> None:
+        pop = GEPAPopulation(seed="test")
+        pop.active_key = pop.genes[0].signature
+        pop.evaluate_fitness(3.8, 0.65, 0.9, 0.9)
+        pop.evolve()
+        best = pop.best_gene()
+        assert pop.generation == 1
+        assert best.fitness > 0.0

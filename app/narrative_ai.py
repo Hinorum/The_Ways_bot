@@ -295,6 +295,11 @@ class PromptGene:
     fitness: float = 0.0
     generation: int = 0
     
+    @property
+    def signature(self) -> tuple:
+        """Устойчивый идентификатор гена: то, что реально влияет на промпт."""
+        return (self.system_tone, self.sensory_emphasis, self.pacing_style)
+    
     def to_prompt_block(self) -> str:
         """Конвертирует ген в блок промпта для инжекта."""
         parts = []
@@ -395,6 +400,9 @@ class GEPAPopulation:
         self.rng = Random(seed or "gepa_default")
         self.generation = 0
         self._selection_pressure = 0.3  # доля турнира
+        # Сигнатура гена, который реально применялся в прошедшую неделю.
+        # Только ему достаётся измеренный fitness; остальные — прогноз.
+        self.active_key: tuple | None = None
     
     def evaluate_fitness(
         self,
@@ -403,17 +411,23 @@ class GEPAPopulation:
         week_vote_rate: float,
         week_streak_rate: float,
     ) -> None:
-        """Оценка fitness каждого гена на основе данных недели."""
-        # Базовый скор качества текста
+        """Оценка fitness генов по данным недели.
+
+        Измеренный скор получает только ген, который реально применялся в
+        прошедшей неделе (его промпт породил тексты дней). Остальные гены
+        популяции в неделе не участвовали — им выдаётся прогноз качества
+        (не позиций вовлечённости), заниженный против проверенного, чтобы
+        отбор честно держался на реальном замере, а не на монетке.
+        """
         quality = 0.5 * entropy_score_from_value(week_entropy) + 0.5 * min(1.0, week_bigram / 0.7)
-        
+        engagement = 0.5 * week_vote_rate + 0.5 * week_streak_rate
+
         for gene in self.genes:
-            # Фитнес = качество текста * вес + вовлечённость * вес
-            gene.fitness = (
-                0.4 * quality +
-                0.3 * week_vote_rate +
-                0.3 * week_streak_rate
-            )
+            if self.active_key is not None and gene.signature == self.active_key:
+                gene.fitness = 0.4 * quality + 0.6 * engagement
+            else:
+                # Не применявшийся ген: прогноз только по качеству текста.
+                gene.fitness = 0.4 * quality + 0.15
     
     def tournament_select(self, k: int = 3) -> PromptGene:
         """Турнирный отбор: k случайных, лучший побеждает."""
@@ -455,6 +469,7 @@ class GEPAPopulation:
         """Сериализация популяции для хранения в watcher_state."""
         return json.dumps({
             "generation": self.generation,
+            "active_key": list(self.active_key) if self.active_key else None,
             "genes": [g.to_dict() for g in self.genes],
         }, ensure_ascii=False)
     
@@ -466,6 +481,8 @@ class GEPAPopulation:
             genes = [PromptGene.from_dict(g) for g in obj.get("genes", [])]
             pop = cls(genes=genes, seed=seed)
             pop.generation = obj.get("generation", 0)
+            ak = obj.get("active_key")
+            pop.active_key = tuple(ak) if ak else None
             return pop
         except Exception:
             logger.warning("GEPA: не удалось десериализовать популяцию, стартуем с дефолтной")
@@ -496,7 +513,12 @@ def get_active_gene() -> PromptGene | None:
 
 
 async def load_active_gene() -> PromptGene | None:
-    """Загрузить лучший ген из watcher_state (async). Вызывать при старте бота."""
+    """Загрузить лучший ген из watcher_state (async). Вызывать при старте бота.
+
+    Если эволюция ещё ни разу не сохраняла популяцию — ставим дефолтный ген,
+    чтобы GEPA был физически активен с первого дня, а не молчал до первой
+    воскресной эволюции.
+    """
     global _active_gene
     try:
         from app.db import SessionLocal
@@ -515,7 +537,13 @@ async def load_active_gene() -> PromptGene | None:
                     "GEPA: загружен ген gen=%d tone='%s' fitness=%.3f",
                     pop.generation, _active_gene.system_tone, _active_gene.fitness,
                 )
-                return _active_gene
+            else:
+                _active_gene = DEFAULT_POPULATION[0]
+                logger.info(
+                    "GEPA: популяции ещё нет — активен дефолтный ген tone='%s'",
+                    _active_gene.system_tone,
+                )
+            return _active_gene
     except Exception as exc:
         logger.warning("GEPA: не удалось загрузить ген: %s", exc)
     return None
@@ -526,9 +554,3 @@ def set_active_gene(gene: PromptGene) -> None:
     global _active_gene
     _active_gene = gene
     logger.info("GEPA: активный ген обновлён tone='%s'", gene.system_tone)
-
-
-def apply_gene_to_prompt(base_prompt: str, gene: PromptGene) -> str:
-    """Инжект гена в базовый промпт. Добавляет ген-специфичные инструкции."""
-    gene_block = gene.to_prompt_block()
-    return base_prompt + "\n\n" + gene_block
