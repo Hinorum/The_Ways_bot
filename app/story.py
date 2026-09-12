@@ -525,7 +525,6 @@ async def _generate_session_characters(
             ],
             world_mood="tense",
             open_threads=[],
-            pack_needs={},
             season=season,
         )
 

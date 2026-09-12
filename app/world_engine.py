@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,15 +53,15 @@ class WorldContext:
     active_characters: list[dict]  # активные персонажи
     world_mood: str  # tense | peaceful | chaotic | hopeful | grim
     open_threads: list[str]  # незавершённые сюжетные линии
-    pack_needs: dict  # hunger, thirst, health
-    season: str  # текущий сезон
+    pack_needs: dict = field(default_factory=dict)  # контур выживания отключён
+    season: str = "unknown"  # текущий сезон
 
 
 # ── World State Queries ────────────────────────────────────────────────────
 
 
 async def get_world_context(
-    session: AsyncSession, day_index: int, pack_state: dict | None = None,
+    session: AsyncSession, day_index: int,
     season: str | None = None,
 ) -> WorldContext:
     """Собирает контекст мира для генерации AI-выборов."""
@@ -139,7 +139,6 @@ async def get_world_context(
         active_characters=active_characters,
         world_mood=world_mood,
         open_threads=open_threads,
-        pack_needs=pack_state or {"hunger": 5, "thirst": 5, "health": 10},
         season=season or "unknown",
     )
 

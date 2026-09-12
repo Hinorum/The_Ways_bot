@@ -442,7 +442,6 @@ async def _plan_and_render(
                 ],
                 world_mood="tense",
                 open_threads=[],
-                pack_needs={},
                 season=ctx.key,
             )
             char_task = spawn(generate_ai_character(session, char_ctx, _chat_completion), "ai_character")
@@ -1430,8 +1429,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             from app.world_engine import process_choice_consequences, get_world_context
             from app.story import _chat_completion
 
-            # Контур выживания отключён: потребности стаи больше не обновляются
-            # (pack_state удалён), всегда берём дефолты.
+            # Контур выживания отключён: потребности стаи удалены из кода.
 
             ctx = await get_world_context(session, round_row.day_index, season=round_row.season)
             chain = await process_choice_consequences(
