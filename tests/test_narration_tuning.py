@@ -35,6 +35,22 @@ def test_card_description_budget_unchanged() -> None:
     assert "description (1-2 предложения)" in prompt
 
 
+def test_prompt_requires_one_memorable_object() -> None:
+    prompt = _prompt("СЕЗОН: акт 1.")
+    assert "РЕДАКТОРСКИЙ ФОКУС ДНЯ" in prompt
+    assert "один конкретный физический объект" in prompt
+    assert "дилемма «вагонетки», связанная с" in prompt
+
+
+def test_prompt_block_budget_keeps_edges() -> None:
+    block = "НАЧАЛО " + ("середина " * 80) + " СВЕЖИЙ_КОНТЕКСТ"
+    compact = story._prompt_block(block, 120)
+    assert len(compact) <= 160  # маркер сокращения добавляет служебную строку
+    assert compact.startswith("НАЧАЛО")
+    assert compact.endswith("СВЕЖИЙ_КОНТЕКСТ")
+    assert "сокращена" in compact
+
+
 def test_sniff_scene_appends_trail_tint() -> None:
     from app.callings import calling_by_key
     from app.handlers import compose_sniff_scene
@@ -45,3 +61,18 @@ def test_sniff_scene_appends_trail_tint() -> None:
                                  trail_tint="Твой След — «Пастух»: хор ведёт.")
     assert tinted.startswith(plain)
     assert "Пастух" in tinted
+
+
+def test_lore_message_prioritizes_canon_under_telegram_limit() -> None:
+    from app.handlers.player import _lore_message
+
+    text = _lore_message(
+        "Архив",
+        "Канон дня " * 300,
+        chronicle=["День 1"],
+        pack_memories=["Память"],
+        map_block="Карта лабиринта " * 200,
+    )
+    assert len(text) <= 4000
+    assert "Канон дня" in text
+    assert "Часть справочных слоёв скрыта" in text

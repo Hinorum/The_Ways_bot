@@ -73,6 +73,19 @@ def test_pack_focus_line_shapes_prompt() -> None:
     assert "одна собака стаи — герой дня" not in plain
 
 
+def test_offline_chapter_keeps_pack_focus() -> None:
+    from app.lore import compose_chapter
+    from app.models import WinRule
+
+    chapter = compose_chapter(
+        7,
+        [],
+        WinRule.MAJORITY,
+        pack_focus_line="ФОКУС ДНЯ — Баркод сегодня главная собака стаи: считает следы.",
+    )
+    assert "Баркод" in chapter["text"]
+
+
 # ---------- Двухмесячная арка ----------
 
 

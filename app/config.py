@@ -82,7 +82,15 @@ class Settings(BaseSettings):
     # нейросетью, а не фолбэками. Настраивается из Environment.
     llm_timeout_seconds: int = 75
     image_timeout_seconds: int = 90
-    story_models: str = "openai,mistralai/mistral-small-4,openai/gpt-5.4-nano"
+    # Бесплатный HTTP-провайдер (HF Router / Pollinations) любит более
+    # стабильные и широко доступные имена. Новые alias-ы и отдельные
+    # узкоспециализированные релизы иногда не существуют в момент запроса
+    # или не поднимаются в бесплатном роутере, из-за чего весь список падает
+    # на "model unavailable".
+    # STORY_MODELS используется только Pollinations; LLM_MODELS — только
+    # провайдером LLM_BASE_URL. Имена моделей у этих endpoint-ов не обязаны
+    # совпадать, поэтому цепочки намеренно разделены.
+    story_models: str = "openai,meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3"
     # Параметры генерации: температура, лимит токенов, штрафы за повтор.
     # temperature 0.85 — баланс между креативностью и связностью.
     # frequency_penalty 0.3 — штраф за повтор одних и тех же токенов.
@@ -93,7 +101,7 @@ class Settings(BaseSettings):
     llm_presence_penalty: float = 0.2
     llm_api_key: str = ""
     llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"
-    llm_models: str = "meta-llama/Llama-3.3-70B-Instruct"
+    llm_models: str = "meta-llama/Meta-Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3"
 
     ton_enabled: bool = False
     ton_network: str = "mainnet"
@@ -217,6 +225,8 @@ class Settings(BaseSettings):
     # Час вечерней микросцены («вечерний привал») в UTC: короткая сцена между
     # утренней главой и закрытием голосования. 16:00 UTC = 19:00 Москвы.
     whisper_hour_utc: int = 16
+    # Частота автоматических вечерних сцен. 0 — выключить, 1 — каждый день.
+    whisper_every_days: int = 3
 
     # Длина сюжетной арки забега в месяцах от старта (1..3). Арка живёт своей
     # жизнью, копилки недели/месяца остаются календарными.
@@ -270,6 +280,8 @@ class Settings(BaseSettings):
     world_name: str = "Эхо Стаи"
     world_brief: str = (
         "Фанатская история по мотивам Lost Dogs, не связанная с официальной командой. "
+        "В старом Пути Стая выбрала Джунгли; The Ways начинается с другого решения: "
+        "игроки ушли в Пустыню и открыли ветку, которой не было на прежней карте. "
         "До этого была другая Стая и другая игра: ровная, предсказуемая, где один сон "
         "снился миллионам лап сразу. Её ветеран — пёс по прозвищу Еретик, Свернувший "
         "с Пути — заскучал первым и увёл тех, кому стало тесно, через Последний Путь. "
@@ -326,7 +338,7 @@ class Settings(BaseSettings):
     @property
     def llm_model_chain(self) -> list[str]:
         models = [model.strip() for model in self.llm_models.split(",") if model.strip()]
-        return models or ["meta-llama/Llama-3.3-70B-Instruct"]
+        return models or ["meta-llama/Meta-Llama-3.1-8B-Instruct"]
 
     @property
     def async_database_url(self) -> str:

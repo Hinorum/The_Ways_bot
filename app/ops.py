@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 
 PROCESS_START = time.time()
 
+
+def _world_seed_status() -> str:
+    """Фаза фонового сидинга AI-мира для /health. Импорт ленивый и
+    защищён: /health не должен падать из-за статусного модуля."""
+    try:
+        from app.boot_status import get_world_seed_status
+
+        return get_world_seed_status()
+    except Exception:
+        return "unknown"
+
 _ALERT_COOLDOWN = timedelta(hours=1)
 _WATCHER_STALE_AFTER = timedelta(minutes=30)
 _QUEUE_OLD_AFTER = timedelta(minutes=30)
@@ -170,6 +181,9 @@ async def snapshot() -> dict:
             # Диагностика окружения: видно, что реально дошло до процесса.
             "ton_enabled": bool(settings.ton_enabled),
             "ton_network": "testnet" if settings.is_testnet else "mainnet",
+            # Фаза фонового сидинга AI-мира: pending/seeding/ready/fallback.
+            # Честно отвечает, засеян ли мир или игра на хардкод-фолбэках.
+            "world_seed": _world_seed_status(),
         }
         if oldest_pending is not None:
             moment = oldest_pending if oldest_pending.tzinfo else oldest_pending.replace(tzinfo=timezone.utc)
@@ -183,6 +197,7 @@ async def snapshot() -> dict:
             payload["watcher_source"] = await _get_state(session, SOURCE_KEY)
         if latest is not None:
             payload["round"] = {
+                "id": latest.id,
                 "day_index": latest.day_index,
                 "status": latest.status.value if isinstance(latest.status, RoundStatus) else str(latest.status),
                 "voting_ends_at": latest.voting_ends_at.isoformat(),

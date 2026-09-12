@@ -21,6 +21,14 @@ def test_prologue_covers_first_seven_days() -> None:
         assert title is not None and title
 
 
+def test_first_day_establishes_the_ways_desert_branch() -> None:
+    block = prologue_block(1)
+    assert block is not None
+    assert "Джунгли" in block
+    assert "Пустыню" in block
+    assert "The Ways" in block
+
+
 def test_no_prologue_after_seven() -> None:
     for day in (8, 15, 27):
         assert prologue_block(day) is None

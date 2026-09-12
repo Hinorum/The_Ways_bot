@@ -25,7 +25,9 @@ _DEDUP_WINDOW = 12
 
 
 WORLD_BIBLE = (
-    "Мир называется Эхо Стаи — лабиринт нестабильных коридоров, где каждый коридор собран из чужих решений. "
+    "Мир называется Эхо Стаи — продолжение старого Пути после первой развилки: "
+    "там Стая выбрала Джунгли, а игроки The Ways ушли в Пустыню. "
+    "Лабиринт нестабильных коридоров собран из последствий этого расхождения. "
     "Один день — одна развилка на всю стаю: три пути, каждый с конкретной ценой, каждый оставляет "
     "след, который вернётся позже. Законы дня (большинство / меньшинство / среднее) определяют, "
     "какой путь побеждает по итогам. Где-то в глубине лабиринта звучит Первый Лай: дорога домой или "
@@ -45,7 +47,10 @@ ARCHIVE_ORIGIN = (
     "прятал её до срока…\n\n"
     "Был один старый сон, который снился миллионам лап сразу — всем один и тот "
     "же, ровный, как счёт. Пёс по кличке Еретик, Свернувший с Пути, заскучал по "
-    "выбору… он вёл стаю за собой тем путём, которого не было ни на одной карте, "
+    "выбору… он вёл стаю за собой тем путём, которого не было ни на одной карте. "
+    "В первый день старого Пути Стая выбрала Джунгли. В The Ways игроки выбрали "
+    "иначе — ушли в Пустыню, где прежняя карта перестала работать и началась "
+    "наша ветка… "
     "и привёл в лабиринт, где один день — одно решение на всех, и коридоры "
     "перестраиваются под твой выбор…\n\n"
     "Я не торгую расхождениями — я выбираю, какой коридор открыть сегодня. "
@@ -210,6 +215,13 @@ _PLACES = [
         "scar_key": None,
     },
 ]
+
+# Первый кадр новой ветки: до лабиринта стая ещё стоит в Пустыне.
+_DESERT_ORIGIN_PLACE = {
+    "to": "к Пустынному порогу — песок шуршит под воротами, ведущими в лабиринт",
+    "scene": "desert threshold at dusk, windblown sand under a humming portal gate, five stray dogs facing an unknown labyrinth",
+    "scar_key": None,
+}
 
 # Разблокированные шрамами локации
 _UNLOCKED_PLACES = {
@@ -842,6 +854,7 @@ def compose_chapter(
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
     active_scar_keys: set[str] | None = None,
+    pack_focus_line: str | None = None,
 ) -> dict:
     # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
     # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
@@ -856,7 +869,11 @@ def compose_chapter(
     # Динамический пул локаций с учётом шрамов мира
     dynamic_places = _get_dynamic_places(scar_keys=active_scar_keys)
     place_idx = (day_index + len(history_tags)) % len(dynamic_places)
-    place = dynamic_places[place_idx]
+    if day_index == 1 and not previous_beats:
+        place = _DESERT_ORIGIN_PLACE
+        place_idx = 0
+    else:
+        place = dynamic_places[place_idx]
     # Определяем имя места (для разблокированных — ключ шрама)
     if place.get("to", "").startswith("в тёплый очаг"):
         place_name = "Тёплый очаг"
@@ -865,8 +882,11 @@ def compose_chapter(
     elif place.get("to", "").startswith("в коридор, которого"):
         place_name = "Скрытый коридор"
     else:
-        place_name_idx = place_idx % len(_PLACE_NAMES) if place_idx < len(_PLACE_NAMES) else 0
-        place_name = _PLACE_NAMES[place_name_idx]
+        place_name = (
+            "Пустынный порог"
+            if place is _DESERT_ORIGIN_PLACE
+            else _PLACE_NAMES[place_idx % len(_PLACE_NAMES)]
+        )
     is_finale = bool(season_block and "ДЕНЬ ПЕРВОГО ЛАЯ" in season_block)
     cover_prompt = "wide cinematic establishing shot, " + place["scene"]
     if not is_finale and season_block:
@@ -921,6 +941,7 @@ def compose_chapter(
         text = _chapter_text(
             day_index, echo, place, history_tags, last, win_rule,
             sealed=sealed, salt=salt, rng=rng, prologue_quiet=prologue_quiet,
+            focus_line=focus_line, pack_focus_line=pack_focus_line,
         )
         if villain_line:
             # План Хозяина Ошибки: в текст уходит только каноническое событие
@@ -1312,6 +1333,8 @@ def _chapter_text(
     salt: str = "",
     rng: random.Random | None = None,
     prologue_quiet: bool = False,
+    focus_line: str | None = None,
+    pack_focus_line: str | None = None,
 ) -> str:
     if rng is None:
         rng = _rng(day_index, f"{salt}|closing:{'|'.join(tags)}")
@@ -1320,9 +1343,23 @@ def _chapter_text(
     else:
         law_line = _law_voice(win_rule) if win_rule is not None else ""
 
+    focus_hint = ""
+    if pack_focus_line:
+        focus_hint = pack_focus_line.split(" сегодня главная собака стаи:", 1)[0]
+    elif focus_line:
+        focus_hint = focus_line.split(" — ", 1)[0]
+    focus_hint = focus_hint.replace("ФОКУС ДНЯ", "").strip(" —[]")
+    focus_sentence = f" В центре дня — {focus_hint}." if focus_hint else ""
+
     if day_index == 1 and prologue_quiet:
         # Пролог «Приход»: мир ещё не объяснён — ни закона, ни Первого Лая.
         quiet_openings = (
+            (
+                "Стая остановилась у Пустынного порога. Песок шуршит под воротами, "
+                "которые ведут не в спасение, а в новый лабиринт; за спиной остались "
+                "Джунгли старого Пути. Никто не произносит ни слова: собаки умеют "
+                "молчать вместе."
+            ),
             (
                 "Стая вышла из Последнего Пути под моросью чужого неба. Ворота "
                 "гудят в полтоны громче, чем следовало, и пахнет озоном, мокрой "
@@ -1340,15 +1377,40 @@ def _chapter_text(
                 "запах озона и тихое гудение, похожее на ожидание."
             ),
         )
-        text = quiet_openings[rng.randrange(len(quiet_openings))]
+        text = (
+            quiet_openings[0]
+            if place is _DESERT_ORIGIN_PLACE
+            else quiet_openings[rng.randrange(1, len(quiet_openings))]
+        )
         if last:
             old_title = last.split(":")[0].strip()
             text += f" Счёт обнулён, но память сети жива: однажды стая уже выбирала «{old_title}»."
-        return text + " Одна карта на всех. Завтра мир будет другим."
+        return text + focus_sentence + " Одна карта на всех. Завтра мир будет другим."
 
     if day_index == 1:
         # Пул вступлений: каждый перезапуск начинает сезон по-разному.
         openings = (
+            (
+                "Стая стоит у Пустынного порога. Песок шуршит под воротами, "
+                "за которыми начинается лабиринт; за спиной остались Джунгли "
+                "старого Пути. Три карты лежат на камне, и каждая обещает свою "
+                "версию будущего."
+            ),
+            (
+                "У Пустынного порога ветер перебирает песок, будто страницы "
+                "чужой карты. За воротами гудит лабиринт, а за спиной уже не "
+                "видны Джунгли старого Пути. Стая молчит перед первым выбором."
+            ),
+            (
+                "Песок забился в ошейники, когда Стая дошла до Пустынного порога. "
+                "Ворота открываются в сторону лабиринта, но не показывают, что "
+                "ждёт внутри. Джунгли остались другой, непрожитой веткой."
+            ),
+            (
+                "На Пустынном пороге три карты дрожат от сухого ветра. Где-то "
+                "далеко остались Джунгли — путь, который выбрали в старой истории. "
+                "Теперь лабиринт ждёт решения этой Стаи."
+            ),
             (
                 "Стая вышла к первой развилке. Впереди гудит коридор — не светится и не мерцает, "
                 "а просто смотрит. На рассвете вся сеть на секунду замолчала, и в этой тишине "
@@ -1374,7 +1436,11 @@ def _chapter_text(
                 "разошлись от порога, и каждая пахла чужим решением."
             ),
         )
-        text = openings[rng.randrange(len(openings))]
+        text = (
+            openings[rng.randrange(4)]
+            if place is _DESERT_ORIGIN_PLACE
+            else openings[rng.randrange(4, len(openings))]
+        )
         # После сброса с сохранением истории мир помнит старый канон.
         if last:
             old_title = last.split(":")[0].strip()
@@ -1383,7 +1449,7 @@ def _chapter_text(
             text += " Счёт скрыт до итогов: выбирай то, что готова пережить стая. "
         else:
             text += " Закон первого дня объявят утром. "
-        return text + "Одна карта на всех. Завтра мир будет другим."
+        return text + focus_sentence + "Одна карта на всех. Завтра мир будет другим."
 
     # Мотив теперь считается от единого chapter_tone, чтобы «примета вчерашнего
     # решения» не противоречила эху («тише» против «громче»).
@@ -1447,6 +1513,7 @@ def _chapter_text(
     return (
         f"{head}Сегодня стая идёт {place['to']}. "
         f"{motif_line}{law_line}"
+        + focus_sentence
         + closings[rng.randrange(len(closings))]
     )
 

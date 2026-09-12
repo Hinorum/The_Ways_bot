@@ -228,13 +228,26 @@ async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypat
 
     assert text == "Вечерняя сцена у огня."
     user = captured["user"]
-    # называем обе публичные карты дня
-    assert "Тропа Истока" in user and "Пепел Моста" in user
-    # вечер передаёт атмосферу и детали
+    # вечер не повторяет названия карт из утреннего поста
+    assert "Тропа Истока" not in user and "Пепел Моста" not in user
+    assert "Три пути всё ещё открыты" in user
+    # вечер передаёт атмосферу и детали незавершённого выбора
     assert "атмосферн" in user
+    assert "непринят" in user
     # запрет на раскрытие расклада и победителя
     assert "цифр" in user and "победителя" in user
     assert "намёков" in user
+
+
+def test_whisper_schedule_is_sparse_and_configurable(monkeypatch) -> None:
+    from app.scheduler import _is_whisper_day
+
+    monkeypatch.setattr(settings, "whisper_every_days", 3)
+    assert _is_whisper_day(1)
+    assert not _is_whisper_day(2)
+    assert _is_whisper_day(3)
+    monkeypatch.setattr(settings, "whisper_every_days", 0)
+    assert not _is_whisper_day(1)
 
 
 async def test_alert_guarded_notifies_admin_and_swallows(monkeypatch) -> None:

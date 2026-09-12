@@ -58,9 +58,13 @@ def _assemble_cards(chapter: dict, day_index: int) -> list[dict]:
         description = str(card.get("description", "")).strip()
         if title and description:
             cards.append(card)
+    # Частичный AI-набор нельзя смешивать с общей библиотекой: описания будут
+    # относиться к разным сценам и нарушат обещание «три ответа на один крючок».
+    if 0 < len(cards) < 3:
+        cards = []
     if len(cards) < 3:
         rng = secrets.SystemRandom()
-        used = {str(c["title"]).strip().lower() for c in cards}
+        used: set[str] = set()
         for pool_card in _cards(rng, day_index):
             if len(cards) >= 3:
                 break

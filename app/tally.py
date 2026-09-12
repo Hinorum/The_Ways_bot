@@ -312,6 +312,12 @@ def format_results(
         lines.append(f"🗝 Запечатанное правило: {RULE_PHRASES[round_row.win_rule]}")
     else:
         lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
+    winner = next(
+        (card for card in round_row.cards if card.position == round_row.winner_card),
+        None,
+    )
+    if winner is not None and winner.consequence:
+        lines.append(f"🧭 Последствие выбора: {_tg_escape(_clip(winner.consequence, 240))}")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):

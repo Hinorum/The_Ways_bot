@@ -45,6 +45,7 @@ def test_results_majority_law_and_crowd_agree() -> None:
     text = format_results(_round(WinRule.MAJORITY, {0: 9, 1: 3, 2: 1}, winner=0))
     assert "Страница" in text
     assert "большинство" in text or "кричала" in text or "решили всё" in text
+    assert "Последствие выбора: с0" in text
     assert "Путь 0: 9 ← 🏆 След" in text
 
 

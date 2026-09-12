@@ -369,18 +369,51 @@ async def cmd_lore(message: Message) -> None:
         )
         return
     text, truncated = _canon_text(beats)
-    if truncated:
-        text = f"{hint_mark('lore-cut')} Ранние дни растворились в шуме коридоров.\n\n" + text
-    extra = []
-    if chronicle:
-        extra.append("📜 Дневник стаи:\n" + "\n".join(chronicle))
-    if pack_memories:
-        extra.append("🕯️ Память стаи:\n" + "\n".join(pack_memories))
-    if map_block:
-        extra.append(map_block)
-    await message.answer(f"{ARCHIVE_ORIGIN}\n\n<b>Прожитые тропы</b>\n\n{text}" + (
-        "\n\n" + "\n\n".join(extra) if extra else ""
+    await message.answer(_lore_message(
+        ARCHIVE_ORIGIN,
+        text,
+        truncated=truncated,
+        chronicle=chronicle,
+        pack_memories=pack_memories,
+        map_block=map_block,
     ))
+
+
+def _lore_message(
+    origin: str,
+    canon: str,
+    *,
+    truncated: bool = False,
+    chronicle: list[str] | None = None,
+    pack_memories: list[str] | None = None,
+    map_block: str | None = None,
+    limit: int = 4000,
+) -> str:
+    """Assemble the archive without overflowing Telegram's text limit."""
+    sections = [origin, "<b>Прожитые тропы</b>"]
+    if truncated:
+        sections.append(f"{hint_mark('lore-cut')} Ранние дни растворились в шуме коридоров.")
+    sections.append(canon)
+    if chronicle:
+        sections.append("<b>Дневник стаи</b>\n" + "\n".join(chronicle))
+    if pack_memories:
+        sections.append("<b>Память стаи</b>\n" + "\n".join(pack_memories))
+    if map_block:
+        sections.append(map_block)
+
+    result = sections[0]
+    skipped = False
+    for section in sections[1:]:
+        candidate = f"{result}\n\n{section}"
+        if len(candidate) > limit:
+            skipped = True
+            continue
+        result = candidate
+    if skipped:
+        note = "\n\n<i>Часть справочных слоёв скрыта: сначала показан основной канон.</i>"
+        if len(result) + len(note) <= limit:
+            result += note
+    return result
 
 
 async def _pack_memories_block(session, limit: int = 3) -> list[str]:

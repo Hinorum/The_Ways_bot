@@ -40,6 +40,12 @@ scheduler = AsyncIOScheduler(timezone=settings.timezone)
 _bot: Bot | None = None
 
 
+def _is_whisper_day(day_index: int) -> bool:
+    """Return whether the automatic evening scene is due for this day."""
+    every = max(0, settings.whisper_every_days)
+    return every > 0 and (day_index == 1 or day_index % every == 0)
+
+
 def set_bot(bot: Bot) -> None:
     global _bot
     _bot = bot
@@ -267,14 +273,10 @@ async def _compose_whisper(
 
     cards_line = ""
     if candidates:
-        names = "», «".join(title for title, _ in candidates if title)
-        if names:
-            cards_line = (
-                f"\nКарты вечера на столе — пути, которые стая ещё не выбрала: "
-                f"«{names}». Решение не принято, но мир уже ощущает тяжесть "
-                f"этой развилки: пути тянут в разные стороны, и стая чувствует "
-                f"переплетённость выбора кожей.\n"
-            )
+        cards_line = (
+            "\nТри пути всё ещё открыты перед стаей. Решение не принято, но "
+            "мир уже ощущает тяжесть развилки: разные цены тянут в разные стороны.\n"
+        )
 
     task = (
         "Вечерняя ИНТРИГА: глава дня оборвалась крючком, а ты поставь сам этот "
@@ -283,10 +285,11 @@ async def _compose_whisper(
         if intrigue
         else (
             "Напиши атмосферную сцену вечера (2-4 предложения, до 450 знаков). "
-            "Подхвати то, на чём оборвалась утренняя глава, покажи, как выбор "
-            "стаи и крючок дня отозвались в мире: запахи, звуки, тени, мелкие "
-            "детали. Одна реплика персонажа в его манере речи. Финал — "
-            "недоговорённость или намёк на то, что мир запомнил выбор. "
+            "Подхвати то, на чём оборвалась утренняя глава, покажи, как "
+            "непринятый выбор и крючок дня тянут мир в разные стороны: запахи, "
+            "звуки, тени, мелкие детали. Одна реплика персонажа в его манере "
+            "речи. Финал — недоговорённость или намёк на цену решения, которое "
+            "ещё предстоит принять. "
             "Без цифр, без имён победителя, без намёков на расклад голосов."
         )
     )
@@ -422,10 +425,12 @@ def _offline_whisper(
     import random as _random
 
     rng = rng or _random.Random(f"whisper:{day_index}")
-    names = "», «".join(title for title, _ in (candidates or []) if title)
     parts: list[str] = []
-    if names:
-        parts.append(rng.choice(_WHISPER_OPENERS).format(names=names))
+    if candidates:
+        parts.append(
+            "Костёр освещает три ещё не выбранных пути. Стая молчит, "
+            "будто у каждого решения уже есть цена."
+        )
     else:
         parts.append(rng.choice(_WHISPER_NO_CARDS_OPENERS))
     if arc_stage is not None:
@@ -573,6 +578,7 @@ async def tick(bot: Bot | None = None) -> None:
             if (
                 current.status == RoundStatus.OPEN
                 and now.hour == settings.whisper_hour_utc % 24
+                and _is_whisper_day(current.day_index)
             ):
                 from app.models import WatcherState
 

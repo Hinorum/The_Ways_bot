@@ -97,6 +97,13 @@ def test_offline_lore_varies_between_resets() -> None:
     assert len(day1_texts) >= 2  # вступление сезона варьируется
 
 
+def test_first_day_starts_at_desert_threshold() -> None:
+    chapter = compose_chapter(1, [], WinRule.MAJORITY)
+    assert chapter["place"] == "Пустынный порог"
+    assert "Пустынного порога" in chapter["text"]
+    assert "desert threshold" in chapter["cover_prompt"]
+
+
 def test_offline_lore_varies_between_days() -> None:
     """Фолбэк-лор не должен повторять одни и те же последствия изо дня в день."""
     seen_texts = set()
@@ -376,6 +383,7 @@ async def test_results_message_appends_epilogue() -> None:
     )
     text = await results_message(finished)
     assert "День 7" in text
+    assert "🌒 Эпилог дня 7" in text
     assert "Пёс запомнил эту тропу." in text
     finished.epilogue_text = ""
     assert "Пёс запомнил" not in await results_message(finished)

@@ -112,7 +112,8 @@ async def _build_panel_text(session) -> str:
     if settings.ton_enabled:
         from app.rounds import get_cached_pot
 
-        nano, bets = get_cached_pot(int(rnd.get("day_index", 0)))
+        # Кэш ставок индексируется по Round.id, а не по отображаемому номеру дня.
+        nano, bets = get_cached_pot(int(rnd.get("id", 0)))
         lines.append(f"💰 Банк дня: {nano / 1e9:.2f} Gram · ставок {bets}")
         # Фонд Стаи: накопление хранителя, раздача вручную.
         try:
@@ -306,6 +307,9 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(Command("panel"))
 async def cmd_panel(message: Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer("Пульт хранителя доступен только в личке бота.")
+        return
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Пульт только для хранителя игры.")
         return
@@ -319,6 +323,9 @@ async def on_panel_action(callback: CallbackQuery) -> None:
     """Единая точка кнопок пульта: гейт хранителя + маршрутизация действий."""
     if callback.from_user.id not in settings.admin_id_set:
         await callback.answer("Пульт только для хранителя.", show_alert=True)
+        return
+    if callback.message is not None and callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Пульт хранителя доступен только в личке бота.", show_alert=True)
         return
     action = callback.data.split(":", 1)[1]
     try:

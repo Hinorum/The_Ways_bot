@@ -1237,6 +1237,7 @@ async def generate_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
         villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
         tint_lines=tint_lines, focus_line=focus_line, active_scar_keys=active_scar_keys,
+        pack_focus_line=pack_focus_line,
     )
     if not settings.use_free_story_llm:
         # Офлайн-глава тоже проходит полировку типографики (кавычки-ёлочки,
@@ -1509,6 +1510,20 @@ def _parse_chapter(payload: dict, day_index: int) -> dict | None:
     return data
 
 
+def _prompt_block(value: str | None, limit: int) -> str:
+    """Keep prompt context useful without letting one subsystem dominate it."""
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    head = max(1, int(limit * 0.65))
+    tail = max(1, limit - head)
+    return (
+        text[:head].rsplit(" ", 1)[0].rstrip()
+        + "\n[… средняя часть блока сокращена …]\n"
+        + text[-tail:].lstrip()
+    )
+
+
 def _build_story_prompt(
     day_index: int,
     previous_beats: list[str],
@@ -1543,7 +1558,7 @@ def _build_story_prompt(
     известные места, долгожители) — мега-промпт слышит накопленное состояние
     за день до генерации, без отдельного вызова AI-локации.
     """
-    history = "\n".join(previous_beats[-8:]) or "история ещё не началась"
+    history = _prompt_block("\n".join(previous_beats[-8:]), 3200) or "история ещё не началась"
     law_line = ""
     if win_rule is not None:
         if sealed:
@@ -1582,6 +1597,7 @@ def _build_story_prompt(
             "Игроки должны сами узнать повтор, если помнят:\n"
             + "\n".join(echo_prompt_lines(echoes)) + "\n"
         )
+        echo_block = _prompt_block(echo_block, 1800)
     distant_block = ""
     if distant_echoes:
         distant_block = (
@@ -1589,7 +1605,8 @@ def _build_story_prompt(
             "лёгким касанием — одной фразой, без пересказа целиком:\n"
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
-    season_text = f"{season_block}\n" if season_block else ""
+        distant_block = _prompt_block(distant_block, 900)
+    season_text = f"{_prompt_block(season_block, 3600)}\n" if season_block else ""
     # Эргономика чтения в ТГ: обычная глава 1000–1300 знаков (5–7 абзацев),
     # расширенная (пролог/поворот) 1300–1600. Короче прежнего, но насыщеннее —
     # меньше «воды ради скелета», больше крючка дня.
@@ -1611,6 +1628,7 @@ def _build_story_prompt(
         f"{alignment_block} {focus_line} {repeat_block}",
         db_profiles=npc_profiles,
     )
+    voice_block = _prompt_block(voice_block, 1400)
     # Witness filter: не все NPC знают о прошлых событиях
     witness_block = witness_filter(previous_beats, history)
     places_text = ""
@@ -1621,7 +1639,9 @@ def _build_story_prompt(
             "Название вернувшегося места укажи в поле place.\n"
             + places_block + "\n"
         )
+        places_text = _prompt_block(places_text, 1100)
     repeat_text = f"{repeat_block}\n" if repeat_block else ""
+    repeat_text = _prompt_block(repeat_text, 1200)
     # Шрамы мира: активные шрамы влияют на локации и тон
     scar_text = ""
     if active_scar_keys:
@@ -1647,6 +1667,7 @@ def _build_story_prompt(
                 "Не называй слово «шрам» — покажи последствия образами:\n"
                 + "\n".join(scar_lines) + "\n"
             )
+    scar_text = _prompt_block(scar_text, 1200)
     # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
     try:
@@ -1686,10 +1707,10 @@ def _build_story_prompt(
         f"{places_text}"
         f"{repeat_text}"
         f"{scar_text}"
-        f"{emotion_block + chr(10) if emotion_block else ''}"
-        f"{branches_block + chr(10) if branches_block else ''}"
-        f"{dynamic_rules_block + chr(10) if dynamic_rules_block else ''}"
-        f"{characters_block + chr(10) if characters_block else ''}"
+        f"{_prompt_block(emotion_block, 800) + chr(10) if emotion_block else ''}"
+        f"{_prompt_block(branches_block, 1000) + chr(10) if branches_block else ''}"
+        f"{_prompt_block(dynamic_rules_block, 800) + chr(10) if dynamic_rules_block else ''}"
+        f"{_prompt_block(characters_block, 1600) + chr(10) if characters_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
         f"{chapter_low}-{chapter_high} знаков, от второго "
@@ -1698,6 +1719,11 @@ def _build_story_prompt(
         f"{_pack_rule}"
         "В дни пролога фокус сцены — одно вводимое лицо; остальные постоянные "
         "лица молчат фоном без реплик.\n"
+        "РЕДАКТОРСКИЙ ФОКУС ДНЯ: выбери один конкретный физический объект, "
+        "который можно увидеть и запомнить (например, радио, ключ, шляпа, "
+        "записка, миска или дверь). Сделай его центром сцены: назови его в "
+        "тексте минимум дважды, свяжи с одним персонажем или местом и проведи "
+        "через него цену выбора. Не вводи второй равный по важности символ.\n"
         "Обязательный состав главы, по порядку:\n"
     )
     if pending_outcome:
@@ -1738,7 +1764,8 @@ def _build_story_prompt(
         "объявляет, Палладин.rules);\n"
         "(3) Закон дня (если он есть сегодня) — репликой из уст стаи или мира, "
         "без справки за кадром (см. правило выше);\n"
-        "(4) Напряжение выбора: конкретная дилемма «вагонетки» — стая должна "
+        "(4) Напряжение выбора: конкретная дилемма «вагонетки», связанная с "
+        "объектом дня — стая должна "
         "выбрать, кого спасти, чем пожертвовать, какой ценой заплатить. "
         "Финальная строка главы — крючок: недоговорённость, звук или вопрос, "
         "обрывающий сцену перед выбором. Не резюмируй мораль.\n"
@@ -1759,7 +1786,7 @@ def _build_story_prompt(
         '"cover_prompt":"english wide cinematic scene summarizing the whole day"}. '
         "Ссылайся на прошлый канон."
         + (_CHOICES_BLOCK if with_choices else "")
-        + ((_WORLD_BLOCK + world_block) if world_block else "")
+        + ((_WORLD_BLOCK + _prompt_block(world_block, 1800)) if world_block else "")
     )
 
 

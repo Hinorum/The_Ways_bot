@@ -18,6 +18,10 @@ from app.scheduler import set_bot, start_scheduler, tick
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("way")
 
+# Ссылка на фоновую задачу сидинга мира: без живой ссылки asyncio вправе
+# собрать незавершённую задачу сборщиком мусора посреди сидинга.
+_seed_task: asyncio.Task | None = None
+
 
 async def health(_request: web.Request) -> web.Response:
     """Живость + операционный снимок: тик, очередь выплат, watcher, день.
@@ -67,25 +71,19 @@ def _install_stop_handlers(stop: asyncio.Event) -> None:
             pass
 
 
-async def boot_game(bot) -> None:
-    """Стартовые шаги. Планировщик запускается ПЕРВЫМ делом: сетевой сбой
-    бэкапа или профиля не смеет оставлять игру без тиков навсегда (раньше
-    исключение до start_scheduler означало молчаливо мёртвое расписание)."""
-    set_bot(bot)
-    try:
-        await tick(bot)
-    except Exception:
-        log.exception("Первый тик не удался — повторится по расписанию")
-    start_scheduler()
-    from app.scheduler import boot_maintenance
-    # GEPA: загружаем лучший ген в memory-cache при старте
-    try:
-        from app.narrative_ai import load_active_gene
-        await load_active_gene()
-    except Exception:
-        log.exception("GEPA: не удалось загрузить ген при старте")
+async def _seed_ai_world() -> None:
+    """Фоновый сидинг AI-мира: десятки LLM-вызовов, вынесенные из горячего
+    старта. Раньше этот блок выполнялся инлайн в boot_game и задерживал
+    бэкап и профиль бота на всё время генерации; при сетевом сбое LLM старт
+    мог висеть минутами. Теперь он крутится отдельной задачей, а /health
+    честно показывает его фазу (seeding/ready/fallback).
 
-    # AI World Engine: seed NPC profiles, prologue beats, season arcs
+    Идемпотентность обеспечивают сами seed_*-функции (пропускают уже
+    засеянное), поэтому повторный прогон на следующем старте безопасен.
+    """
+    from app.boot_status import set_world_seed_status
+
+    set_world_seed_status("seeding")
     try:
         from app.db import SessionLocal
         from app.npc_cog import seed_npc_profiles
@@ -142,14 +140,45 @@ async def boot_game(bot) -> None:
                     log.info("AI Regeneration: %s", regen)
             except Exception:
                 log.exception("AI Regeneration failed")
+        set_world_seed_status("ready")
     except Exception:
+        set_world_seed_status("fallback")
         log.exception("AI World Engine: seeding failed — using hardcoded fallbacks")
+
+
+async def boot_game(bot) -> None:
+    """Стартовые шаги. Планировщик запускается ПЕРВЫМ делом: сетевой сбой
+    бэкапа или профиля не смеет оставлять игру без тиков навсегда (раньше
+    исключение до start_scheduler означало молчаливо мёртвое расписание).
+
+    Тяжёлый сидинг AI-мира вынесен в фоновую задачу (_seed_ai_world): он не
+    держит горячий старт и не задерживает бэкап и профиль бота. /health
+    показывает фазу сидинга, пока он идёт."""
+    set_bot(bot)
+    try:
+        await tick(bot)
+    except Exception:
+        log.exception("Первый тик не удался — повторится по расписанию")
+    start_scheduler()
+    from app.scheduler import boot_maintenance
+    # GEPA: загружаем лучший ген в memory-cache при старте
+    try:
+        from app.narrative_ai import load_active_gene
+        await load_active_gene()
+    except Exception:
+        log.exception("GEPA: не удалось загрузить ген при старте")
+
+    # AI World Engine: сидинг уходит в фон — старт его не ждёт.
+    global _seed_task
+    seed_task = asyncio.create_task(_seed_ai_world())
+    _seed_task = seed_task
 
     for name, step in (("backup", boot_maintenance), ("profile", lambda: apply_profile(bot))):
         try:
             await step()
         except Exception:
             log.exception("Шаг старта «%s» не удался — игра продолжается без него", name)
+    return seed_task
 
 
 async def run_webhook(bot, dispatcher) -> None:
