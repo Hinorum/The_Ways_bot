@@ -533,14 +533,19 @@ async def build_day_context(
     # AI-реакции NPC: уникальные описания поведения. Параллелим через gather —
     # глобальный семафор _chat_completion (story) не даст потоку провайдера
     # захлебнуться, а независимые NPC-промпты изображены одновременно.
+    # Под settings.llm_cascades; кап — 4 реакции в день.
     try:
         import asyncio as _asyncio
         from app.relations import generate_npc_reaction
-        tasks = [
-            generate_npc_reaction(npc_key, sentiment)
-            for npc_key, sentiment in npc_sentiments.items()
-            if sentiment != 0
-        ]
+        tasks = (
+            [
+                generate_npc_reaction(npc_key, sentiment)
+                for npc_key, sentiment in npc_sentiments.items()
+                if sentiment != 0
+            ][:4]
+            if settings.llm_cascades
+            else []
+        )
         results = await _asyncio.gather(*tasks, return_exceptions=True) if tasks else []
         npc_reactions = [r for r in results if isinstance(r, str) and r]
         if npc_reactions:
@@ -651,18 +656,23 @@ async def build_day_context(
 
     run_salt = secrets.token_hex(4)
     order_axis, moral_axis = anchor_axes(anchor)
-    # Фокус-день NPC (каждый третий день забега).
+    # Фокус-день NPC (каждый третий день забега). Под llm_cascades — AI-версия
+    # линии, иначе — детерминированная npc_focus_line (идемпотентна по дню).
     try:
-        from app.relations import npc_focus_line_ai, get_npc_titles
+        from app.relations import npc_focus_line, npc_focus_line_ai, get_npc_titles
         from app.season import run_position as _run_pos
 
         run_day_now, _total_now = _run_pos(anchor, open_moment)
         npc_titles = await get_npc_titles(session, db_names=db_names)
         focus_line = (
-            await npc_focus_line_ai(
-                run_day_now,
-                relations=npc_sentiments,
-                npc_titles=npc_titles,
+            (
+                await npc_focus_line_ai(
+                    run_day_now,
+                    relations=npc_sentiments,
+                    npc_titles=npc_titles,
+                )
+                if settings.llm_cascades
+                else npc_focus_line(run_day_now, npc_titles)
             )
             if "focus" in guests
             else None

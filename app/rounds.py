@@ -412,46 +412,48 @@ async def _plan_and_render(
     # AI World Engine: генерация нового NPC стартует ПАРАЛЛЕЛЬНО с главой.
     # generate_ai_character — чисто-LLM (session не трогает: контекст уже в
     # char_ctx, а запись в БД отложена), поэтому единственный длинный вызов
-    # дня не растягивает критический путь ещё на один LLM-раунд.
+    # дня не растягивает критический путь ещё на один LLM-раунд. Работает
+    # только под settings.llm_cascades — иначе день обходится без нового NPC.
     char_task: asyncio.Task | None = None
-    try:
-        from app.story import _chat_completion, persist_session_character
-        from app.world_engine import WorldContext, generate_ai_character
-        from app.models import WorldCharacter
+    if settings.llm_cascades:
+        try:
+            from app.story import _chat_completion, persist_session_character
+            from app.world_engine import WorldContext, generate_ai_character
+            from app.models import WorldCharacter
 
-        existing = (
-            world_ctx.active_characters
-            if world_ctx is not None
-            else await (await session.execute(
-                select(WorldCharacter).where(WorldCharacter.is_alive == True)
-            )).scalars().all()
-        )
-        char_ctx = WorldContext(
-            day_index=day_index,
-            recent_choices=[],
-            active_locations=[],
-            active_characters=[
-                {
-                    "name": c["name"],
-                    "role": c["role"],
-                    "personality": (c.get("personality") or "")[:80],
-                    "mood": c.get("mood", "neutral"),
-                    "trust_stay": c.get("trust_stay", 5),
-                }
-                for c in existing
-            ],
-            world_mood="tense",
-            open_threads=[],
-            pack_needs={
-                "hunger": 5,
-                "thirst": 5,
-                "health": 10,
-            },
-            season=ctx.key,
-        )
-        char_task = spawn(generate_ai_character(session, char_ctx, _chat_completion), "ai_character")
-    except Exception as e:
-        logger.debug("AIWorldEngine: подготовка контекста персонажа не удалась: %s", e)
+            existing = (
+                world_ctx.active_characters
+                if world_ctx is not None
+                else await (await session.execute(
+                    select(WorldCharacter).where(WorldCharacter.is_alive == True)
+                )).scalars().all()
+            )
+            char_ctx = WorldContext(
+                day_index=day_index,
+                recent_choices=[],
+                active_locations=[],
+                active_characters=[
+                    {
+                        "name": c["name"],
+                        "role": c["role"],
+                        "personality": (c.get("personality") or "")[:80],
+                        "mood": c.get("mood", "neutral"),
+                        "trust_stay": c.get("trust_stay", 5),
+                    }
+                    for c in existing
+                ],
+                world_mood="tense",
+                open_threads=[],
+                pack_needs={
+                    "hunger": 5,
+                    "thirst": 5,
+                    "health": 10,
+                },
+                season=ctx.key,
+            )
+            char_task = spawn(generate_ai_character(session, char_ctx, _chat_completion), "ai_character")
+        except Exception as e:
+            logger.debug("AIWorldEngine: подготовка контекста персонажа не удалась: %s", e)
 
     try:
         chapter = await generate_chapter(
@@ -711,7 +713,7 @@ async def _materialize_round(
             session,
             round_row,
             season_key_value=payload.get("season"),
-            llm_caller=_chat_completion if story_ctx else None,
+            llm_caller=_chat_completion if (story_ctx and settings.llm_cascades) else None,
             story_context=story_ctx,
             choices_context=choices_ctx,
         )
@@ -1428,32 +1430,33 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         )
     except Exception:
         logger.warning("AIWorldEngine: запись выбора не удалась", exc_info=True)
-    # AI World Engine: каскад последствий от выбора стаи
-    try:
-        from app.world_engine import process_choice_consequences, get_world_context
-        from app.story import _chat_completion
+    # AI World Engine: каскад последствий от выбора стаи (под llm_cascades)
+    if settings.llm_cascades:
+        try:
+            from app.world_engine import process_choice_consequences, get_world_context
+            from app.story import _chat_completion
 
-        # Контур выживания отключён: потребности стаи больше не обновляются
-        # (pack_state удалён), всегда берём дефолты.
-        needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
+            # Контур выживания отключён: потребности стаи больше не обновляются
+            # (pack_state удалён), всегда берём дефолты.
+            needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
 
-        ctx = await get_world_context(session, round_row.day_index, needs_dict, season=round_row.season)
-        chain = await process_choice_consequences(
-            session,
-            ctx,
-            _chat_completion,
-            choice_text=winning_card.consequence,
-            choice_tag=getattr(winning_card, "tag", "custom") or "custom",
-            day_index=round_row.day_index,
-        )
-        if chain:
-            logger.info(
-                "AIWorldEngine: цепочка из %d последствий применена для дня %d",
-                len(chain.chain),
-                round_row.day_index,
+            ctx = await get_world_context(session, round_row.day_index, needs_dict, season=round_row.season)
+            chain = await process_choice_consequences(
+                session,
+                ctx,
+                _chat_completion,
+                choice_text=winning_card.consequence,
+                choice_tag=getattr(winning_card, "tag", "custom") or "custom",
+                day_index=round_row.day_index,
             )
-    except Exception:
-        logger.warning("AIWorldEngine: каскад последствий не удался", exc_info=True)
+            if chain:
+                logger.info(
+                    "AIWorldEngine: цепочка из %d последствий применена для дня %d",
+                    len(chain.chain),
+                    round_row.day_index,
+                )
+        except Exception:
+            logger.warning("AIWorldEngine: каскад последствий не удался", exc_info=True)
     try:
         await session.commit()
     except IntegrityError:
@@ -1479,14 +1482,15 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         await registry.run_post_day_hooks(ctx)
     except Exception:
         logger.warning("DayProjection/plugin hooks не выполнены", exc_info=True)
-    # AI World Engine: создаём снимок мира в конце дня
-    try:
-        from app.world_engine import create_world_snapshot
-        from app.story import _chat_completion
+    # AI World Engine: создаём снимок мира в конце дня (под llm_cascades)
+    if settings.llm_cascades:
+        try:
+            from app.world_engine import create_world_snapshot
+            from app.story import _chat_completion
 
-        await create_world_snapshot(session, round_row.day_index, llm_caller=_chat_completion)
-    except Exception:
-        logger.debug("AIWorldEngine: снимок мира не создан", exc_info=True)
+            await create_world_snapshot(session, round_row.day_index, llm_caller=_chat_completion)
+        except Exception:
+            logger.debug("AIWorldEngine: снимок мира не создан", exc_info=True)
     return await get_round(session, round_row.id), True  # type: ignore[return-value]
 
 async def polish_stub_images() -> int:
