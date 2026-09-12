@@ -376,6 +376,7 @@ async def test_results_message_appends_epilogue() -> None:
     )
     text = await results_message(finished)
     assert "День 7" in text
+    assert "🌒 Эпилог дня 7" in text
     assert "Пёс запомнил эту тропу." in text
     finished.epilogue_text = ""
     assert "Пёс запомнил" not in await results_message(finished)
