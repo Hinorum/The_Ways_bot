@@ -1237,6 +1237,7 @@ async def generate_chapter(
         day_index, previous_beats, win_rule, echoes, distant_echoes, season_block=season_block,
         villain_line=villain_block, sealed=sealed, pending_outcome=pending_outcome, salt=salt,
         tint_lines=tint_lines, focus_line=focus_line, active_scar_keys=active_scar_keys,
+        pack_focus_line=pack_focus_line,
     )
     if not settings.use_free_story_llm:
         # Офлайн-глава тоже проходит полировку типографики (кавычки-ёлочки,

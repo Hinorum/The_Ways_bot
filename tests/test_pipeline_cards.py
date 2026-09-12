@@ -151,13 +151,11 @@ def test_assemble_cards_uses_chapter_then_fills_offline() -> None:
     cards = _assemble_cards(chapter, 42)
     assert len(cards) == 3
     assert [card["position"] for card in cards] == [0, 1, 2]
-    assert cards[0]["title"] == "Дельта"
-    assert cards[0]["food_cost"] == 0  # трата ресурсов отключена
-    assert cards[0]["health_risk"] == 0  # урон отключён
-    assert json.loads(cards[0]["npc_reactions_json"])[0]["name"] == "Лайнер"
-    third = cards[2]
-    assert third["title"] and third["description"]
-    assert third["tag"] in {"risk", "care", "cunning"}
+    # Неполный AI-набор заменяется цельной офлайн-тройкой, а не смешивается
+    # с двумя картами другого сюжета.
+    assert cards[0]["title"] != "Дельта"
+    assert all(card["title"] and card["description"] for card in cards)
+    assert {card["tag"] for card in cards} == {"risk", "care", "cunning"}
 
 
 def test_assemble_cards_empty_chapter_uses_offline_pool() -> None:

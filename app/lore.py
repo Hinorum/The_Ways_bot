@@ -854,6 +854,7 @@ def compose_chapter(
     tint_lines: list[str] | None = None,
     focus_line: str | None = None,
     active_scar_keys: set[str] | None = None,
+    pack_focus_line: str | None = None,
 ) -> dict:
     # Соль запуска: каждый сброс/перезапуск даёт свежие комбинации
     # закрывок, карт дня и вступлений вместо жёсткой арифметики дня.
@@ -940,6 +941,7 @@ def compose_chapter(
         text = _chapter_text(
             day_index, echo, place, history_tags, last, win_rule,
             sealed=sealed, salt=salt, rng=rng, prologue_quiet=prologue_quiet,
+            focus_line=focus_line, pack_focus_line=pack_focus_line,
         )
         if villain_line:
             # План Хозяина Ошибки: в текст уходит только каноническое событие
@@ -1331,6 +1333,8 @@ def _chapter_text(
     salt: str = "",
     rng: random.Random | None = None,
     prologue_quiet: bool = False,
+    focus_line: str | None = None,
+    pack_focus_line: str | None = None,
 ) -> str:
     if rng is None:
         rng = _rng(day_index, f"{salt}|closing:{'|'.join(tags)}")
@@ -1338,6 +1342,14 @@ def _chapter_text(
         law_line = _SEAL_VOICE
     else:
         law_line = _law_voice(win_rule) if win_rule is not None else ""
+
+    focus_hint = ""
+    if pack_focus_line:
+        focus_hint = pack_focus_line.split(" сегодня главная собака стаи:", 1)[0]
+    elif focus_line:
+        focus_hint = focus_line.split(" — ", 1)[0]
+    focus_hint = focus_hint.replace("ФОКУС ДНЯ", "").strip(" —[]")
+    focus_sentence = f" В центре дня — {focus_hint}." if focus_hint else ""
 
     if day_index == 1 and prologue_quiet:
         # Пролог «Приход»: мир ещё не объяснён — ни закона, ни Первого Лая.
@@ -1373,7 +1385,7 @@ def _chapter_text(
         if last:
             old_title = last.split(":")[0].strip()
             text += f" Счёт обнулён, но память сети жива: однажды стая уже выбирала «{old_title}»."
-        return text + " Одна карта на всех. Завтра мир будет другим."
+        return text + focus_sentence + " Одна карта на всех. Завтра мир будет другим."
 
     if day_index == 1:
         # Пул вступлений: каждый перезапуск начинает сезон по-разному.
@@ -1437,7 +1449,7 @@ def _chapter_text(
             text += " Счёт скрыт до итогов: выбирай то, что готова пережить стая. "
         else:
             text += " Закон первого дня объявят утром. "
-        return text + "Одна карта на всех. Завтра мир будет другим."
+        return text + focus_sentence + "Одна карта на всех. Завтра мир будет другим."
 
     # Мотив теперь считается от единого chapter_tone, чтобы «примета вчерашнего
     # решения» не противоречила эху («тише» против «громче»).
@@ -1501,6 +1513,7 @@ def _chapter_text(
     return (
         f"{head}Сегодня стая идёт {place['to']}. "
         f"{motif_line}{law_line}"
+        + focus_sentence
         + closings[rng.randrange(len(closings))]
     )
 
