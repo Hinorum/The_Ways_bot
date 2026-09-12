@@ -56,7 +56,7 @@ class NPCCogResult:
     def to_prompt_block(self) -> str:
         """Форматирует результат для блока промпта."""
         return (
-            f"[{self.name.upper()} — {self.tone} (отношение {self.sentiment:+d})]\n"
+            f"[{self.name.upper()} — {self.tone}]\n"
             f"Мысли: {self.inner_thought}\n"
             f"Мотив: {self.motivation}\n"
             f"Действие: {self.action_hint}"

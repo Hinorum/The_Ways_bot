@@ -29,6 +29,8 @@ MONEY_MODE_KEY = "money_mode_on"
 # --- Отношения с NPC (app/relations.py) ---
 
 RELATION_KEY = "npc_relations"
+# Парные связи между лицами мира (NPC↔NPC): какая пара дружна, какая в раздоре.
+PAIR_RELATION_KEY = "npc_pair_relations"
 
 # --- Лидерборды (app/leaderboard.py) ---
 

@@ -1374,9 +1374,10 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         spawn_echoes_from_round(session, round_row)
     # Отношения NPC: один шаг по тегу победившего пути (у фолбэка тега нет).
     try:
-        from app.relations import apply_round_result
+        from app.relations import apply_pair_round_result, apply_round_result
 
         await apply_round_result(session, getattr(winning_card, "tag", None))
+        await apply_pair_round_result(session, getattr(winning_card, "tag", None))
     except Exception:
         logger.warning("Шаг отношений NPC дня %s не удался", round_row.day_index, exc_info=True)
     # Нрав стаи: оси характера дрейфуют по тегу победившего пути

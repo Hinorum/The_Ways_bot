@@ -83,7 +83,7 @@ class RelationsPlugin(BasePlugin):
             return None
         lines = ["Отношения NPC изменились:"]
         for d in changed:
-            lines.append(f"  {d.name}: {d.tone_before} → {d.tone_after} ({d.shift:+d})")
+            lines.append(f"  {d.name}: {d.tone_before} → {d.tone_after}")
         return "\n".join(lines)
 
 
@@ -118,10 +118,7 @@ class TrailPlugin(BasePlugin):
         a = proj.alignment
         if not (a.order_changed or a.moral_changed):
             return None
-        return (
-            f"Нрав стаи дрейфнул: порядок {a.order_before}→{a.order_after}, "
-            f"мораль {a.moral_before}→{a.moral_after}"
-        )
+        return "Нрав стаи сдвинулся — стая стала чуть иной по духу"
 
 
 # ── Economics Plugin ──

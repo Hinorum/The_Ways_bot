@@ -527,9 +527,22 @@ async def build_day_context(
         relations_block = relations_prompt_block(npc_sentiments, npc_titles=npc_titles)
     except Exception:
         npc_sentiments = {}
+        npc_titles = None
         relations_block = None
     if relations_block:
         sblock = f"{sblock}\n{relations_block}"
+    # Парные связи между лицами мира: словами-тонами, без чисел. Отдельный
+    # ключ watcher_state (PAIR_RELATION_KEY), шаг — по тегу победившего дня.
+    from app.relations import load_pair_relations, pair_prompt_block
+
+    try:
+        npc_pairs = await load_pair_relations(session)
+        pairs_block = pair_prompt_block(npc_pairs, npc_titles=npc_titles)
+    except Exception:
+        npc_pairs = {}
+        pairs_block = None
+    if pairs_block:
+        sblock = f"{sblock}\n{pairs_block}"
     # AI-реакции NPC: уникальные описания поведения. Параллелим через gather —
     # глобальный семафор _chat_completion (story) не даст потоку провайдера
     # захлебнуться, а независимые NPC-промпты изображены одновременно.

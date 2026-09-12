@@ -116,4 +116,6 @@ def test_pure_helpers() -> None:
             "fang_share": 0.1,
         }
     )
-    assert "След" in line and "20 голосам" in line
+    # Имя клетки и имидж — без чисел и объёма выборки.
+    assert "След" in line and "Овчарка устава" in line
+    assert "20" not in line

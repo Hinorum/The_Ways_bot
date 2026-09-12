@@ -162,14 +162,12 @@ def trail_tint_line(stats: dict | None) -> str | None:
 
 
 def trail_line(stats: dict) -> str:
-    """Строка для /score: клетка, проценты с расшифровкой, объём выборки."""
+    """Строка для /score: имя и имидж клетки без цифр."""
     name = trail_name(stats["order"], stats["moral"]) or "Стая сама по себе"
-    hor = round(stats["conformity"] * 100)
-    heart = round((stats["heart_share"] + 1 - stats["fang_share"]) * 50)
-    return (
-        f"🐾 Твой След: «{name}» — со стаей {hor}%, забота {heart}% "
-        f"(по {stats['total']} голосам)."
-    )
+    tint = TRAIL_TINTS.get(trail_cell(stats["order"], stats["moral"]))
+    if tint:
+        return f"🐾 Твой След: «{name}» — {tint}"
+    return f"🐾 Твой След: «{name}»."
 
 
 def trail_prompt_block(stats: dict) -> str | None:
@@ -179,9 +177,8 @@ def trail_prompt_block(stats: dict) -> str | None:
     name = trail_name(stats["order"], stats["moral"])
     if name is None:
         return None
-    return (
-        f"ХАРАКТЕР СТАИ: «{name}». "
-        f"Со стаей {round(stats['conformity'] * 100)}%, "
-        f"забота {round((stats['heart_share'] + 1 - stats['fang_share']) * 50)}%. "
-        f"Это определяет тон повествования."
-    )
+    tint = TRAIL_TINTS.get(trail_cell(stats["order"], stats["moral"]))
+    line = f"ХАРАКТЕР СТАИ: «{name}»."
+    if tint:
+        line += f" {tint}"
+    return line

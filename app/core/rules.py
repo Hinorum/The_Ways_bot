@@ -27,6 +27,27 @@ TAG_SHIFTS: dict[str, dict[str, dict[str, object]]] = {
         "cunning": {"liner": 1, "journal": 1, "master": 1, "heretic": 1},
         "risk": {"liner": -1, "journal": -1, "master": 1, "heretic": 1},
     },
+    # Парные связи между лицами мира (app/relations.py, pairs): неупорядоченные
+    # пары NPC↔NPC -3..3. Тег победившего пути стаи подталкивает или отдаляет
+    # конкретные пары. Ключ пары — "a-b" в лексикографическом порядке.
+    "pair_relations": {
+        "care": {
+            "journal-liner": 1,
+            "journal-master": -1,
+            "heretic-master": -1,
+        },
+        "cunning": {
+            "heretic-liner": 1,
+            "journal-liner": -1,
+            "heretic-master": 1,
+        },
+        "risk": {
+            "heretic-master": 1,
+            "journal-liner": 1,
+            "heretic-liner": -1,
+            "journal-master": -1,
+        },
+    },
     # Нрав стаи (app/season.py): order_axis/moral_axis -5..5.
     # risk.moral_axis — лямбда: знак выбирается от сида дня (хаос ≠ зло).
     "alignment": {
@@ -38,6 +59,7 @@ TAG_SHIFTS: dict[str, dict[str, dict[str, object]]] = {
 
 EMOTION_SHIFTS = TAG_SHIFTS["emotions"]
 RELATION_SHIFTS = TAG_SHIFTS["relations"]
+PAIR_RELATION_SHIFTS = TAG_SHIFTS["pair_relations"]
 ALIGNMENT_DRIFT = TAG_SHIFTS["alignment"]
 
 

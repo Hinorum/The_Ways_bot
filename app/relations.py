@@ -15,7 +15,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.registry import RELATION_KEY
+from app.core.registry import PAIR_RELATION_KEY, RELATION_KEY
 from app.models import WatcherState
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ _MIN, _MAX = -3, 3
 #             корм Хозяина Ошибки, головная боль дневника;
 #   risk    — мир трещит: Хозяин доволен, Лайнер настораживается,
 #             Еретик одобряет — трещина значит, что мир ещё живой.
-from app.core.rules import RELATION_SHIFTS as _SHIFTS
+from app.core.rules import PAIR_RELATION_SHIFTS, RELATION_SHIFTS as _SHIFTS
 
 _TONES = {
     3: ("предан стае", "ходит за стаей хвостом"),
@@ -197,8 +197,7 @@ def relations_prompt_block(relations: dict[str, int], npc_titles: dict[str, str]
 def tone_line(value: int) -> str:
     clamped = clamp_relation(value)
     word, behaviour = _TONES[clamped]
-    sign = "+" if clamped > 0 else ""
-    return f"{word} ({sign}{clamped})"
+    return f"{word}"
 
 
 async def load_relations(session: AsyncSession) -> dict[str, int]:
@@ -246,6 +245,121 @@ async def relations_block_for_session(session: AsyncSession) -> str | None:
     return relations_prompt_block(await load_relations(session))
 
 
+# ── Парные связи между лицами мира (NPC↔NPC) ──
+#
+# Общие счётчики -3..3 для каждой пары лиц. Стая видит мир как сетку
+# отношений: кто кому близкий, кто в раздоре. Тег победившего пути дня
+# подталкивает конкретные пары (см. PAIR_RELATION_SHIFTS в core/rules.py).
+# В промпт наружу выходят только слова-тоны пары, без чисел.
+
+# Тон межличностной пары: слово и поведение для разряда -3..3.
+PAIR_TONES = {
+    3: ("неразлучны", "ищут друг друга в каждом споре"),
+    2: ("близки", "защищают друг друга перед стаей"),
+    1: ("теплы", "переглядываются, когда другие спорят"),
+    0: ("ничьи", "держатся на расстоянии"),
+    -1: ("натянуты", "отвечают уклончиво"),
+    -2: ("против", "оставляют друг другу камни на тропе"),
+    -3: ("враждуют", "один из них тень для другого"),
+}
+
+
+def pair_key(a: str, b: str) -> str:
+    """Канонический ключ пары: «a-b» в лексикографическом порядке."""
+    return f"{min(a, b)}-{max(a, b)}"
+
+
+def default_pair_relations() -> dict[str, int]:
+    """Все пары NPC нулевые (нейтральные)."""
+    out: dict[str, int] = {}
+    keys = list(NPC_TITLES)
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            out[pair_key(keys[i], keys[j])] = 0
+    return out
+
+
+def apply_pair_shift(pairs: dict[str, int], winner_tag: str | None) -> dict[str, int]:
+    """Шаг парных связей по тегу победившего пути. Мутирует и возвращает."""
+    if winner_tag not in PAIR_RELATION_SHIFTS:
+        return pairs
+    for pair, shift in PAIR_RELATION_SHIFTS[winner_tag].items():
+        if pair in pairs:
+            pairs[pair] = clamp_relation(pairs[pair] + shift)
+    return pairs
+
+
+def pair_tone(value: int) -> tuple[str, str]:
+    return PAIR_TONES[clamp_relation(value)]
+
+
+def pair_name(pair: str, npc_titles: dict[str, str] | None = None) -> str:
+    titles = npc_titles or NPC_TITLES
+    a, b = pair.split("-")
+    return f"{titles.get(a, a)} и {titles.get(b, b)}"
+
+
+def pair_prompt_block(pairs: dict[str, int], npc_titles: dict[str, str] | None = None) -> str | None:
+    """Строка парных связей для промпта главы. None — все пары нейтральны."""
+    parts = []
+    for pair, value in pairs.items():
+        if value == 0:
+            continue
+        word, behaviour = pair_tone(value)
+        parts.append(f"{pair_name(pair, npc_titles)} — {word} ({behaviour})")
+    if not parts:
+        return None
+    return (
+        "ОТНОШЕНИЯ МЕЖДУ ЛИЦАМИ (канон последних дней, учитывай в репликах): "
+        + "; ".join(parts)
+        + "."
+    )
+
+
+async def load_pair_relations(session: AsyncSession) -> dict[str, int]:
+    """Загружает парные связи из БД. Неизвестные пары — нейтральные."""
+    pairs = default_pair_relations()
+    row = await session.get(WatcherState, PAIR_RELATION_KEY)
+    if row is None or not row.value:
+        return pairs
+    try:
+        data = json.loads(row.value)
+    except ValueError:
+        return pairs
+    if not isinstance(data, dict):
+        return pairs
+    for pair in pairs:
+        if isinstance(data.get(pair), int):
+            pairs[pair] = clamp_relation(data[pair])
+    return pairs
+
+
+async def save_pair_relations(session: AsyncSession, pairs: dict[str, int]) -> None:
+    payload = json.dumps(
+        {pair: clamp_relation(pairs.get(pair, 0)) for pair in default_pair_relations()},
+        ensure_ascii=False,
+    )
+    row = await session.get(WatcherState, PAIR_RELATION_KEY)
+    if row is None:
+        session.add(WatcherState(key=PAIR_RELATION_KEY, value=payload))
+    else:
+        row.value = payload
+
+
+async def apply_pair_round_result(session: AsyncSession, winner_tag: str | None) -> bool:
+    """Обновить парные связи после итогов дня. True — было изменение."""
+    if winner_tag not in PAIR_RELATION_SHIFTS:
+        return False
+    pairs = await load_pair_relations(session)
+    before = dict(pairs)
+    apply_pair_shift(pairs, winner_tag)
+    if pairs == before:
+        return False
+    await save_pair_relations(session, pairs)
+    await session.commit()
+    return True
+
+
 async def generate_npc_reaction(
     npc_key: str,
     sentiment: int,
@@ -262,7 +376,7 @@ async def generate_npc_reaction(
     word = tone_word(sentiment)
 
     prompt = (
-        f"NPC: {title}. Настроение к стае: {word} ({sentiment:+d}/3).\n"
+        f"NPC: {title}. Настроение к стае: {word}.\n"
         f"Недавние события: {recent_events or 'нет'}\n"
         f"Последние выборы стаи: {recent_choices or 'нет'}\n\n"
         f"Напиши 1-2 предложения от третьего лица: как {title} сегодня "
@@ -300,7 +414,7 @@ async def generate_npc_want(
     word = tone_word(sentiment)
 
     prompt = (
-        f"NPC: {title}. Отношение: {word} ({sentiment:+d}/3). День {day_index}.\n\n"
+        f"NPC: {title}. Отношение: {word}. День {day_index}.\n\n"
         f"Напиши одну короткую хотелку или цель {title} на сегодня "
         "(1 предложение, от первого лица «я» или без подлежащего). "
         "Контекст: постапокалиптический лабиринт, стая собак-путешественников."
@@ -322,16 +436,27 @@ async def generate_npc_want(
 
 
 __all__ = [
+    "PAIR_RELATION_KEY",
     "RELATION_KEY",
     "NPC_TITLES",
+    "PAIR_TONES",
+    "apply_pair_round_result",
+    "apply_pair_shift",
     "apply_winner_shift",
     "apply_round_result",
     "clamp_relation",
+    "default_pair_relations",
     "default_relations",
     "get_npc_titles",
+    "load_pair_relations",
     "load_relations",
+    "pair_key",
+    "pair_name",
+    "pair_tone",
+    "pair_prompt_block",
     "relations_block_for_session",
     "relations_prompt_block",
+    "save_pair_relations",
     "save_relations",
     "tone_word",
 ]

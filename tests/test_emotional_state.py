@@ -116,6 +116,7 @@ def test_emotion_block_exhausted():
     block = emotion_block_for_prompt(profile)
     assert block is not None
     assert "УСТАЛОСТЬ" in block
+    assert "/10" not in block  # наружу — только фаза-слово, без цифр
 
 
 def test_emotion_block_inspired():
@@ -123,6 +124,7 @@ def test_emotion_block_inspired():
     block = emotion_block_for_prompt(profile)
     assert block is not None
     assert "НАДЕЖДА" in block
+    assert "/10" not in block
 
 
 def test_emotion_block_suspicious():
@@ -130,6 +132,7 @@ def test_emotion_block_suspicious():
     block = emotion_block_for_prompt(profile)
     assert block is not None
     assert "ПАРАНОЙЯ" in block
+    assert "/10" not in block
 
 
 def test_all_shifts_defined():
