@@ -1596,6 +1596,7 @@ def _build_story_prompt(
             "Игроки должны сами узнать повтор, если помнят:\n"
             + "\n".join(echo_prompt_lines(echoes)) + "\n"
         )
+        echo_block = _prompt_block(echo_block, 1800)
     distant_block = ""
     if distant_echoes:
         distant_block = (
@@ -1603,6 +1604,7 @@ def _build_story_prompt(
             "лёгким касанием — одной фразой, без пересказа целиком:\n"
             + "\n".join(f"- {line}" for line in distant_echoes) + "\n"
         )
+        distant_block = _prompt_block(distant_block, 900)
     season_text = f"{_prompt_block(season_block, 3600)}\n" if season_block else ""
     # Эргономика чтения в ТГ: обычная глава 1000–1300 знаков (5–7 абзацев),
     # расширенная (пролог/поворот) 1300–1600. Короче прежнего, но насыщеннее —
@@ -1625,6 +1627,7 @@ def _build_story_prompt(
         f"{alignment_block} {focus_line} {repeat_block}",
         db_profiles=npc_profiles,
     )
+    voice_block = _prompt_block(voice_block, 1400)
     # Witness filter: не все NPC знают о прошлых событиях
     witness_block = witness_filter(previous_beats, history)
     places_text = ""
@@ -1635,7 +1638,9 @@ def _build_story_prompt(
             "Название вернувшегося места укажи в поле place.\n"
             + places_block + "\n"
         )
+        places_text = _prompt_block(places_text, 1100)
     repeat_text = f"{repeat_block}\n" if repeat_block else ""
+    repeat_text = _prompt_block(repeat_text, 1200)
     # Шрамы мира: активные шрамы влияют на локации и тон
     scar_text = ""
     if active_scar_keys:
@@ -1661,6 +1666,7 @@ def _build_story_prompt(
                 "Не называй слово «шрам» — покажи последствия образами:\n"
                 + "\n".join(scar_lines) + "\n"
             )
+    scar_text = _prompt_block(scar_text, 1200)
     # GEPA: динамический промпт от эволюционного гена (из module-level cache)
     _gepa_block = ""
     try:
@@ -1700,9 +1706,9 @@ def _build_story_prompt(
         f"{places_text}"
         f"{repeat_text}"
         f"{scar_text}"
-        f"{emotion_block + chr(10) if emotion_block else ''}"
-        f"{branches_block + chr(10) if branches_block else ''}"
-        f"{dynamic_rules_block + chr(10) if dynamic_rules_block else ''}"
+        f"{_prompt_block(emotion_block, 800) + chr(10) if emotion_block else ''}"
+        f"{_prompt_block(branches_block, 1000) + chr(10) if branches_block else ''}"
+        f"{_prompt_block(dynamic_rules_block, 800) + chr(10) if dynamic_rules_block else ''}"
         f"{_prompt_block(characters_block, 1600) + chr(10) if characters_block else ''}"
         f"{_gepa_block}"
         "Напиши главу дня — цельный рассказ на "
