@@ -40,6 +40,12 @@ scheduler = AsyncIOScheduler(timezone=settings.timezone)
 _bot: Bot | None = None
 
 
+def _is_whisper_day(day_index: int) -> bool:
+    """Return whether the automatic evening scene is due for this day."""
+    every = max(0, settings.whisper_every_days)
+    return every > 0 and (day_index == 1 or day_index % every == 0)
+
+
 def set_bot(bot: Bot) -> None:
     global _bot
     _bot = bot
@@ -572,6 +578,7 @@ async def tick(bot: Bot | None = None) -> None:
             if (
                 current.status == RoundStatus.OPEN
                 and now.hour == settings.whisper_hour_utc % 24
+                and _is_whisper_day(current.day_index)
             ):
                 from app.models import WatcherState
 

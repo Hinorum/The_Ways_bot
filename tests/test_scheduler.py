@@ -239,6 +239,17 @@ async def test_compose_whisper_weaves_candidates_without_leaking_votes(monkeypat
     assert "намёков" in user
 
 
+def test_whisper_schedule_is_sparse_and_configurable(monkeypatch) -> None:
+    from app.scheduler import _is_whisper_day
+
+    monkeypatch.setattr(settings, "whisper_every_days", 3)
+    assert _is_whisper_day(1)
+    assert not _is_whisper_day(2)
+    assert _is_whisper_day(3)
+    monkeypatch.setattr(settings, "whisper_every_days", 0)
+    assert not _is_whisper_day(1)
+
+
 async def test_alert_guarded_notifies_admin_and_swallows(monkeypatch) -> None:
     """П.13: сломавшаяся фоновая задача бьёт админа в лоб, но не роняет
     планировщик — исключение не пробрасывается наружу."""
