@@ -54,3 +54,18 @@ def test_sniff_scene_appends_trail_tint() -> None:
                                  trail_tint="Твой След — «Пастух»: хор ведёт.")
     assert tinted.startswith(plain)
     assert "Пастух" in tinted
+
+
+def test_lore_message_prioritizes_canon_under_telegram_limit() -> None:
+    from app.handlers.player import _lore_message
+
+    text = _lore_message(
+        "Архив",
+        "Канон дня " * 300,
+        chronicle=["День 1"],
+        pack_memories=["Память"],
+        map_block="Карта лабиринта " * 200,
+    )
+    assert len(text) <= 4000
+    assert "Канон дня" in text
+    assert "Часть справочных слоёв скрыта" in text
