@@ -36,7 +36,7 @@ def test_prompt_with_choices_still_builds_chapter() -> None:
     assert "Формат:" in prompt
 
 
-def test_normalize_cards_whitelists_tags_and_coerces_trust() -> None:
+def test_normalize_cards_whitelists_tags_and_drops_trust() -> None:
     raw = [
         {
             "title": "Ворваться",
@@ -72,7 +72,7 @@ def test_normalize_cards_whitelists_tags_and_coerces_trust() -> None:
     by_title = {card["title"]: card for card in normalized}
     first = by_title["Ворваться"]
     assert first["tag"] == "risk"
-    assert first["trust_change"] == -1
+    assert "trust_change" not in first  # числовое доверие убрано из схемы
     assert "food_cost" not in first  # урон и трата ресурсов убраны из схемы
     assert "health_risk" not in first
     assert first["npc_reactions"] == [{"name": "Лайнер", "reaction": "Фыркает."}]

@@ -139,7 +139,9 @@ def test_world_block_text_maps_world_context() -> None:
     assert "настроение лабиринта: grim" in text
     assert "незакрытые сюжетные линии: Мост сгорел; Пропавший щенок" in text
     assert "Старый приют (2 посещ.)" in text
-    assert "Лайнер (доверие 7/10)" in text
+    assert "Лайнер" in text
+    assert "Дневник" in text
+    assert "доверие" not in text
 
 
 def test_world_block_text_empty_world_is_none() -> None:

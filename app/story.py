@@ -455,8 +455,16 @@ async def _build_dynamic_character_block(session) -> str:
 
             parts.append(
                 f"- {char.name} ({char.role}): {char.personality[:100]}. "
-                f"Настроение: {mood_desc}. Доверие к стае: {char.trust_stay}/10."
+                f"Настроение: {mood_desc}."
             )
+            if char.metadata_json:
+                try:
+                    meta = json.loads(char.metadata_json)
+                    state = str(meta.get("story_state", "")) if isinstance(meta, dict) else str(meta)
+                    if state:
+                        parts.append(f"  Состояние: {state[:120]}")
+                except (json.JSONDecodeError, TypeError):
+                    pass
             if char.flaw:
                 parts.append(f"  Слабость: {char.flaw[:60]}")
             if char.virtue:
@@ -489,12 +497,11 @@ async def persist_session_character(session, new_char, day_index: int) -> str:
 
 
 async def _generate_session_characters(
-    session, day_index: int, pack_needs: dict | None = None, season: str = "unknown",
+    session, day_index: int, season: str = "unknown",
 ) -> str:
     """Генерирует персонажей для текущей сессии через AI World Engine.
 
     Вызывается при подготовке нового дня для создания уникальных NPC.
-    pack_needs: {"hunger": int, "thirst": int, "health": int} или None для дефолта.
     """
     try:
         from sqlalchemy import select
@@ -503,7 +510,6 @@ async def _generate_session_characters(
         result = await session.execute(q)
         existing_chars = result.scalars().all()
 
-        needs = pack_needs or {"hunger": 5, "thirst": 5, "health": 10}
         ctx = WorldContext(
             day_index=day_index,
             recent_choices=[],
@@ -514,13 +520,12 @@ async def _generate_session_characters(
                     "role": c.role,
                     "personality": c.personality[:80],
                     "mood": c.mood,
-                    "trust_stay": c.trust_stay,
                 }
                 for c in existing_chars
             ],
             world_mood="tense",
             open_threads=[],
-            pack_needs=needs,
+            pack_needs={},
             season=season,
         )
 
@@ -1431,13 +1436,6 @@ def _chapter_text_fields(data: dict) -> list[str]:
     return parts
 
 
-def _coerce_int(value, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _normalize_cards(cards: list) -> list[dict]:
     """Карты выбора из единой генерации главы → схема Card.
 
@@ -1474,7 +1472,6 @@ def _normalize_cards(cards: list) -> list[dict]:
                 "tag": tag,
                 "characters_involved": characters if isinstance(characters, list) else [],
                 "location": str(card["location"])[:80] if card.get("location") else None,
-                "trust_change": _coerce_int(card.get("trust_change")),
                 "emotional_consequence": str(card.get("emotional_consequence", ""))[:500],
                 "npc_reactions": npc_reactions,
             }
@@ -1776,18 +1773,18 @@ _CHOICES_BLOCK = (
     "- каждая — трудная дилемма «вагонетки» без очевидно правильного ответа;\n"
     "- tag — строго одно из: risk | care | cunning;\n"
     "- consequence — что произойдёт при выборе: последствие влияет на мир "
-    "или доверие NPC;\n"
+    "или на состояние NPC;\n"
     "- title (2-5 слов), description (1-2 предложения), consequence "
     "(1-2 предложения);\n"
     '- поля: "title", "description", "consequence", "tag", '
     '"characters_involved" (имена постоянных NPC стаи, до 2 имён), '
-    '"location" (место дня или null), "trust_change" (-3..3), '
+    '"location" (место дня или null), '
     '"emotional_consequence" '
     '(одна фраза), "npc_reactions" (до 3 объектов '
     '{"name": имя NPC, "reaction": фраза}).\n'
     'Формат блока: "cards": [{"title": "...", "description": "...", '
     '"consequence": "...", "tag": "risk", "characters_involved": ["Лайнер"], '
-    '"location": "Место дня или null", "trust_change": 0, '
+    '"location": "Место дня или null", '
     '"emotional_consequence": "...", '
     '"npc_reactions": [{"name": "Лайнер", "reaction": "..."}]}, ...]\n'
 )

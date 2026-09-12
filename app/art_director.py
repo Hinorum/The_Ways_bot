@@ -235,8 +235,7 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | Non
         if name and name.lower() not in chapter_text.lower():
             continue
         mood = npc.get("mood", "neutral")
-        trust = npc.get("trust", 5)
-        # Генерируем визуальный дескриптор на основе mood/trust
+        # Генерируем визуальный дескриптор на основе mood
         if mood == "hostile":
             visual = f"{name}, tense aggressive silhouette, ears pinned back, bared teeth"
         elif mood == "friendly":
@@ -247,11 +246,6 @@ def _build_art_prompt(chapter: dict, recent_beats: list[str], anchor: dict | Non
             visual = f"{name}, drooping weary figure, lowered head, dull eyes"
         else:
             visual = f"{name}, neutral calm figure, alert posture"
-        # Модификатор по trust
-        if trust <= 3:
-            visual += ", distrustful glance, keeping distance"
-        elif trust >= 8:
-            visual += ", loyal companion, close to the pack"
         char_motifs.append(visual)
     char_block = ""
     if char_motifs:

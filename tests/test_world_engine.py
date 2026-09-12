@@ -1212,7 +1212,7 @@ async def test_update_character_state():
             session,
             character_name="ТестовыйNPC",
             mood="friendly",
-            trust_delta=2,
+            story_state="Стал теплее к стае после совместной ночи",
             day_index=5,
         )
         await session.commit()
@@ -1223,8 +1223,8 @@ async def test_update_character_state():
         result = await session.execute(q)
         updated_char = result.scalar_one_or_none()
         assert updated_char.mood == "friendly"
-        assert updated_char.trust_stay == 7
         assert updated_char.last_seen_day == 5
+        assert updated_char.metadata_json == '{"story_state": "Стал теплее к стае после совместной ночи"}'
 
     await engine.dispose()
 
@@ -1241,11 +1241,11 @@ def test_ai_consequence_creation():
         affected_locations=["Старый приют"],
         world_impact="Отношения изменились",
         mood_shift="hopeful",
-        trust_changes={"Лайнер": 2},
+        character_changes={"Лайнер": "Проникся доверием к стае"},
     )
     assert cons.cause == "Выбор стаи"
     assert cons.mood_shift == "hopeful"
-    assert cons.trust_changes == {"Лайнер": 2}
+    assert cons.character_changes == {"Лайнер": "Проникся доверием к стае"}
 
 
 def test_ai_consequence_chain_creation():
@@ -1260,7 +1260,7 @@ def test_ai_consequence_chain_creation():
                 affected_locations=["Мост"],
                 world_impact="Мир стал опаснее",
                 mood_shift="grim",
-                trust_changes={},
+                character_changes={},
             ),
         ],
         resolution="Мост восстановлен через неделю",
@@ -1281,7 +1281,7 @@ def test_parse_ai_consequence_chain_valid():
                 "affected_locations": ["Мост"],
                 "world_impact": "Мир стал опаснее",
                 "mood_shift": "grim",
-                "trust_changes": {"Лайнер": -1},
+                "character_changes": {"Лайнер": "Обиделся на стаю"},
             },
         ],
         "resolution": "Мост восстановлен через неделю",
@@ -1374,7 +1374,7 @@ async def test_generate_consequence_chain_with_llm():
                     "affected_locations": ["Мост"],
                     "world_impact": "Мир стал опаснее",
                     "mood_shift": "grim",
-                    "trust_changes": {},
+                    "character_changes": {},
                 },
             ],
             "resolution": "Мост будет восстановлен через 3 дня",
@@ -1464,7 +1464,7 @@ async def test_apply_consequence_chain():
                     affected_locations=["Мост"],
                     world_impact="Мир стал опаснее",
                     mood_shift="grim",
-                    trust_changes={"ТестовыйNPC": -2},
+                    character_changes={"ТестовыйNPC": "Отдалился от стаи"},
                 ),
             ],
             resolution="Мост восстановлен",
@@ -1474,12 +1474,13 @@ async def test_apply_consequence_chain():
         await apply_consequence_chain(session, chain, day_index=5)
         await session.commit()
 
-        # Проверяем что доверие изменилось
+        # Проверяем что состояние записано нарративно, без цифр
         from sqlalchemy import select
         q = select(WorldCharacter).where(WorldCharacter.name == "ТестовыйNPC")
         result = await session.execute(q)
         updated_char = result.scalar_one_or_none()
-        assert updated_char.trust_stay == 3
+        assert updated_char.trust_stay == 5  # числовая метрика больше не меняется
+        assert updated_char.metadata_json == '{"story_state": "Отдалился от стаи"}'
 
         # Проверяем что событие записано
         event_q = select(WorldEvent).where(WorldEvent.day_index == 5)

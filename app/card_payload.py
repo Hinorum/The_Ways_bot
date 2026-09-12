@@ -17,21 +17,12 @@ from app.lore import _cards, card_rich_payload
 def _card_payload(card: dict, position: int, day_index: int) -> dict:
     """Payload-словарь под Card-модель.
 
-    Трата ресурсов и урон отключены: food_cost/water_cost/health_risk всегда 0.
-    LLM-карты главы несут trust_change/emotional_consequence/npc_reactions —
-    явные значения уважаются; настоящие пустоты (None/пустая строка/отсутствие)
-    выравниваются деривацией lore.card_rich_payload по архетипу и названию.
+    Трата ресурсов, урон и числовое доверие отключены: food_cost/water_cost/
+    health_risk/trust_change всегда 0. LLM-карты главы несут
+    emotional_consequence/npc_reactions — явные значения уважаются; настоящие
+    пустоты (None/пустая строка/отсутствие) выравниваются деривацией
+    lore.card_rich_payload по архетипу и названию.
     """
-
-    def _taken(key, fallback):
-        value = card.get(key)
-        if value is None or str(value).strip() in {"", "null"}:
-            return fallback
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return fallback
-
     rich = card_rich_payload(
         str(card.get("title", "")),
         str(card.get("tag", "care")),
@@ -48,7 +39,7 @@ def _card_payload(card: dict, position: int, day_index: int) -> dict:
         "food_cost": 0,
         "water_cost": 0,
         "health_risk": 0,
-        "trust_change": _taken("trust_change", rich["trust_change"]),
+        "trust_change": 0,
         "emotional_consequence": str(
             card.get("emotional_consequence") or rich["emotional_consequence"]
         ),
@@ -97,8 +88,7 @@ def _world_block_text(world_ctx) -> str | None:
     Мир приходит в генерацию ДО написания главы (один вызов вместо
     отдельной AI-локации, патчившей текст задним числом). None — мир пуст.
     Общий бюджет ~600 символов и сортировка по важности: растущий лабиринт
-    не раздувает контекст, а в промпт попадают самые посещаемые места и
-    самые доверяющие NPC.
+    не раздувает контекст, а в промпт попадают самые посещаемые места.
     """
     if world_ctx is None:
         return None
@@ -120,9 +110,8 @@ def _world_block_text(world_ctx) -> str | None:
         parts.append("- известные стае места: " + ", ".join(names))
     chars = getattr(world_ctx, "active_characters", None) or []
     if chars:
-        chars = sorted(chars, key=lambda char: char.get("trust_stay", 5), reverse=True)
         cnames = [
-            f"{str(char['name'])[:40]} (доверие {char.get('trust_stay', 5)}/10)"
+            f"{str(char['name'])[:40]}"
             for char in chars[:5]
         ]
         parts.append("- долгожители лабиринта: " + ", ".join(cnames))

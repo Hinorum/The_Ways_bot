@@ -397,8 +397,7 @@ async def _plan_and_render(
     world_block = None
     try:
         from app.world_engine import get_world_context
-        needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
-        world_ctx = await get_world_context(session, day_index, needs_dict, season=ctx.key)
+        world_ctx = await get_world_context(session, day_index, season=ctx.key)
         world_block = _world_block_text(world_ctx)
         logger.info(
             "AIWorldEngine: контекст мира дня %d (%d локаций, %d персонажей)",
@@ -438,17 +437,12 @@ async def _plan_and_render(
                         "role": c["role"],
                         "personality": (c.get("personality") or "")[:80],
                         "mood": c.get("mood", "neutral"),
-                        "trust_stay": c.get("trust_stay", 5),
                     }
                     for c in existing
                 ],
                 world_mood="tense",
                 open_threads=[],
-                pack_needs={
-                    "hunger": 5,
-                    "thirst": 5,
-                    "health": 10,
-                },
+                pack_needs={},
                 season=ctx.key,
             )
             char_task = spawn(generate_ai_character(session, char_ctx, _chat_completion), "ai_character")
@@ -529,7 +523,7 @@ async def _plan_and_render(
         ai_chars = (await session.execute(stmt)).scalars().all()
         if ai_chars:
             chapter["ai_characters"] = [
-                {"name": c.name, "mood": c.mood, "trust": c.trust_stay, "role": c.role}
+                {"name": c.name, "mood": c.mood, "role": c.role}
                 for c in ai_chars
             ]
     except Exception as e:
@@ -1438,9 +1432,8 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
 
             # Контур выживания отключён: потребности стаи больше не обновляются
             # (pack_state удалён), всегда берём дефолты.
-            needs_dict = {"hunger": 5, "thirst": 5, "health": 10}
 
-            ctx = await get_world_context(session, round_row.day_index, needs_dict, season=round_row.season)
+            ctx = await get_world_context(session, round_row.day_index, season=round_row.season)
             chain = await process_choice_consequences(
                 session,
                 ctx,

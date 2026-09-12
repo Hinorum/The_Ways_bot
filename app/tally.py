@@ -319,16 +319,7 @@ def format_results(
         stake_nano = stakes.get(position, 0)
         stake_str = f" ({from_nano(stake_nano):.2f} Gram)" if stake_nano > 0 else ""
 
-        # Эффект выбора (урон и трата ресурсов отключены — только доверие)
-        card = next((c for c in round_row.cards if c.position == position), None)
-        cost_parts = []
-        if card:
-            if (card.trust_change or 0) != 0:
-                sign = "+" if card.trust_change > 0 else ""
-                cost_parts.append(f"{sign}{card.trust_change} доверие")
-        cost_str = f" 💰{', '.join(cost_parts)}" if cost_parts else ""
-
-        lines.append(f"{names[position]}: {counts.get(position, 0)}{stake_str}{cost_str}{mark}")
+        lines.append(f"{names[position]}: {counts.get(position, 0)}{stake_str}{mark}")
     # Коэффициент: если есть ставки на победивший путь
     if multiplier is not None and multiplier > 0:
         lines.append(f"🎯 Коэффициент: ×{multiplier:.2f}")
@@ -393,11 +384,13 @@ async def format_world_effects(round_row: Round, session=None) -> str:
     except Exception:
         logger.debug("События дня %s не прочитаны", round_row.day_index, exc_info=True)
 
-    # Trust changes: доверие NPC
+    # Состояния NPC: нарративные изменения (без цифр и метрик)
     try:
         from app.models import WorldCharacter
+        from sqlalchemy import select as _sa
+        import json as _json
         q = (
-            sa_select(WorldCharacter)
+            _sa.select(WorldCharacter)
             .where(WorldCharacter.is_alive == True)
             .where(WorldCharacter.last_seen_day == round_row.day_index)
             .limit(3)
@@ -406,14 +399,20 @@ async def format_world_effects(round_row: Round, session=None) -> str:
         chars = result.scalars().all()
         changes = []
         for c in chars:
-            if c.trust_stay >= 7:
-                changes.append(f"{c.name}: доверие ↑")
-            elif c.trust_stay <= 3:
-                changes.append(f"{c.name}: доверие ↓")
+            story_state = ""
+            if c.metadata_json:
+                try:
+                    meta = _json.loads(c.metadata_json)
+                    if isinstance(meta, dict):
+                        story_state = str(meta.get("story_state", ""))
+                except (_json.JSONDecodeError, TypeError):
+                    story_state = str(c.metadata_json)
+            if story_state:
+                changes.append(f"{c.name}: {story_state[:80]}")
         if changes:
             lines.append("🤝 " + "; ".join(changes))
     except Exception:
-        logger.debug("Доверие NPC дня %s не прочитано", round_row.day_index, exc_info=True)
+        logger.debug("Состояния NPC дня %s не прочитаны", round_row.day_index, exc_info=True)
 
     return "\n".join(lines)
 

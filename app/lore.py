@@ -1666,16 +1666,12 @@ def _cards(
 
 # ── Деривация богатых полей офлайн-карт (слой 6: единый конвейер) ─────────
 #
-# LLM-карты приходят с trust_change/emotional_consequence/npc_reactions.
+# LLM-карты приходят с emotional_consequence/npc_reactions.
 # Офлайн-тропы (и карты главы без этих полей) выравниваются той же схемой:
 # профиль-архетип + детерминированная вариация по (день, соль, название).
-# Трата ресурсов и урон отключены: food_cost/water_cost/health_risk = 0.
+# Трата ресурсов, урон и числовое доверие отключены.
 
-_TAG_RICH = {
-    "risk": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (-2, 1)},
-    "care": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (1, 3)},
-    "cunning": {"food_cost": (0, 0), "water_cost": (0, 0), "health_risk": (0, 0), "trust_change": (-1, 0)},
-}
+_TAG_RICH = ("risk", "care", "cunning")
 
 _EMOTION_SKELETONS = {
     "risk": (
@@ -1718,20 +1714,10 @@ def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> d
     """Богатые поля карты по архетипу и названию — детерминированно.
 
     Соблюдает тот же контракт, что и _CHOICES_BLOCK для LLM-карт: затрат
-    ресурсов и урона нет, варьируется только trust_change. Тэг уходит в care
+    ресурсов, урона и числового доверия нет. Тэг уходит в care
     на неизвестном архетипе.
     """
     tag = tag if tag in _TAG_RICH else "care"
-    profile = _TAG_RICH[tag]
-    rng = _rng(day_index, f"rich:{tag}:{salt}:{_title_key(title)}")
-
-    def roll(rng, lo_hi):
-        return rng.randint(*lo_hi)
-
-    food_cost = 0
-    water_cost = 0
-    health_risk = 0
-    trust_change = roll(rng, profile["trust_change"])
     t = str(title).strip() or "выбор"
     emotions = _EMOTION_SKELETONS[tag]
     emotions_rng = _rng(day_index, f"emo:{tag}:{_title_key(t)}")
@@ -1743,10 +1729,10 @@ def card_rich_payload(title: str, tag: str, day_index: int, salt: str = "") -> d
         name, reaction = reactions[emotions_rng.randrange(len(reactions))]
         picked.append({"name": name, "reaction": reaction})
     return {
-        "food_cost": food_cost,
-        "water_cost": water_cost,
-        "health_risk": health_risk,
-        "trust_change": trust_change,
+        "food_cost": 0,
+        "water_cost": 0,
+        "health_risk": 0,
+        "trust_change": 0,
         "emotional_consequence": emotional_consequence,
         "npc_reactions": picked,
     }

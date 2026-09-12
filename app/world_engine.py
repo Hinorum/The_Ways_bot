@@ -39,10 +39,6 @@ class AIChoice:
     tag: str  # risk | care | cunning | custom
     characters_involved: list[str]
     location: str | None = None
-    food_cost: int = 0  # Сколько еды тратится (-)
-    water_cost: int = 0  # Сколько воды тратится (-)
-    health_risk: int = 0  # Максимальный урон здоровью (-)
-    trust_change: int = 0  # Изменение trust (+/-)
     emotional_consequence: str = ""  # Эмоциональное описание
     npc_reactions: list = None  # Реакции NPC [{name, reaction}]
 
@@ -104,16 +100,25 @@ async def get_world_context(
     # Активные персонажи
     char_q = select(WorldCharacter).where(WorldCharacter.is_alive == True)
     char_result = await session.execute(char_q)
-    active_characters = [
-        {
-            "name": c.name,
-            "role": c.role,
-            "personality": c.personality,
-            "mood": c.mood,
-            "trust_stay": c.trust_stay,
-        }
-        for c in char_result.scalars().all()
-    ]
+    active_characters = []
+    for c in char_result.scalars().all():
+        state = ""
+        if c.metadata_json:
+            try:
+                meta = json.loads(c.metadata_json)
+                if isinstance(meta, dict):
+                    state = str(meta.get("story_state", ""))
+            except (json.JSONDecodeError, TypeError):
+                state = str(c.metadata_json)
+        active_characters.append(
+            {
+                "name": c.name,
+                "role": c.role,
+                "personality": c.personality,
+                "mood": c.mood,
+                "state": state,
+            }
+        )
 
     # Последний снимок мира
     snap_q = (
@@ -184,9 +189,10 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
     if ctx.active_characters:
         parts.append("ПЕРСОНАЖИ:")
         for char in ctx.active_characters[:5]:
+            state = char.get("state")
             parts.append(
-                f"- {char['name']} ({char['role']}): {char['personality'][:80]}, "
-                f"доверие к стае: {char['trust_stay']}/10"
+                f"- {char['name']} ({char['role']}): {char['personality'][:80]}"
+                + (f", состояние: {state[:120]}" if state else "")
             )
         parts.append("")
 
@@ -212,15 +218,11 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         '      "tag": "risk|care|cunning",',
         '      "characters_involved": ["имя"],',
         '      "location": "название локации или null",',
-        '      "trust_change": 0,',
         '      "emotional_consequence": "Эмоциональное описание (1-3 предложения)",',
         '      "npc_reactions": [{"name": "имя", "reaction": "что сказал/подумал"}]',
         '    }',
         '  ]',
         '}',
-        "",
-        "ДОВЕРИЕ (опционально):",
-        "- trust_change: изменение доверия (-3 до +3). -3 = предательство, +3 = героизм",
         "",
         "ЭМОЦИОНАЛЬНОЕ ОПИСАНИЕ (обязательно):",
         "- Что увидели псы в момент выбора",
@@ -238,11 +240,11 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         "",
         "ПРАВИЛА ДЛЯ ЦЕН:",
         "- Выборы не тратят ресурсов и не наносят урона — цена решения только "
-        "в последствиях и в доверии NPC",
+        "в последствиях и в отношении NPC к стае",
         "",
         "ТРЕБОВАНИЯ К TAG:",
         "- risk: опасный путь, шанс потерять или получить много",
-        "- care: забота, тепло, укрепление доверия и связей",
+        "- care: забота, тепло, укрепление связей",
         "- cunning: хитрость, обман, но может не сработать",
         "",
         "Каждый выбор должен:",
@@ -250,9 +252,8 @@ def _build_world_prompt(ctx: WorldContext, chapter_ctx: str = "") -> str:
         "2. Иметь конкретные последствия",
         "3. Вовлекать хотя бы одного персонажа",
         "4. Происходить в определённой локации",
-        "5. Иметь понятное доверие (trust_change) или оставить 0",
-        "6. Иметь эмоциональное описание",
-        "7. Иметь реакции NPC",
+        "5. Иметь эмоциональное описание",
+        "6. Иметь реакции NPC",
     ])
 
     return "\n".join(parts)
@@ -362,10 +363,6 @@ async def generate_ai_choices(
                         tag=item.get("tag", "custom"),
                         characters_involved=item.get("characters_involved", []),
                         location=item.get("location"),
-                        food_cost=int(item.get("food_cost", 0) or 0),
-                        water_cost=int(item.get("water_cost", 0) or 0),
-                        health_risk=int(item.get("health_risk", 0) or 0),
-                        trust_change=int(item.get("trust_change", 0) or 0),
                         emotional_consequence=item.get("emotional_consequence", "")[:500],
                         npc_reactions=npc_reactions[:3],
                     )
@@ -967,10 +964,14 @@ async def update_character_state(
     session: AsyncSession,
     character_name: str,
     mood: str | None = None,
-    trust_delta: int = 0,
+    story_state: str | None = None,
     day_index: int | None = None,
 ) -> None:
-    """Обновляет состояние персонажа: настроение, доверие."""
+    """Обновляет состояние персонажа: настроение, нарративное состояние.
+
+    story_state — описание изменения состояния словами, без цифр и метрик.
+    Хранится в metadata_json как {"story_state": "..."}.
+    """
 
     q = select(WorldCharacter).where(WorldCharacter.name == character_name)
     result = await session.execute(q)
@@ -979,7 +980,17 @@ async def update_character_state(
     if char:
         if mood is not None:
             char.mood = mood
-        char.trust_stay = max(0, min(10, char.trust_stay + trust_delta))
+        if story_state is not None:
+            meta = {}
+            if char.metadata_json:
+                try:
+                    parsed = json.loads(char.metadata_json)
+                    if isinstance(parsed, dict):
+                        meta = parsed
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            meta["story_state"] = story_state[:1000]
+            char.metadata_json = json.dumps(meta, ensure_ascii=False)
         if day_index is not None:
             char.last_seen_day = day_index
         await session.flush()
@@ -998,7 +1009,7 @@ class AIConsequence:
     affected_locations: list[str]  # какие локации изменятся
     world_impact: str  # как изменится мир
     mood_shift: str  # как изменится настроение мира
-    trust_changes: dict[str, int]  # {имя персонажа: изменение доверия}
+    character_changes: dict[str, str]  # {имя персонажа: нарративное изменение состояния}
 
 
 @dataclass(frozen=True)
@@ -1024,7 +1035,11 @@ def _build_consequence_prompt(ctx: WorldContext, choice_text: str, choice_tag: s
     if ctx.active_characters:
         parts.append("ПЕРСОНАЖИ МИРА:")
         for char in ctx.active_characters[:5]:
-            parts.append(f"- {char['name']} ({char['role']}): доверие {char['trust_stay']}/10")
+            state = char.get("state")
+            parts.append(
+                f"- {char['name']} ({char['role']})"
+                + (f": {state[:100]}" if state else "")
+            )
         parts.append("")
 
     if ctx.active_locations:
@@ -1050,7 +1065,7 @@ def _build_consequence_prompt(ctx: WorldContext, choice_text: str, choice_tag: s
         '      "affected_locations": ["локация"],',
         '      "world_impact": "как изменится мир (1 предложение)",',
         '      "mood_shift": "tense|peaceful|chaotic|hopeful|grim",',
-        '      "trust_changes": {"имя": число}',
+        '      "character_changes": {"имя": "как изменилось состояние"}',
         '    }',
         '  ],',
         '  "resolution": "как цепочка завершается (1-2 предложения)"',
@@ -1061,6 +1076,7 @@ def _build_consequence_prompt(ctx: WorldContext, choice_text: str, choice_tag: s
         "- Каждое последствие реально влияет на мир",
         "- Последствия каскадны: одно порождает следующее",
         "- Персонажи могут реагировать и менять отношение",
+        "- character_changes описывает изменение состояния словами, без цифр",
     ])
 
     return "\n".join(parts)
@@ -1093,7 +1109,7 @@ def _parse_ai_consequence_chain(response_text: str) -> AIConsequenceChain | None
                 affected_locations=item.get("affected_locations", []),
                 world_impact=item.get("world_impact", "")[:200],
                 mood_shift=item.get("mood_shift", "tense"),
-                trust_changes=item.get("trust_changes", {}),
+                character_changes=item.get("character_changes", {}),
             )
         )
 
@@ -1143,7 +1159,7 @@ async def generate_consequence_chain(
                             affected_locations=item.get("affected_locations", []),
                             world_impact=item.get("world_impact", "")[:200],
                             mood_shift=item.get("mood_shift", "tense"),
-                            trust_changes=item.get("trust_changes", {}),
+                            character_changes=item.get("character_changes", {}),
                         )
                     )
             if chain:
@@ -1167,17 +1183,17 @@ async def apply_consequence_chain(
 
     Обновляет:
     - Настроение мира (WorldSnapshot)
-    - Доверие персонажей (WorldCharacter)
+    - Состояние персонажей (WorldCharacter) — нарративно, без цифр
     - Записывает события (WorldEvent)
     """
 
     for consequence in chain.chain:
-        # Обновляем доверие персонажей
-        for char_name, trust_delta in consequence.trust_changes.items():
+        # Обновляем состояние персонажей (нарративное, без цифр)
+        for char_name, state_change in consequence.character_changes.items():
             await update_character_state(
                 session,
                 character_name=char_name,
-                trust_delta=trust_delta,
+                story_state=state_change,
                 day_index=day_index,
             )
 

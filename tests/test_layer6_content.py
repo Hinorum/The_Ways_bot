@@ -1,9 +1,9 @@
 """Слой 6 — контент-данные: офлайн-карты выравнены под единый конвейер.
 
-Трата ресурсов и урон отключены: food_cost/water_cost/health_risk всегда 0.
-Офлайн-тропы лора и карты главы выравниваются по архетипу и названию
-(детерминированно на день) по trust_change/emotional_consequence/npc_reactions,
-уважая явные значения модели.
+Трата ресурса, урон и числовое доверие отключены: food_cost/water_cost/
+health_risk/trust_change всегда 0. Офлайн-тропы лора и карты главы
+выравниваются по архетипу и названию (детерминированно на день) по
+emotional_consequence/npc_reactions.
 """
 
 from __future__ import annotations
@@ -33,13 +33,13 @@ def test_rich_profile_is_deterministic_per_day() -> None:
 
 def test_rich_profile_breathes_across_days() -> None:
     seen = {
-        (r["trust_change"], r["emotional_consequence"])
+        r["emotional_consequence"]
         for r in (card_rich_payload("Прыжок в огонь", "risk", d) for d in range(1, 21))
     }
     assert len(seen) > 1  # один и тот же троп в разные дни звучит по-разному
 
 
-def test_rich_profile_costs_are_zero_and_trust_matches_archetype() -> None:
+def test_rich_profile_costs_are_zero_and_trust_is_zeroed() -> None:
     for day in range(1, 9):
         risk = card_rich_payload("Риск", "risk", day)
         care = card_rich_payload("Дом", "care", day)
@@ -48,18 +48,17 @@ def test_rich_profile_costs_are_zero_and_trust_matches_archetype() -> None:
             assert rich["food_cost"] == 0
             assert rich["water_cost"] == 0
             assert rich["health_risk"] == 0
+            assert rich["trust_change"] == 0  # числовое доверие отключено
             assert rich["emotional_consequence"]
             assert 1 <= len(rich["npc_reactions"]) <= 2
             for entry in rich["npc_reactions"]:
                 assert entry["name"] and entry["reaction"]
-        assert care["trust_change"] >= 1
-        assert cunning["trust_change"] <= 0
 
 
 def test_rich_profile_falls_back_to_care_on_unknown_tag() -> None:
     rich = card_rich_payload("Что-то", "not-a-tag", 1)
     assert rich["food_cost"] == 0
-    assert rich["trust_change"] >= 1
+    assert rich["trust_change"] == 0
 
 
 def test_every_offline_trope_enriches_validly() -> None:
@@ -68,8 +67,7 @@ def test_every_offline_trope_enriches_validly() -> None:
             rich = card_rich_payload(title, tag, day)
             assert rich["food_cost"] == 0
             assert rich["health_risk"] == 0
-            if tag != "care":
-                pass  # доверие risk/cunning может быть и нулевым — это ок
+            assert rich["trust_change"] == 0
 
 
 # ── Payload-конвейер ───────────────────────────────────────────────────────
@@ -79,17 +77,15 @@ def test_offline_cards_carried_through_assemble_carry_rich_fields() -> None:
     cards = _assemble_cards({}, 5)
     assert len(cards) == 3
     for card in cards:
-        tag = card["tag"]
         assert card["food_cost"] == 0
         assert card["water_cost"] == 0
         assert card["health_risk"] == 0
         assert card["emotional_consequence"]
         assert json.loads(card["npc_reactions_json"])
-        if tag == "care":
-            assert card["trust_change"] >= 1
+        assert card["trust_change"] == 0  # числовое доверие отключено
 
 
-def test_assemble_keeps_explicit_trust_and_drops_cost_fields() -> None:
+def test_assemble_zeroes_trust_and_drops_cost_fields() -> None:
     chapter = {
         "cards": [
             {
@@ -112,7 +108,7 @@ def test_assemble_keeps_explicit_trust_and_drops_cost_fields() -> None:
     waiting = cards[0]
     assert waiting["food_cost"] == 0  # ресурсы/урон всегда 0
     assert waiting["health_risk"] == 0
-    assert waiting["trust_change"] == 3  # явное значение модели уважаем
+    assert waiting["trust_change"] == 0  # числовое доверие отключено
     for card in cards:
         assert card["food_cost"] == 0
         assert card["health_risk"] == 0
@@ -127,4 +123,5 @@ def test_card_payload_costs_zero_and_rich_fields_derived() -> None:
     assert payload["food_cost"] == 0
     assert payload["water_cost"] == 0
     assert payload["health_risk"] == 0
+    assert payload["trust_change"] == 0
     assert payload["npc_reactions_json"] != "[]"

@@ -413,7 +413,7 @@ async def results_body(finished: Round, session=None) -> str:
             text += f"\n\n{plugin_text}"
     except Exception:
         logger.debug("Plugin results format не собран", exc_info=True)
-    # AI World Engine: эффекты мира (атмосфера, цепочка, trust)
+    # AI World Engine: эффекты мира (атмосфера, цепочка)
     try:
         from app.tally import format_world_effects
         if session is not None:
