@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 # Стартовый откат для первого запуска: не глубже полусуток.
 _CURSOR_FALLBACK_HOURS = 12
+# Перекрытие при чтении курсора: переводы, пришедшие в ту же секунду, что и
+# последний обработанный, у индексатора могут появиться с задержкой. Берём
+# курсор на N секунд раньше и пересматриваем окно заново каждым циклом —
+# идемпотентность держится на tx_hash (duplicate_tx / refund_duplicated).
+_CURSOR_OVERLAP_SECONDS = 90
 # TonAPI v2 отдаёт страницы транзакций; идём вглубь, пока не накроем курсор
 # или не упрёмся в пустое место (история кончилась / подряд пустые страницы).
 _PAGE_LIMIT = max(1, settings.watch_page_limit)
@@ -878,6 +883,27 @@ async def _maybe_auto_grant(session, transfer: Transfer, player: Player) -> str:
 
 
 async def _read_cursor(session) -> int:
+    """Курсор CI/времени с окном перекрытия.
+
+    Чистовой курсор хранит последний обработанный utime, но читается он на
+    _CURSOR_OVERLAP_SECONDS раньше: у провайдеров входящий перевод публикуется
+    не мгновенно, и транзакция ТОЙ ЖЕ секунды, что курсор, не должна остаться
+    за бортом навсегда. Окно пересматривается каждый цикл — лишние повторы
+    гасит идемпотентность по tx_hash.
+    """
+    row = await session.get(WatcherState, CURSOR_KEY)
+    if row is not None and row.value.isdigit():
+        return max(0, int(row.value) - _CURSOR_OVERLAP_SECONDS)
+    return int((datetime.now(timezone.utc) - timedelta(hours=_CURSOR_FALLBACK_HOURS)).timestamp())
+
+
+async def _read_cursor_raw(session) -> int:
+    """Чистовое значение курсора (без окна перекрытия) или фолбэк.
+
+    Нужно watch_once, чтобы курсор никогда не откатывался назад: окно
+    перекрытия читается раньше, но записывать можно только значение не
+    младше уже записанного.
+    """
     row = await session.get(WatcherState, CURSOR_KEY)
     if row is not None and row.value.isdigit():
         return int(row.value)
@@ -1078,6 +1104,7 @@ async def watch_once(bot: Bot | None = None) -> None:
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
+        raw_cursor = await _read_cursor_raw(session)
     transfers, api_ok, source = await _collect_transfers(since)
     processed_through = since
     for i, transfer in enumerate(transfers):
@@ -1101,17 +1128,23 @@ async def watch_once(bot: Bot | None = None) -> None:
         await confirm_aged_pending(bot)
     except Exception:
         logger.exception("Подтверждение отложенных ставок упало (не мешает циклу)")
+    # Курсор двигаем ТОЛЬКО по полному проходу (api_ok): частичная пачка при
+    # деградации обоих провайдеров содержит дыры по utime, и быстрый перевод
+    # курсора вперёд потерял бы те транзакции, до которых проход не дошёл.
+    # Следующий цикл начнётся с той же позиции и догонит пропущенное.
+    if api_ok and processed_through > raw_cursor:
+        async with SessionLocal() as session:
+            await _write_cursor(session, processed_through)
+    if api_ok:
+        async with SessionLocal() as session:
+            # Сердцебиение ставится каждым успешным циклом — даже без
+            # переводов: тишина в цепочке это здоровье, а не простой.
+            await _write_beat(session)
+            await _write_source(session, source)
     if transfers:
         logger.info(
-            "Цикл watcher: найдено %d переводов, курсор %d → %d (источник %s)",
-            len(transfers), since, processed_through, source,
+            "Цикл watcher: найдено %d переводов, курсор %d → %d, проход %s (источник %s)",
+            len(transfers), since, processed_through,
+            "полный" if api_ok else "ЧАСТИЧНЫЙ (курсор не сдвинут)",
+            source,
         )
-    if processed_through > since or api_ok:
-        async with SessionLocal() as session:
-            if processed_through > since:
-                await _write_cursor(session, processed_through)
-            if api_ok:
-                # Сердцебиение ставится каждым успешным циклом — даже без
-                # переводов: тишина в цепочке это здоровье, а не простой.
-                await _write_beat(session)
-                await _write_source(session, source)

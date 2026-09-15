@@ -226,6 +226,70 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
             await db.commit()
 
 
+async def test_overlap_window_recovers_same_second_transfer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transfer при utime == курсору: окно перекрытия читает курсор на 90 сек раньше,
+    транзакция той же секунды попадает в фильтр и обрабатывается."""
+    from app import ton_watch
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    tx_same = ton_watch.Transfer("same-1", "0:" + os.urandom(32).hex(), to_nano(0.3), "", base + 5)
+    tx_later = ton_watch.Transfer("later-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 6)
+    fetch = AsyncMock(return_value=([tx_same, tx_later], True))
+    monkeypatch.setattr(ton_watch, "fetch_recent_transfers", fetch)
+    try:
+        # Курсор установлен на tx_same.utime: без перекрытия транзакция была бы пропущена.
+        async with SessionLocal() as db:
+            db.add(WatcherState(key=ton_watch.CURSOR_KEY, value=str(base + 5)))
+            await db.commit()
+
+        await ton_watch.watch_once()
+        async with SessionLocal() as db:
+            refunds = (
+                await db.execute(
+                    select(Payout).where(Payout.kind == "refund", Payout.tx_hash.in_(["same-1", "later-1"]))
+                )
+            ).scalars().all()
+        assert len(refunds) == 2  # обе транзакции обработаны, несмотря на utime == курсору
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                WatcherState.__table__.delete().where(WatcherState.key == ton_watch.CURSOR_KEY)
+            )
+            await db.execute(
+                Payout.__table__.delete().where(
+                    Payout.kind == "refund", Payout.tx_hash.in_(["same-1", "later-1"])
+                )
+            )
+            await db.commit()
+
+
+async def test_degraded_cycle_freezes_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Неполный проход (api_ok=False): курсор должен остаться на месте,
+    чтобы дыра в индексе не превратилась в永久ное отверстие."""
+    from app import ton_watch
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    fetch = AsyncMock(return_value=([], False, "none"))
+    monkeypatch.setattr(ton_watch, "_collect_transfers", fetch)
+    try:
+        async with SessionLocal() as db:
+            db.add(WatcherState(key=ton_watch.CURSOR_KEY, value=str(base)))
+            await db.commit()
+
+        await ton_watch.watch_once()
+        async with SessionLocal() as db:
+            row = await db.get(WatcherState, ton_watch.CURSOR_KEY)
+            assert int(row.value) == base  # курсор не сдвинулся
+    finally:
+        async with SessionLocal() as db:
+            await db.execute(
+                WatcherState.__table__.delete().where(WatcherState.key == ton_watch.CURSOR_KEY)
+            )
+            await db.commit()
+
+
 async def test_watch_beats_on_quiet_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """Тишина в цепочке — здоровье: сердцебиение ставится и без переводов.
 
