@@ -482,6 +482,7 @@ async def treasury_expected_state(session) -> TreasuryDrift | None:
             await session.execute(
                 select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
                     Income.kind == MANUAL_IN_KIND,
+                    Income.network == network,
                 )
             )
         ).scalar_one()
@@ -491,6 +492,7 @@ async def treasury_expected_state(session) -> TreasuryDrift | None:
             await session.execute(
                 select(func.coalesce(func.sum(Income.amount_nanotons), 0)).where(
                     Income.kind == MANUAL_OUT_KIND,
+                    Income.network == network,
                 )
             )
         ).scalar_one()
@@ -555,6 +557,7 @@ async def record_manual_adjustment(
         amount_nanotons=amount,
         player_id=None,
         round_id=None,
+        network="testnet" if settings.is_testnet else "mainnet",
         unit_ref=f"manual:{uuid.uuid4().hex}",
         note=(note or "")[:200],
     )

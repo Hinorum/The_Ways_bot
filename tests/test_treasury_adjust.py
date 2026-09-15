@@ -241,6 +241,8 @@ async def test_treasury_expected_state_filters_by_network(ton_on, monkeypatch) -
                     Income(kind="ton", amount_nanotons=to_nano(3), unit_ref="seed-net-a", network=active),
                     Income(kind="ton", amount_nanotons=to_nano(9), unit_ref="seed-net-b", network=other),
                     Income(kind="ton", amount_nanotons=to_nano(15), unit_ref="seed-net-c", network=""),
+                    Income(kind=ops.MANUAL_OUT_KIND, amount_nanotons=to_nano(2), unit_ref="seed-net-d", network=other),
+                    Income(kind=ops.MANUAL_IN_KIND, amount_nanotons=to_nano(5), unit_ref="seed-net-e", network=""),
                 ]
             )
             await db.commit()
@@ -255,7 +257,7 @@ async def test_treasury_expected_state_filters_by_network(ton_on, monkeypatch) -
         async with SessionLocal() as db:
             await db.execute(
                 delete(Income).where(
-                    Income.unit_ref.in_(["seed-net-a", "seed-net-b", "seed-net-c"])
+                    Income.unit_ref.in_(["seed-net-a", "seed-net-b", "seed-net-c", "seed-net-d", "seed-net-e"])
                 )
             )
             await db.commit()
@@ -460,6 +462,7 @@ async def test_adjust_command_with_explicit_amount(ton_on, admin_only) -> None:
             ).scalar_one()
         assert row.amount_nanotons == to_nano(0.75)
         assert "пополнение казны" in row.note
+        assert row.network == ("testnet" if settings.is_testnet else "mainnet")
         text = message.answer.call_args.args[0]
         assert "Ручное пополнение" in text
     finally:
