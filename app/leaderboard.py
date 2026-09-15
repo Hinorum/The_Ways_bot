@@ -350,6 +350,34 @@ async def mark_week_leaderboard_ready(session, week_key: str) -> None:
         marker.value = week_key
 
 
+async def mark_leaderboards_for_finished(session, finished) -> None:
+    """Закрытый день — последний день недели/месяца? Ставим метки готовности.
+
+    Общий шаг планировщика (_finalize_new_day_job) И ручного /advance: если
+    последний день недели/месяца закрыт вручную, без меток копилки останутся
+    навсегда незакрытыми (приз забрать нельзя).
+    """
+    if finished is None or getattr(finished, "opens_at", None) is None:
+        return
+    from app.weeks import iso_week_key
+
+    day_index = getattr(finished, "day_index", None)
+    if is_last_day_of_month(finished.opens_at):
+        month_key = finished.opens_at.strftime("%Y-%m")
+        await mark_month_leaderboard_ready(session, month_key)
+        logger.info(
+            "Эпилог дня %s — последний день месяца %s: лидерборд готов к выплате",
+            day_index, month_key,
+        )
+    if is_last_day_of_week(finished.opens_at):
+        week_key = iso_week_key(finished.opens_at)
+        await mark_week_leaderboard_ready(session, week_key)
+        logger.info(
+            "Эпилог дня %s — последний день недели %s: недельный лидерборд готов к выплате",
+            day_index, week_key,
+        )
+
+
 async def settle_month_if_due(bot: Bot | None = None) -> bool:
     """Выплачивает копилку прошедших месяцев (безопасно при параллельных вызовах)."""
     async with _month_settle():

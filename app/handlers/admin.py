@@ -115,6 +115,8 @@ async def cmd_advance(message: Message) -> None:
                 from app.stakes import finalize_day_payouts
                 await finalize_day_payouts(session, round_row)
                 await write_epilogue(session, round_row)
+                from app.leaderboard import mark_leaderboards_for_finished
+                await mark_leaderboards_for_finished(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         elif round_row.status.value == "tallying":
             round_row, closed_here = await finish_tally(session, round_row)
@@ -123,6 +125,8 @@ async def cmd_advance(message: Message) -> None:
                 from app.stakes import finalize_day_payouts
                 await finalize_day_payouts(session, round_row)
                 await write_epilogue(session, round_row)
+                from app.leaderboard import mark_leaderboards_for_finished
+                await mark_leaderboards_for_finished(session, round_row)
             nxt, created = await create_next_round_detailed(session)
         else:
             return

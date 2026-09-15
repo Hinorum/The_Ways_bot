@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -51,6 +52,20 @@ _wallet_lock = asyncio.Lock()
 _provider = None
 _wallet = None
 _wallet_network: str | None = None
+
+# Сериализация очереди выплат: dispatch_pending_payouts вызывают ЗАКРЫТИЕ дня
+# (кик в тике), ton-settle (каждые 120 с) и ручные /finalize, /return,
+# /refinalize. _reset_retriable оживляет строки sending → pending, поэтому
+# без лока второй цикл, стартовавший, пока первый вещает, задвоил бы платёж.
+_DISPATCH_LOCK = asyncio.Lock()
+
+
+@asynccontextmanager
+async def dispatch_lock():
+    """Лок очереди выплат для ручных блокирующих операций (admin /refinalize):
+    удаление/перемаркировка строк не должна попадать в цикл диспетчера."""
+    async with _DISPATCH_LOCK:
+        yield
 
 # Глобальный идентификатор сети (конфиг #19 блокчейна): входит в wallet_id
 # контракта v5, поэтому с одной мнемоникой тестнет- и мейннет-v5-кошельки
@@ -499,6 +514,14 @@ async def _hydrate_player_dests(session, network: str) -> int:
 
 
 async def dispatch_pending_payouts(limit: int = 50, bot: Bot | None = None) -> int:
+    """Разгребает очередь выплат. Весь цикл под _DISPATCH_LOCK: только один
+    диспетчер в эвентлупе вещает, _reset_retriable не восстанавливает строки,
+    которые другой цикл взял в работу (иначе двойная рассылка)."""
+    async with _DISPATCH_LOCK:
+        return await _dispatch_pending_payouts_impl(limit=limit, bot=bot)
+
+
+async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
     sent = 0
     network = "testnet" if settings.is_testnet else "mainnet"
     async with SessionLocal() as session:

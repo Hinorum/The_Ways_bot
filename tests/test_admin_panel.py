@@ -15,6 +15,7 @@ from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
 from app.handlers import panel as panel_mod
 from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
 from app.rounds import _POT_CACHE
+from sqlalchemy import select
 
 
 def make_message(uid: int) -> SimpleNamespace:
@@ -75,7 +76,12 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
             last_error="have no alive peers: задай LITESERVER_CONFIG_URL"[:200],
         ))
         await db.commit()
-    _POT_CACHE[97_500] = (1_250_000_000, 3)
+    async with SessionLocal() as g:
+        pot_round = (
+            await g.execute(select(Round).where(Round.day_index == 97_500))
+        ).scalar_one()
+    # Кэш банка ключуется по id раунда: чиним тест вместе с пультом.
+    _POT_CACHE[pot_round.id] = (1_250_000_000, 3)
 
     try:
         async with SessionLocal() as g:
@@ -88,7 +94,7 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         assert "LITESERVER_CONFIG_URL" in text  # причина видна прямо тут
         assert "/resetgame confirm" in text  # справочник команд на месте
     finally:
-        _POT_CACHE.pop(97_500, None)
+        _POT_CACHE.pop(pot_round.id, None)
         from sqlalchemy import delete as _d
 
         async with SessionLocal() as db:
