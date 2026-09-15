@@ -266,7 +266,7 @@ async def test_overlap_window_recovers_same_second_transfer(monkeypatch: pytest.
 
 async def test_degraded_cycle_freezes_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Неполный проход (api_ok=False): курсор должен остаться на месте,
-    чтобы дыра в индексе не превратилась в永久ное отверстие."""
+    чтобы дыра в индексе не превратилась в вечную дыру."""
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
