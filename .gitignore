@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+data/
+media/generated/
+*.log
+out.txt
+*_out.txt
+test_dump*.txt
+t*.txt
+analysis_output.txt
+.DS_Store

@@ -1,0 +1,374 @@
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+LIBPQ_QUERY_KEYS = {
+    "sslmode",
+    "channel_binding",
+    "gssencmode",
+    "target_session_attrs",
+}
+
+
+def sqlalchemy_url(url: str) -> str:
+    raw = url.strip()
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://") :]
+    if raw.startswith("postgresql://") and "+asyncpg" not in raw:
+        raw = "postgresql+asyncpg://" + raw[len("postgresql://") :]
+    parsed = urlparse(raw)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    kept = [(key, value) for key, value in pairs if key.lower() not in LIBPQ_QUERY_KEYS]
+    # Не пересобираем URL без изменений: urlunparse теряет «//» у схем без netloc (например, sqlite).
+    if len(kept) == len(pairs):
+        return raw
+    return urlunparse(parsed._replace(query=urlencode(kept)))
+
+
+def postgres_connect_args(url: str) -> dict:
+    converted = sqlalchemy_url(url)
+    if not converted.startswith("postgresql"):
+        return {}
+    # Всегда создаём таблицы в public: при подмене/сбросе Postgres-ресурса
+    # Render search_path новой базы может не содержать схемы, и любой DDL
+    # падал бы «no schema has been selected to create in».
+    args: dict = {"server_settings": {"search_path": "public"}}
+    host = urlparse(converted).hostname or ""
+    if host not in {"localhost", "127.0.0.1"}:
+        args["ssl"] = True
+    return args
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    bot_token: str = ""
+    admin_ids: str = ""
+    round_seconds: int = 82_800
+    tally_seconds: int = 3_600
+    # Сетка расписания (UTC): новый день открывается в day_open_hour_utc,
+    # голосование идёт до day_close_hour_utc следующего дня.
+    day_open_hour_utc: int = 11
+    # Час закрытия голосования (UTC): в этот же час — мгновенный подсчёт и
+    # итоги сразу; следующий день дофинализируется фоном чуть позже (эпилог,
+    # инлайн-генерация нового дня, его обложка и пост).
+    day_close_hour_utc: int = 11
+    # ЛЕГАСИ: ранний час прегенерации следующего дня. Прегенерация убрана —
+    # день рендерится сразу при открытии; поле оставлено, чтобы прод-конфиг
+    # с PREGEN_HOUR_UTC не падал на неизвестной переменной.
+    pregen_hour_utc: int = 9
+    database_url: str = "sqlite+aiosqlite:///./data/the_way.db"
+    timezone: str = "Europe/Moscow"
+    media_dir: str = "./media/generated"
+    # Imgbb — бесплатное хранилище картинок (без карты).
+    # Если задан — картинки загружаются в imgbb и served по URL.
+    # Если не задан — fallback на локальный диск (теряется при деплое).
+    # Получить ключ: https://api.imgbb.com/ (бесплатно, мгновенно).
+    imgbb_api_key: str = ""
+    use_free_images: bool = True
+    # Токен Pollinations (pollinations.ai → auth): поднимает лимиты анонимного
+    # tier'а — без него общий IP Render регулярно ловит 429 на весь день.
+    pollinations_token: str = ""
+    # Google Gemini Image («nano banana», gemini-2.5-flash-image) — первичный
+    # генератор кадра дня при заданном ключе AI Studio. Free-tier квот легко
+    # хватает на 1-2 генерации в сутки; при сбое лестница уходит в Pollinations,
+    # а после неё — детерминированный PIL-фолбэк.
+    gemini_api_key: str = ""
+    gemini_image_model: str = "gemini-2.5-flash-image"
+    gemini_image_timeout_seconds: int = 75
+    use_free_story_llm: bool = True
+    # Бесплатные модели неторопливы: таймауты щедрые, чтобы день собирался
+    # нейросетью, а не фолбэками. Настраивается из Environment.
+    llm_timeout_seconds: int = 75
+    image_timeout_seconds: int = 90
+    story_models: str = "openai,mistralai/mistral-small-4,openai/gpt-5.4-nano"
+    # Параметры генерации: температура, лимит токенов, штрафы за повтор.
+    # temperature 0.85 — баланс между креативностью и связностью.
+    # frequency_penalty 0.3 — штраф за повтор одних и тех же токенов.
+    # presence_penalty 0.2 — штраф за повтор тем/концепций.
+    llm_temperature: float = 0.85
+    llm_max_tokens: int = 3500
+    llm_frequency_penalty: float = 0.3
+    llm_presence_penalty: float = 0.2
+    llm_api_key: str = ""
+    llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"
+    llm_models: str = "meta-llama/Llama-3.3-70B-Instruct"
+
+    ton_enabled: bool = False
+    ton_network: str = "mainnet"
+    treasury_address: str = ""
+    treasury_mnemonic: str = ""
+    treasury_testnet_address: str = ""
+    treasury_testnet_mnemonic: str = ""
+    ton_api_base: str = "https://tonapi.io"
+    ton_api_base_testnet: str = "https://testnet.tonapi.io"
+    ton_api_key: str = ""
+    # Версия контракта казначея: auto (детект по адресу), v4r2 или v5r1.
+    treasury_wallet_version: str = "auto"
+    # Свежий JSON-конфиг лайтсерверов для pytoniq (ADNL/UDP). Встроенный
+    # конфиг тестнета периодически мёртв («have no alive peers»): сюда
+    # подставляется рабочий URL, например официальный
+    # https://ton.org/testnet-global.config.json
+    liteserver_config_url: str = ""
+    # Резервный источник истории переводов (Toncenter API v3): включается
+    # автоматически, когда TonAPI лжёт (404 истории при живом кошельке) или лежит.
+    toncenter_api_base: str = "https://toncenter.com"
+    toncenter_api_base_testnet: str = "https://testnet.toncenter.com"
+    toncenter_api_key: str = ""
+    # Нижняя граница ставки; верхней нет — «кит» ограничен только своим кошельком.
+    stake_min_ton: float = 0.5
+    # Распределение фонда дня (в сумме со ставками победителей — 100%):
+    # 96% делят поставившие на верный путь пропорционально, 1% копится в
+    # Фонд Стаи (накопительный, раздача вручную хранителем), 2% капают в
+    # копилку недели (в понедельник её делят топ-3 по верным ответам),
+    # 0,5% — хранителю, 0,5% — в копилку месяца (/top). Проценты в долях.
+    owner_rake_pct: float = 0.5
+    leaderboard_rake_pct: float = 0.5
+    weekly_pot_pct: float = 2.0
+    pack_fund_pct: float = 1.0
+    # Недельный лидерборд: минимальное число дней голосования за неделю,
+    # чтобы претендовать на призовое место (анти-мультиаккаунт), и доли
+    # мест «1-е,2-е,3-е» в процентах: сильнейший забирает больше (50/30/20).
+    # Дополнительно для выплаты нужна хотя бы одна ставка в этой неделе
+    # (и в каждом новом периоде — заново). Ничья: выше тот, кто поставил
+    # больше Gram за период, при равенстве ставок — кто раньше нажал Claim
+    # (кнопка в /start), далее — меньший player_id.
+    weekly_min_days: int = 4
+    weekly_prize_pcts: str = "50,30,20"
+    # Анти-гринд лидербордов: сколько верных путей в периоде засчитывается
+    # одному игроку. 0 = без потолка (прежнее поведение). Способ, отличный от
+    # «минимум дней», чтобы платные переголосования не давали сколь угодно
+    # большой перевес по «верности»: дольше всего (за и порог потолка) все
+    # сравниваются как равные и решают реальная игровая частота и ставки.
+    leaderboard_correct_cap: int = 0
+    # Сглаживание дисперсии месячной копилки: вместо «забрал всё сильнейший»
+    # платим топ-K игроков месячного лидерборда, доли заданы весами (в сотых
+    # долях, см. weekly). 1 = прежнее «забрал всё» (ровно один получатель).
+    # Пример: "60,30,10" → три получателя с весами 60%/30%/10%. По умолчанию
+    # месяц живёт той же механикой, что и неделя: топ-3 с весами 50/30/20.
+    monthly_prize_top_k: int = 3
+    monthly_prize_weights: str = "50,30,20"
+    # Претензии на призовые места лидербордов: кнопка Claim в /start.
+    # Решает только ничьи по (верность, вклад Gram) — победитель ничьей —
+    # кто раньше нажал Claim в течение периода. 0/False выключает кнопку
+    # (такие ничьи решаются меньшим player_id).
+    leaderboard_claim_enabled: bool = True
+    # «Кожа в игре» при выборе пути дня: на каждый путь, за которым есть хотя бы
+    # одна подтверждённая ставка TON, прибавляется этот вес к счёту голосов
+    # (0 = выключено, прежний чисто-подсчётный закон). Софт-поправка к MINORITY:
+    # путь с реальными деньгами получает детерминированный перевес, и закон не
+    # может выбрать путь, за который НИКТО не рискнул граммом. Бонус плоский
+    # (константа, а не доля банка) — чтобы «кит» со 100 TON не решал исход
+    # дешевле, чем дюжина честных голосов, но и нулевая ставка не пробивалась.
+    stake_vote_bonus_weight: int = 0
+    # Приоритет ставящих при выборе пути дня (защита от MINORITY-патологии).
+    # Если включено: путь, за который НИКТО не подтвердил ставку, не может
+    # победить, пока существует путь со ставкой; при отсутствии ставящих —
+    # исход по прежнему чистому закону. 0/False = прежний чисто-подсчётный
+    # выбор. Дополняет stake_vote_bonus_weight: тот поднимает счёт, а этот
+    # отсекает полностью безденежные пути (важно для MINORITY, где побеждает
+    # наименьший счёт и «бонус» мог бы отодвинуть ставящий путь назад).
+    win_rule_prefers_staked: bool = False
+    # Каркас разрешения споров: формальные жалобы на итоги дней (/dispute),
+    # которые хранитель разбирает резолюцией; компенсация — обычная выплата.
+    # Чисто аддитивно (новые таблицы + хранительские команды), потоков денег
+    # победителям не трогает и исходов задним числом не отменяет.
+    disputes_enabled: bool = True
+    owner_wallet_address: str = ""
+    stake_confirm_seconds: int = 40
+    # Столько раз зависшая выплата ретраится, прежде чем окончательно встать в failed.
+    payout_max_attempts: int = 5
+    # Оценка комиссии сети на один исходящий перевод (Gram). Вычитается из
+    # призового пула ЗАРАНЕЕ и пропорционально доле каждого победителя:
+    # приз приходит «чистыми», казначей не финансирует газ из своего остатка,
+    # и очередь выплат не встаёт на середине дня с «недостаточно средств».
+    payout_fee_gram: float = 0.005
+    # Перевод меньше этой суммы (Gram) не создаётся вовсе: комиссия съела бы
+    # большую его часть. Пыльные доли капают в копилку недели — видно в итогах.
+    min_payout_gram: float = 0.02
+    # Нормализация газа на ВОЗВРАТАХ ставок. Обычно с каждого возврата держится
+    # плоская комиссия payout_fee_gram (одна и та же и для мелкой, и для крупной
+    # ставки — регрессивно: мелкий возврат теряет большую долю). Если задать
+    # refund_fee_ratio > 0 (доля, напр. 0.01 = 1%), возврат = ставка × (1 − доля):
+    # комиссия становится пропорциональной сумме и не съедает микро-возвраты
+    # целиком. 0 = прежняя плоская комиссия payout_fee_gram.
+    refund_fee_ratio: float = 0.0
+    # Потолок одной попытки вещания перевода (сек): зависший лайтсервер не
+    # имеет права замораживать весь цикл выплат — таймаут = обычный ретрай.
+    payout_send_timeout_seconds: int = 90
+    # Глубина скана входящих переводов казначея за один цикл наблюдателя:
+    # до watch_max_pages страниц по watch_page_limit транзакций. Курсор делает
+    # покрытие кумулятивным — после простоя хвост догоняется за пару циклов.
+    watch_page_limit: int = 100
+    watch_max_pages: int = 50
+    # Авто-возврат только свежим переводам: после сброса базы курсор watcher'а
+    # обнуляется и вся история казны перечитывается заново — без этого лимита
+    # старый спам-хлам вечно превращается в новые dead-letter возвраты.
+    watch_refund_max_age_days: int = 14
+    # Переводы дешевле этой суммы (Gram) полностью НЕ создают авто-возврат:
+    # газ возврата (payout_fee_gram) стоит в разы дороже самого перевода, и
+    # микро-спам превращался бы в убыточные dead-letter выплаты. Пыль остаётся
+    # в казне, игроку ничего не сообщается (шум для ботов).
+    refund_min_gram: float = 0.05
+    # Грубый стоп-фильтр генераций перед постингом в чаты.
+    content_filter: bool = True
+
+    # Час вечерней микросцены («вечерний привал») в UTC: короткая сцена между
+    # утренней главой и закрытием голосования. 16:00 UTC = 19:00 Москвы.
+    whisper_hour_utc: int = 16
+
+    # Длина сюжетной арки забега в месяцах от старта (1..3). Арка живёт своей
+    # жизнью, копилки недели/месяца остаются календарными.
+    run_length_months: int = 1
+    # Длина ПЕРВОГО сезона в месяцах. Короткий первый сезон («сильный», быстрый
+    # финал) цепляет новичков, а сезоны 2+ берут run_length_months.
+    # Поставь равным run_length_months, чтобы все арки были одной длины.
+    first_season_months: int = 1
+    # Замкнутый месячный цикл: якорь забега форсируется на 1-е число месяца,
+    # поэтому каждая арка — ровно один календарный месяц (~28-31 день) независимо
+    # от даты сброса. Кульминация (День Первого Лая) совпадает с копилкой месяца,
+    # следующий сезон стартует 1-го числа «утром после Лая». Выключение возвращает
+    # прежнее поведение: арка считается от фактического дня сброса.
+    closed_month_loop: bool = True
+
+    # Личное эхо проигравшим: после итогов каждый, кто голосовал мимо
+    # победившего пути, получает в личку короткое «чем пахла бы его тропа».
+    # По умолчанию выключено — шум рассылок забирает внимание от канона.
+    personal_echo: bool = False
+
+    # ── Контур выживания отключён: трата ресурсов, урон и пермадет не работают.
+    # pack_state/needs удалены из кода — не обновляются и не влияют на игру.
+    # Ниже — флаги сублистем, генеривших шум и отвлекавших сюжет.
+    # Шрамы мира: новые шрамы не создаются (прошлые, если были, остаются в БД).
+    world_scars: bool = False
+    # Эмоциональный профиль стаи (усталость/надежда/паранойя) включён:
+    # ядро остаётся числовым в БД, наружу — только фаза-слово, без цифр.
+    emotion_system: bool = True
+    # Деревья последствий + динамические правила: заморожены. Ветви создаются,
+    # но advance_branch не вызывается — типовая ветвь висела бы вечно, а скан
+    # активных ветвей шёл каждый день при нулевом эффекте. Флаг выключен:
+    # блоки в промпт не попадают, ежедневные запросы к БД не делаются.
+    branch_system: bool = False
+    # Эхо не плодит LLM-цепочки поколений — следы только всплывают текстом.
+    echo_chains: bool = False
+    # LLM-каскады дня: генерация последствий выбора, снимка мира, нового NPC,
+    # реакций NPC (до 4 в день) и AI-записей бестиария. Выключено: день идёт
+    # на одном основном вызове главы + детерминированных блоках (отношения,
+    # cog, фокус-линия статикой), бестиарий пишет детерминированные записи.
+    llm_cascades: bool = False
+
+    # Личные дубликаты рассылок: подписанные игроки (dm_subscribed в /start)
+    # получают итоги дня, новый день с обложкой, вечерний пост и прочие
+    # анонсы в личку бота параллельно чатам, где бот админ. Отписка — кнопкой
+    # в /start. Выключение флага возвращает прежнее поведение (только группы).
+    player_dm: bool = True
+
+    # Мир игры. Название попадает на картинки и в тексты бота,
+    # brief — в системный промпт нейросети. Можно поменять из Environment,
+    # не трогая код: получится другой мир с той же механикой.
+    world_name: str = "Эхо Стаи"
+    world_brief: str = (
+        "Фанатская история по мотивам Lost Dogs, не связанная с официальной командой. "
+        "До этого была другая Стая и другая игра: ровная, предсказуемая, где один сон "
+        "снился миллионам лап сразу. Её ветеран — пёс по прозвищу Еретик, Свернувший "
+        "с Пути — заскучал первым и увёл тех, кому стало тесно, через Последний Путь. "
+        "Теперь Стая живёт в лабиринте нестабильных порталов, где каждый коридор собран из "
+        "чужих решений, а правила переписаны заново: закон дня бывает разным, память "
+        "ходит по кругу как валюта, и ни одно последствие не исчезает насовсем. Где-то "
+        "в глубине лабиринта звучит Первый Лай — зов домой или ловушка. Администратор "
+        "пытается вернуть всем ровный сон без ошибок, чиня лабиринт по своей ведомости. "
+        "Старый дневник хранит спорные версии каждого дня — записанную "
+        "и помнитую стаёй — и шепчет расхождения между ними. Он не врёт, но говорит "
+        "полуправдами: его страницы показывают разный текст в каждом свете. Стая "
+        "проходила этот месяц много раз, и лабиринт помнит её: в стенах живёт "
+        "Крыса — память стёртых кругов, она помнит все прошлые выборы и финалы. "
+        "На последний день месяца у двери встаёт Анубис — судья самого цикла: он "
+        "взвешивает счёт против выбора и решает, разомкнётся ли петля. День Первого "
+        "Лая — суд: что стая кладёт на чашу, то и станет осадком следующего круга."
+    )
+
+    revote_enabled: bool = True
+    revote_stars: int = 25
+    revote_ton: float = 0.1
+    # Глухой день: раз в N дней закон не объявляется утром — публикуется только
+    # хеш-обязательство, а сам закон вскрывается в итогах. 0 — выключить.
+    sealed_day_every: int = 10
+    # Период само-пинга /health: держит free plan Render от засыпания, чтобы
+    # день открывался по UTC-сетке. 0 — выключить.
+    self_ping_seconds: int = 600
+    port: int = 10000
+    webhook_base_url: str = ""
+    webhook_secret: str = ""
+    # Токен доступа к /health (мониторинг). Пусто — /health открыт (совместимо
+    # с дефолтным чеком жизни Render). Задан — снимок (очередь выплат, возраст
+    # тика, watcher) доступен только с авторизацией.
+    health_token: str = ""
+    render_external_url: str = ""
+    render_external_hostname: str = ""
+    # Личные приглашения (?start=ref_<id>_<токен>): секрет подписывает токен,
+    # чтобы нельзя было подставить чужой id в ссылку. Пусто — рефералки выключены.
+    referral_secret: str = ""
+    # Username бота без «@» (t.me/<username>?start=...). Пусто — бот запросит
+    # get_me при первом /invite и закэширует; если и это не выйдет, ссылки
+    # не строятся до появления значения.
+    bot_username: str = ""
+
+    @property
+    def admin_id_set(self) -> set[int]:
+        ids: set[int] = set()
+        for part in self.admin_ids.replace(" ", "").split(","):
+            if part.isdigit():
+                ids.add(int(part))
+        return ids
+
+    @property
+    def story_model_chain(self) -> list[str]:
+        models = [model.strip() for model in self.story_models.split(",") if model.strip()]
+        return models or ["openai"]
+
+    @property
+    def llm_model_chain(self) -> list[str]:
+        models = [model.strip() for model in self.llm_models.split(",") if model.strip()]
+        return models or ["meta-llama/Llama-3.3-70B-Instruct"]
+
+    @property
+    def async_database_url(self) -> str:
+        return sqlalchemy_url(self.database_url)
+
+    @property
+    def public_base_url(self) -> str:
+        if self.webhook_base_url:
+            return self.webhook_base_url.rstrip("/")
+        if self.render_external_url:
+            return self.render_external_url.rstrip("/")
+        if self.render_external_hostname:
+            return f"https://{self.render_external_hostname.rstrip('/')}"
+        return ""
+
+    @property
+    def use_webhook(self) -> bool:
+        return bool(self.public_base_url)
+
+    @property
+    def is_testnet(self) -> bool:
+        return self.ton_network.strip().lower() == "testnet"
+
+    @property
+    def active_treasury_address(self) -> str:
+        return self.treasury_testnet_address if self.is_testnet else self.treasury_address
+
+    @property
+    def active_treasury_mnemonic(self) -> str:
+        return self.treasury_testnet_mnemonic if self.is_testnet else self.treasury_mnemonic
+
+    @property
+    def active_ton_api_base(self) -> str:
+        return self.ton_api_base_testnet if self.is_testnet else self.ton_api_base
+
+    @property
+    def active_toncenter_api_base(self) -> str:
+        return self.toncenter_api_base_testnet if self.is_testnet else self.toncenter_api_base
+
+
+settings = Settings()

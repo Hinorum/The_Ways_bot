@@ -1,0 +1,425 @@
+from __future__ import annotations
+
+import logging
+
+from aiogram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from app.async_utils import spawn
+from app.broadcast import announce_new_day
+from app.config import settings
+from app.db import SessionLocal
+from app.models import RoundStatus, WatcherState
+from app.rounds import (
+    _now,
+    claim_announcement,
+    close_voting,
+    ensure_current_round,
+    finish_tally,
+    get_active_round,
+    get_latest_round,
+    utc_aware,
+)
+from app.tally import award_points
+
+
+logger = logging.getLogger(__name__)
+scheduler = AsyncIOScheduler(timezone=settings.timezone)
+_bot: Bot | None = None
+
+
+def set_bot(bot: Bot) -> None:
+    global _bot
+    _bot = bot
+
+
+async def tick(bot: Bot | None = None) -> None:
+    bot = bot or _bot
+    from app.ops import is_game_paused, mark_tick
+
+    await mark_tick()
+    # Стоп-кран: дни не открываются и не закрываются, анонсы молчат.
+    # Watcher (отдельная джоба) продолжает возвращать входящие переводы,
+    # а очередь выплат — разгребаться: чужие деньги зависнуть не должны.
+    async with SessionLocal() as session:
+        if await is_game_paused(session):
+            return
+    async with SessionLocal() as session:
+        try:
+            previous = await get_latest_round(session)
+            current = await ensure_current_round(session)
+
+            # Самолечение: дни, застрявшие не-закрытыми позади актуального
+            from app.rounds import heal_stale_rounds
+
+            healed = await heal_stale_rounds(session)
+            if healed:
+                logger.warning("Вылечено застрявших дней: %d", healed)
+
+            # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
+            from app.rounds import get_run_anchor, refresh_round_pot_cache
+
+            await get_run_anchor(session)
+            if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
+                await refresh_round_pot_cache(session, current)
+
+            # Первый запуск или только что созданный день — анонсим без итогов.
+            if previous is None or current.id > previous.id:
+                if await claim_announcement(session, current):
+                    await announce_new_day(bot, current)
+
+            now = _now()
+            if current.status == RoundStatus.OPEN and now >= utc_aware(current.voting_ends_at):
+                await close_voting(session, current)
+            if current.status == RoundStatus.TALLYING and now >= utc_aware(current.tally_ends_at):
+                finished, closed_here = await finish_tally(session, current)
+                if closed_here:
+                    await award_points(session, finished)
+                    from app.stakes import finalize_day_payouts
+
+                    await finalize_day_payouts(session, finished)
+                    spawn(_payout_dispatch_job(), "payout_dispatch")
+                    spawn(_announce_results_job(finished.id), "announce_results")
+                    spawn(_finalize_new_day_job(finished.id), "finalize_new_day")
+        except Exception:
+            logger.exception("тик закрытия дня упал — откат транзакции")
+            await session.rollback()
+
+
+async def _announce_results_job(finished_id: int) -> None:
+    """Мгновенная рассылка сухих итогов дня (без эпилога и нового дня).
+
+    Дёргается отдельной джобой сразу после вскрытия, чтобы не ждать
+    нейро-контент нового дня. Своя сессия — запущена из тика после закрытия
+    его собственной транзакции.
+    """
+    try:
+        from app.broadcast import announce_results
+        from app.models import Round
+
+        async with SessionLocal() as session:
+            finished = (
+                await session.execute(
+                    select(Round).where(Round.id == finished_id).options(selectinload(Round.cards))
+                )
+            ).scalar_one_or_none()
+            if finished is None:
+                logger.warning("Итоги дня %s: раунд не найден", finished_id)
+                return
+            await announce_results(_bot, finished)
+    except Exception:
+        logger.exception("Рассылка итогов дня упала (id=%s)", finished_id)
+
+
+async def _finalize_new_day_job(finished_id: int) -> None:
+    """Тяжёлая доработка нового дня — фоном, по готовности.
+
+    Итоги уже разосланы отдельно (_announce_results_job). Здесь: write_epilogue
+    (фиксация в БД) → флаг лидерборда (последний день недели/месяца) → новый
+    день (инлайн-генерация) → анонс. Эпилог как текст отключён (слой сюжета
+    снят), но write_epilogue остаётся как пометка лидера БД.
+    Свои краткоживущие сессии (нельзя переиспользовать сессию тика — она за
+    пределами этого контекста).
+    """
+    from app.models import Round
+
+    try:
+        from app.broadcast import announce_new_day
+        from app.rounds import create_next_round_detailed, write_epilogue
+
+        # 1. Эпилог подтверждает выбор и закрепляется в БД (идемпотентно).
+        # cards грузим сразу: write_epilogue ходит по ним синхронно, ленивая
+        # подгрузка вне await дала бы MissingGreenlet.
+        async with SessionLocal() as session:
+            finished = (
+                await session.execute(
+                    select(Round).where(Round.id == finished_id).options(selectinload(Round.cards))
+                )
+            ).scalar_one_or_none()
+            if finished is None:
+                logger.warning("Доработка дня %s: раунд не найден", finished_id)
+                return
+            # Индекс дня берём из живой сессии: ниже finished расцепляется —
+            # читать его day_index из отвязанного объекта было бы ошибкой.
+            finished_day_index = finished.day_index
+            await write_epilogue(session, finished)
+            # Если последний день месяца — ставим флаг готовности лидерборда.
+            from app.leaderboard import (
+                is_last_day_of_month, mark_month_leaderboard_ready,
+                is_last_day_of_week, mark_week_leaderboard_ready,
+            )
+
+            if finished.opens_at is not None and is_last_day_of_month(finished.opens_at):
+                month_key = finished.opens_at.strftime("%Y-%m")
+                await mark_month_leaderboard_ready(session, month_key)
+                logger.info(
+                    "Эпилог дня %d — последний день месяца %s: лидерборд готов к выплате",
+                    finished_day_index, month_key,
+                )
+            if finished.opens_at is not None and is_last_day_of_week(finished.opens_at):
+                from app.weeks import iso_week_key
+                week_key = iso_week_key(finished.opens_at)
+                await mark_week_leaderboard_ready(session, week_key)
+                logger.info(
+                    "Эпилог дня %d — последний день недели %s: недельный лидерборд готов к выплате",
+                    finished_day_index, week_key,
+                )
+        # 2. Материализуем и открываем новый день. День рендерится сразу
+        # целиком по известному итогу «вчера» — без заготовки из часа подсчёта.
+        # Финализация открывает ровно день после закрытого (N+1), а не
+        # latest+1: так тик, уже создавший N+1, не провоцирует эскалацию в N+2
+        # (двойной день, потерянные итоги N+1).
+        async with SessionLocal() as session:
+            nxt, created = await create_next_round_detailed(
+                session, base_day_index=finished_day_index
+            )
+        if created:
+            # finished не передаём: итоги уже разосланы отдельным постом.
+            await announce_new_day(_bot, nxt)
+    except Exception:
+        logger.exception("Финализация нового дня упала (id=%s)", finished_id)
+
+
+async def _payout_dispatch_job() -> None:
+    """Немедленная отправка вознаграждений после вскрытия итогов."""
+    try:
+        from app.ton_pay import dispatch_pending_payouts
+
+        sent = await dispatch_pending_payouts(bot=_bot)
+        logger.info("Диспетчер выплат (kick): отправлено %d", sent)
+    except Exception:
+        logger.exception("Kick выплат не удался (ретраи продолжатся по расписанию)")
+
+
+async def _watch_job() -> None:
+    """Watcher ставок с ботом: игрок получает личное о судьбе перевода."""
+    from app.ton_watch import watch_once
+
+    await watch_once(bot=_bot)
+
+
+async def _watch_job_guarded() -> None:
+    """Обёртка _watch_job с алертом при падении."""
+    await _alert_guarded("ton-watch", _watch_job)
+
+
+async def _ton_maintenance() -> None:
+    """Финализация дней, очередь выплат, ретраи, копилки недели и месяца."""
+    from app.leaderboard import settle_month_if_due, settle_week_if_due
+    from app.ops import check_anomalies
+    from app.ton_pay import settle_closed_rounds
+
+    try:
+        await settle_closed_rounds(bot=_bot)
+    except Exception:
+        logger.exception("settle_closed_rounds упал (повторится через 120с)")
+    try:
+        await settle_week_if_due(bot=_bot)
+    except Exception:
+        logger.exception("settle_week_if_due упал")
+    try:
+        await settle_month_if_due(bot=_bot)
+    except Exception:
+        logger.exception("settle_month_if_due упал")
+    try:
+        problems = await check_anomalies(_bot)
+        if problems:
+            logger.warning("Аномалии: %s", "; ".join(problems))
+    except Exception:
+        logger.exception("Проверка аномалий упала (не мешает обслуживанию)")
+
+
+async def _ton_maintenance_guarded() -> None:
+    """Обёртка _ton_maintenance с алертом при падении."""
+    await _alert_guarded("ton-settle", _ton_maintenance)
+
+
+async def boot_maintenance() -> None:
+    """Разовые задачи при старте: свежий бэкап БД до всего остального."""
+    from app.backups import backup_job
+
+    await _alert_guarded("db-backup@boot", backup_job)
+
+
+def _register_job(job_id: str, func, trigger: str, **kwargs) -> None:
+    """Регистрация джобы с изоляцией сбоев.
+
+    Инцидент: обязательный аргумент bot в одной джобе ронял всю
+    start_scheduler() — игра оставалась без тиков, watcher'а и выплат,
+    а вебхук продолжал отвечать, маскируя мёртвое расписание. Теперь
+    кривая регистрация глушит только саму себя.
+    """
+    try:
+        scheduler.add_job(
+            func,
+            trigger,
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            **kwargs,
+        )
+    except Exception:
+        logger.exception("Джоба %s не зарегистрирована", job_id)
+
+
+async def _alert_guarded(job_id: str, func) -> None:
+    """Фоновая авто-задача с алертом админу при падении.
+
+    П.13 аудита: бэкап, шлифовка картинок и воскресные отчёты подолгу
+    живут без присмотра, а падают молча — APScheduler глушит исключение, и
+    сломанный отчёт недели выглядит как «отчёта просто не было». Оборачиваем
+    обслужку: исключение логируется и немедленно уходит админу, при этом
+    наружу НЕ пробрасывается (одна сломанная джоба не роняет расписание).
+    """
+    try:
+        await func()
+    except Exception as exc:
+        logger.exception("Фоновая задача «%s» упала: %s", job_id, exc)
+        try:
+            if _bot is not None and settings.admin_id_set:
+                from app.ops import notify_admins
+
+                await notify_admins(
+                    _bot,
+                    f"⚠️ Фоновая задача «{job_id}» упала: {exc} "
+                    f"(детали в логах планировщика)",
+                )
+        except Exception:
+            logger.exception("Алерт о падении «%s» не доставлен", job_id)
+
+
+def shutdown_scheduler() -> None:
+    """Остановка без AttributeError, если планировщик так и не стартовал."""
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
+
+async def _cleanup_watcher_state_job() -> None:
+    """Вычищает одноразовые/устаревшие ключи watcher_state.
+
+    Ключи вида micro_event:*, teaser:*, pecho:*, sniff:*, memquiz:* живут по
+    одному на раунд и никогда не чистятся сами (append-only), как и устаревшие
+    img_stubs:* / day_projection:* / art_bible:* за прошлые дни. На больших
+    сезонах таблица растёт бесконечно — раз в неделю держим её в узде,
+    оставляя только живые настройки и потоковые якоря.
+    """
+    try:
+        async with SessionLocal() as session:
+            stmt = select(WatcherState).where(
+                (WatcherState.key.like("micro_event:%"))
+                | (WatcherState.key.like("teaser:%"))
+                | (WatcherState.key.like("pecho:%"))
+                | (WatcherState.key.like("sniff:%"))
+                | (WatcherState.key.like("memquiz:%"))
+                | (WatcherState.key.like("img_stubs:%"))
+                | (WatcherState.key.like("day_projection:%"))
+                | (WatcherState.key.like("art_bible:%"))
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            if not rows:
+                return
+            for row in rows:
+                await session.delete(row)
+            await session.commit()
+            logger.info("watcher_state: вычищено %d устаревших ключей", len(rows))
+    except Exception as exc:
+        logger.warning("Очистка watcher_state не удалась: %s", exc)
+
+
+def start_scheduler() -> None:
+    from functools import partial
+
+    from app.backups import backup_job
+
+    _register_job("way-tick", tick, "interval", seconds=15)
+    # Суточный бэкап в «мёртвый» час: 04:17 MSK.
+    _register_job(
+        "db-backup",
+        partial(_alert_guarded, "db-backup", backup_job),
+        "cron",
+        hour=4,
+        minute=17,
+    )
+    if settings.ton_enabled:
+        _register_job("ton-watch", _watch_job_guarded, "interval", seconds=60)
+        _register_job("ton-settle", _ton_maintenance_guarded, "interval", seconds=120)
+    # Сброс разросшегося watcher_state: еженедельно в ночь после нагрузок.
+    _register_job(
+        "ws-cleanup",
+        _cleanup_watcher_state_job,
+        "cron",
+        day_of_week="sun",
+        hour=3,
+        minute=30,
+    )
+    # Напоминание о голосовании: 10:00 UTC (за час до закрытия в 11:00 UTC)
+    _register_job(
+        "vote-reminder", _vote_reminder_job, "cron",
+        hour=10, minute=0, timezone="UTC",
+    )
+    scheduler.start()
+
+
+async def _vote_reminder_job() -> None:
+    """Напоминание игрокам проголосовать: DM тем, кто ещё не голосовал сегодня."""
+    bot = _bot
+    if bot is None:
+        return
+    try:
+        async with SessionLocal() as session:
+            current = await get_active_round(session)
+            if current is None or current.status != RoundStatus.OPEN:
+                return
+            # Одна рассылка на дату: маркер выбирает победивший процесс.
+            from app.ops import claim_once
+
+            if not await claim_once(session, f"job:vote-reminder:{_now().strftime('%Y-%m-%d')}"):
+                return
+            # Получаем всех игроков, которые ещё не голосовали
+            from sqlalchemy import select as _select
+
+            from app.models import Vote
+
+            voted_result = await session.execute(
+                _select(Vote.player_id).where(Vote.round_id == current.id)
+            )
+            voted_ids = {row[0] for row in voted_result.all()}
+
+            from app.models import Player
+
+            all_players = await session.execute(
+                _select(Player).where(Player.dm_subscribed == True)
+            )
+            unbotted = [p for p in all_players.scalars().all() if p.id not in voted_ids]
+
+            if not unbotted:
+                return
+
+            law_name = {
+                "MAJORITY": "Большинство",
+                "MINORITY": "Меньшинство",
+                "MEDIAN": "Медиана",
+            }.get(current.win_rule.value, "???")
+
+            text = (
+                f"🐺 Голосование закрывается через час.\n"
+                f"⚖️ Закон: {law_name}\n"
+                f"📖 {current.chapter_title}\n\n"
+                f"Остался час — выбери тропу."
+            )
+
+            from app.broadcast import _dm_send_all
+
+            async def _deliver(pid: int) -> None:
+                try:
+                    await bot.send_message(pid, text)
+                except Exception:
+                    pass
+
+            sent = await _dm_send_all(bot, _deliver, "vote-reminder")
+            logger.info("Напоминание о голосовании отправлено: %d сообщений", sent)
+    except Exception as exc:
+        logger.warning("Ошибка напоминания о голосовании: %s", exc)

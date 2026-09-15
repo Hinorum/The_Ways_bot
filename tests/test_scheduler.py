@@ -1,0 +1,206 @@
+﻿"""Планировщик e2e: тик закрывает голосование, готовит и открывает следующий день.
+
+Работаем с глобальной БД (SessionLocal), как настоящий тик; сетевые
+генераторы заменены мгновенными — интересует только конечный автомат дня.
+"""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import delete, func, select
+
+from app.config import settings
+from app.db import SessionLocal
+from app.models import Card, PreparedDay, Round, RoundStatus, WinRule
+from app.scheduler import tick
+
+
+@pytest.fixture(autouse=True)
+def offline_generation(monkeypatch):
+    """Шаблонная генерация работает офлайн и без стабов; тон только выключаем,
+    чтобы тик не трогал сеть."""
+    monkeypatch.setattr(settings, "ton_enabled", False)
+
+
+async def _seed(day_index: int, status: RoundStatus, *, voting_in: timedelta, tally_in: timedelta) -> Round:
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as db:
+        round_row = Round(
+            day_index=day_index,
+            status=status,
+            win_rule=WinRule.MAJORITY,
+            rule_commitment="c:s",
+            chapter_title=f"День {day_index}",
+            chapter_text="Текст.",
+            lore_summary="Канон.",
+            cover_path="",
+            opens_at=now - timedelta(hours=30),
+            voting_ends_at=now + voting_in,
+            tally_ends_at=now + tally_in,
+            winner_card=0 if status == RoundStatus.TALLYING else None,
+            vote_counts_json='{"0": 1}' if status == RoundStatus.TALLYING else "{}",
+        )
+        db.add(round_row)
+        await db.commit()
+        return round_row.id
+
+
+async def _cleanup(*day_indexes: int) -> None:
+    async with SessionLocal() as db:
+        await db.execute(Round.__table__.delete().where(Round.day_index.in_(day_indexes)))
+        await db.execute(delete(PreparedDay).where(PreparedDay.day_index.in_([d + 1 for d in day_indexes])))
+        await db.commit()
+
+
+async def _status_of(day_index: int) -> RoundStatus | None:
+    async with SessionLocal() as db:
+        row = (
+            await db.execute(select(Round.status).where(Round.day_index == day_index).limit(1))
+        ).scalar_one_or_none()
+    return row
+
+
+async def _drain_background(timeout: float = 10.0) -> None:
+    """Тик плодит фоновые задачи (прегенерация, тизер, диспетчер выплат) —
+    даём им закрыть сессии БД, иначе SQLite-лок валит очистку соседних тестов."""
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+    pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+    if pending:
+        done, pending = await asyncio.wait(pending, timeout=timeout)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_tick_closes_voting_when_window_over() -> None:
+    await _seed(9531, RoundStatus.OPEN, voting_in=timedelta(minutes=-5), tally_in=timedelta(hours=1))
+    try:
+        await tick(None)
+        assert await _status_of(9531) == RoundStatus.TALLYING
+    finally:
+        # Тизер окон подсчёта уходит фоном в этом же окне — ждём, чтобы
+        # его сессия БД не держала SQLite-лок для следующего теста.
+        await _drain_background()
+        await _cleanup(9531)
+
+
+async def test_tick_does_not_prepare_next_day_during_tally_window() -> None:
+    """Прегенерация убрана: в (легаси) окне подсчёта заготовка следующего
+    дня не создаётся — день откроется инлайн-генерацией при финализации."""
+    await _seed(9541, RoundStatus.TALLYING, voting_in=timedelta(hours=-3), tally_in=timedelta(minutes=20))
+    try:
+        await tick(None)
+        await _drain_background()
+        async with SessionLocal() as db:
+            prepared = (
+                await db.execute(
+                    select(PreparedDay).where(PreparedDay.day_index == 9542).limit(1)
+                )
+            ).scalar_one_or_none()
+        assert prepared is None
+    finally:
+        await _cleanup(9541)
+
+
+async def test_tick_finishes_day_and_opens_next() -> None:
+    round_id = await _seed(9551, RoundStatus.TALLYING, voting_in=timedelta(hours=-3), tally_in=timedelta(minutes=-1))
+    try:
+        await tick(None)
+        assert await _status_of(9551) == RoundStatus.CLOSED
+        # Итоги формируются в тике сразу (до создания нового дня). Пост нового
+        # дня уходит фоном, когда готов нейро-контент, — ждём фоновые джобы,
+        # чтобы проверить, что день всё же открылся и день-итог завершён.
+        await _drain_background()
+        async with SessionLocal() as db:
+            fresh = (
+                await db.execute(select(Round).where(Round.day_index == 9552).limit(1))
+            ).scalar_one_or_none()
+            card_count = 0 if fresh is None else (
+                await db.execute(
+                    select(func.count()).select_from(Card).where(Card.round_id == fresh.id)
+                )
+            ).scalar_one()
+        assert fresh is not None
+        assert fresh.status == RoundStatus.OPEN
+        assert fresh.chapter_title
+        assert card_count == 3
+        del round_id
+    finally:
+        await _drain_background()
+        await _cleanup(9551, 9552)
+
+
+async def test_start_scheduler_registers_only_zero_arg_jobs(monkeypatch) -> None:
+    """Инцидент-регрессия: джоба с обязательным bot роняла boot_game целиком —
+    игра оставалась без тиков и watcher'а. Каждая джоба обязана вызываться
+    без аргументов, а кривая регистрация не смеет убить остальные."""
+    import inspect
+
+    from app import scheduler as scheduler_mod
+
+    registered: list[tuple[str, object]] = []
+
+    def fake_add_job(func, trigger, *, id, **kwargs):
+        registered.append((id, func))
+
+    monkeypatch.setattr(scheduler_mod.scheduler, "add_job", fake_add_job)
+    monkeypatch.setattr(scheduler_mod.scheduler, "start", lambda: None)
+    monkeypatch.setattr(settings, "ton_enabled", True)
+
+    scheduler_mod.start_scheduler()
+
+    ids = [job_id for job_id, _func in registered]
+    assert {"way-tick", "db-backup", "ton-watch", "ton-settle",
+            "ws-cleanup", "vote-reminder"} <= set(ids)
+    for job_id, fn in registered:
+        try:
+            inspect.signature(fn).bind()
+        except TypeError as exc:
+            raise AssertionError(f"джоба {job_id} требует аргументы: {exc}") from exc
+
+
+def test_shutdown_scheduler_safe_when_never_started() -> None:
+    """Остановка сервиса до старта планировщика не должна падать."""
+    from app.scheduler import shutdown_scheduler
+
+    if not scheduler_mod_running():
+        shutdown_scheduler()  # не падает
+
+
+def scheduler_mod_running() -> bool:
+    from app.scheduler import scheduler as sched
+
+    return bool(sched.running)
+
+
+async def test_alert_guarded_notifies_admin_and_swallows(monkeypatch) -> None:
+    """П.13: сломавшаяся фоновая задача бьёт админа в лоб, но не роняет
+    планировщик — исключение не пробрасывается наружу."""
+    from app import scheduler as scheduler_mod
+
+    notified: list[str] = []
+
+    async def fake_notify_admins(bot, text):
+        notified.append(text)
+
+    async def boom():
+        raise RuntimeError("backup-сломался")
+
+    async def fine():
+        return 42
+
+    monkeypatch.setattr(scheduler_mod, "_bot", object())
+    monkeypatch.setattr(scheduler_mod.settings, "admin_ids", "1,2")
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify_admins)
+
+    await scheduler_mod._alert_guarded("db-backup", boom)
+    assert notified and "db-backup" in notified[0] and "backup-сломался" in notified[0]
+
+    notified.clear()
+    assert await scheduler_mod._alert_guarded("weekly-report", fine) is None
+    assert not notified  # успешная задача молчит
+
