@@ -906,7 +906,8 @@ async def _toncenter_account(address: str) -> dict:
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/accountInformation"
     headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
     async with httpx.AsyncClient(timeout=15) as client:
-        response = await http_get_with_retry(client, url, params={"address": address}, headers=headers)
+        # v3 ждёт query-параметр «account», а не «address» (как в /api/v3/transactions).
+        response = await http_get_with_retry(client, url, params={"account": address}, headers=headers)
         response.raise_for_status()
         return response.json()
 

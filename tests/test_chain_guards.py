@@ -300,3 +300,47 @@ async def test_treasury_diag_shows_watcher_aim_and_cursor(monkeypatch) -> None:
             if row is not None:
                 await db.delete(row)
                 await db.commit()
+
+
+class _AccountResp:
+    def __init__(self, status_code: int = 200, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+async def test_toncenter_account_uses_account_param(monkeypatch) -> None:
+    """Toncenter v3 ждёт query-параметр «account», а не «address» — иначе баланс
+    казначея в фолбэке не читался (подтверждено по /api/v3/transactions)."""
+    treasury = "0:" + "ee" * 32
+    monkeypatch.setattr(settings, "treasury_address", treasury)
+    monkeypatch.setattr(settings, "ton_enabled", True)
+
+    calls: list[tuple] = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info) -> bool:
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            calls.append((url, dict(params or {})))
+            return _AccountResp(200, {"balance": "1234567890", "status": "active"})
+
+
+    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", _Client)
+    data = await ton_pay._toncenter_account(treasury)
+    assert data["balance"] == "1234567890"
+    _, params = calls[-1]
+    assert "account" in params and params["account"] == treasury
+    assert "address" not in params
