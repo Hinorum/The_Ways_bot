@@ -14,7 +14,6 @@ from app.db import SessionLocal
 from app.handlers import _admin_panel_text, cmd_panel, on_panel_action
 from app.handlers import panel as panel_mod
 from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
-from app.rounds import _POT_CACHE
 from sqlalchemy import select
 
 
@@ -80,8 +79,15 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         pot_round = (
             await g.execute(select(Round).where(Round.day_index == 97_500))
         ).scalar_one()
-    # Кэш банка ключуется по id раунда: чиним тест вместе с пультом.
-    _POT_CACHE[pot_round.id] = (1_250_000_000, 3)
+        # Банк дня живёт в БД, а не в in-memory кэше: сеем ставки напрямую.
+        g.add_all(
+            [
+                Stake(round_id=pot_round.id, player_id=97_510, amount_nanotons=1_000_000_000, tx_hash="pn-a", status="confirmed"),
+                Stake(round_id=pot_round.id, player_id=97_511, amount_nanotons=250_000_000, tx_hash="pn-b", status="confirmed"),
+                Stake(round_id=pot_round.id, player_id=97_512, amount_nanotons=999_999_999, tx_hash="pn-c", status="rejected"),
+            ]
+        )
+        await g.commit()
 
     try:
         async with SessionLocal() as g:
@@ -94,11 +100,11 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
         assert "LITESERVER_CONFIG_URL" in text  # причина видна прямо тут
         assert "/resetgame confirm" in text  # справочник команд на месте
     finally:
-        _POT_CACHE.pop(pot_round.id, None)
         from sqlalchemy import delete as _d
 
         async with SessionLocal() as db:
             await db.execute(_d(Payout).where(Payout.status == "failed"))
+            await db.execute(_d(Stake).where(Stake.round_id == pot_round.id))
             await db.execute(_d(Round).where(Round.day_index == 97_500))
             await db.commit()
 

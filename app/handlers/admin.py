@@ -143,7 +143,7 @@ async def cmd_advance(message: Message) -> None:
         # Ни одного подписанного чата — покажем всё прямо здесь.
         await message.answer(await results_message(round_row))
         await message.answer(
-            status_text(
+            await status_text(
                 nxt,
                 show_title=True,
                 include_story=True,

@@ -141,34 +141,45 @@ async def test_no_bot_no_broadcast() -> None:
     assert await announce_new_day(None, SimpleNamespace(day_index=1)) == []
 
 
-def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None:
+async def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None:
     """Банк дня в посте — только сумма, без числа ставок."""
-    from app import rounds as rounds_mod
     from app.broadcast import status_text
+    from app.models import Stake
 
     monkeypatch.setattr(settings, "ton_enabled", True)
     round_row = _round(9400, tmp_path)
-    rounds_mod._POT_CACHE[round_row.id] = (1_250_000_000, 3)
-    try:
-        text = status_text(round_row)
-        assert "Банк дня: 1.25 Gram" in text
-        assert "ставок" not in text
-    finally:
-        rounds_mod._POT_CACHE.pop(round_row.id, None)
+    async with SessionLocal() as db:
+        try:
+            db.add(
+                Stake(
+                    round_id=round_row.id,
+                    player_id=9_401,
+                    amount_nanotons=1_250_000_000,
+                    tx_hash="t9400",
+                    status="confirmed",
+                )
+            )
+            await db.commit()
+            text = await status_text(round_row)
+            assert "Банк дня: 1.25 Gram" in text
+            assert "ставок" not in text
+        finally:
+            await db.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+            await db.commit()
 
     # Пустой банк — строки нет вовсе.
-    text = status_text(round_row)
+    text = await status_text(round_row)
     assert "Банк дня" not in text
 
 
-def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
+async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
     """Шаблонный день: пути читаются текстом статуса, медиа дня отключено."""
     from app.broadcast import day_media_group, status_text
 
     round_row = _round(9300, tmp_path)
     for card in round_row.cards:
         card.image_path = ""
-    status = status_text(round_row)
+    status = await status_text(round_row)
     for position in range(3):
         assert f"{['I', 'II', 'III'][position]}. Путь {position} — описание" in status
     assert len(status) <= 4096

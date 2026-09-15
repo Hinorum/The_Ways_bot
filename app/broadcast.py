@@ -65,7 +65,7 @@ def _utc(value: datetime) -> datetime:
     return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
 
 
-def status_text(
+async def status_text(
     round_row: Round, *, show_title: bool = True, include_story: bool = True
 ) -> str:
     from app.models import RULE_PHRASES
@@ -95,9 +95,11 @@ def status_text(
     )
     bank_line = ""
     if settings.ton_enabled and getattr(round_row, "money_mode", True) is not False:
-        from app.rounds import get_cached_pot
+        from app.db import SessionLocal
+        from app.rounds import round_pot
 
-        nano, _bets = get_cached_pot(round_row.id)
+        async with SessionLocal() as db:
+            nano, _bets = await round_pot(db, round_row.id)
         if nano:
             bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram"
     # Бесшовные сутки: подсчёт мгновенный, оба времени совпадают — хватит
@@ -320,7 +322,7 @@ async def _deliver_day(
         await bot.send_photo(chat_id, photo=media[0].media, caption=media[0].caption)
     await bot.send_message(
         chat_id,
-        status_text(
+        await status_text(
             round_row,
             # Медиа отключено, заголовок живёт в тексте поста — его не дублировать незачем.
             show_title=True,

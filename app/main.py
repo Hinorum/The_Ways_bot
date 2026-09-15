@@ -158,24 +158,16 @@ async def boot_game(bot) -> None:
         await tick(bot)
     except Exception:
         log.exception("Первый тик не удался — повторится по расписанию")
-    # Холодный старт: кэши синхронных постов (банк дня, якорь сезона) греем
-    # сразу, не дожидаясь первого тика — иначе /panel или анонс в чат увидят
-    # (0,0), а под вебхуком первый апдейт способен прийти до тика вовсе.
+    # Холодный старт: кэш якоря сезона греется сразу, не дожидаясь первого тика —
+    # иначе /panel или анонс в чат увидят пустой якорь, а под вебхуком первый
+    # апдейт способен прийти до тика вовсе. Банк дня читается из БД на лету.
     try:
         from app.db import SessionLocal
-        from app.models import RoundStatus
-        from app.rounds import get_active_round, get_run_anchor, refresh_round_pot_cache
+        from app.rounds import get_active_round, get_run_anchor
 
         async with SessionLocal() as session:
             await get_run_anchor(session)
-            day = await get_active_round(session)
-            if (
-                day is not None
-                and day.status == RoundStatus.OPEN
-                and settings.ton_enabled
-                and day.money_mode
-            ):
-                await refresh_round_pot_cache(session, day)
+            await get_active_round(session)
     except Exception:
         log.exception("Прогрев кэшей дня не удался — первый тик догонит")
     start_scheduler()

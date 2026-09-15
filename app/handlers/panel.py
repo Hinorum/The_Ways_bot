@@ -140,9 +140,9 @@ async def _build_panel_text(session) -> str:
         f"День {rnd.get('day_index')} · {rnd.get('status')} · закрытие {closing} UTC"
     )
     if settings.ton_enabled:
-        from app.rounds import get_cached_pot
+        from app.rounds import round_pot
 
-        nano, bets = get_cached_pot(int(rnd.get("id") or 0))
+        nano, bets = await round_pot(session, int(rnd.get("id") or 0))
         lines.append(f"💰 Банк дня: {nano / 1e9:.2f} Gram · ставок {bets}")
         # Фонд Стаи: накопление хранителя, раздача вручную.
         try:

@@ -106,7 +106,7 @@ async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> 
     assert "DYOR" in text and "не отвечают" in text
 
 
-def test_status_text_shows_results_time() -> None:
+async def test_status_text_shows_results_time() -> None:
     """В статусе дня видно и дедлайн голосования, и время итогов."""
     from app.broadcast import status_text
     from app.models import Card, Round, RoundStatus, WinRule
@@ -127,6 +127,6 @@ def test_status_text_shows_results_time() -> None:
     round_row.cards = [
         Card(position=0, title="T", description="d", consequence="c", tag="care")
     ]
-    text = status_text(round_row)
+    text = await status_text(round_row)
     assert "Голосование до:" in text and "Итоги и новый день:" in text
     assert "UTC" in text

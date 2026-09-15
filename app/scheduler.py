@@ -58,12 +58,10 @@ async def tick(bot: Bot | None = None) -> None:
             if healed:
                 logger.warning("Вылечено застрявших дней: %d", healed)
 
-            # Прогрев кэшей для синхронных постов: якорь забега и живой банк дня.
-            from app.rounds import get_run_anchor, refresh_round_pot_cache
+            # Прогрев кэшей для синхронных постов: якорь забега.
+            from app.rounds import get_run_anchor
 
             await get_run_anchor(session)
-            if current.status == RoundStatus.OPEN and settings.ton_enabled and current.money_mode:
-                await refresh_round_pot_cache(session, current)
 
             # Первый запуск или только что созданный день — анонсим без итогов.
             if previous is None or current.id > previous.id:

@@ -92,19 +92,19 @@ async def test_free_day_hides_bank_line(tmp_path, monkeypatch) -> None:
     """День без ставок не показывает банк, даже при настроенном TON;
     денежный день — показывает."""
     monkeypatch.setattr(settings, "media_dir", str(tmp_path))
-    rounds._POT_CACHE[87_910] = (3_000_000_000, 5)
-    rounds._POT_CACHE[87_911] = (3_000_000_000, 5)
-    mono = settings.ton_enabled
-    settings.ton_enabled = True
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    free_day = _round_row(money_mode=False, day_index=9, _id=87_910, with_cards=True)
+    money_day = _round_row(money_mode=True, day_index=10, _id=87_911, with_cards=True)
+    async with SessionLocal() as db:
+        db.add(Stake(round_id=87_911, player_id=9, amount_nanotons=3_000_000_000, tx_hash="mm1", status="confirmed"))
+        await db.commit()
     try:
-        free_day = _round_row(money_mode=False, day_index=9, _id=87_910, with_cards=True)
-        money_day = _round_row(money_mode=True, day_index=10, _id=87_911, with_cards=True)
-        assert "Банк дня" not in status_text(free_day)
-        assert "Банк дня: 3.00 Gram" in status_text(money_day)
+        assert "Банк дня" not in await status_text(free_day)
+        assert "Банк дня: 3.00 Gram" in await status_text(money_day)
     finally:
-        settings.ton_enabled = mono
-        rounds._POT_CACHE.pop(87_910, None)
-        rounds._POT_CACHE.pop(87_911, None)
+        async with SessionLocal() as db:
+            await db.execute(Stake.__table__.delete().where(Stake.round_id == 87_911))
+            await db.commit()
 
 
 async def test_active_day_uses_its_snapshot() -> None:

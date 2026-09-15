@@ -3,25 +3,22 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Round, Stake
-
-# round_id -> (нанотоны подтверждённых ставок, число ставок дня).
-# Обновляется каждым тиком; синхронный статус дня читает без БД.
-_POT_CACHE: dict[int, tuple[int, int]] = {}
+from app.models import Stake
 
 
-def get_cached_pot(round_id: int) -> tuple[int, int]:
-    return _POT_CACHE.get(round_id, (0, 0))
+async def round_pot(session: AsyncSession, round_id: int) -> tuple[int, int]:
+    """Банк дня и число ставок прямо из БД: всегда актуальные данные.
 
-
-async def refresh_round_pot_cache(session: AsyncSession, round_row: Round) -> None:
-    """Банк дня = сумма подтверждённых ставок; счётчик — все ставки дня."""
+    Раньше здесь жил in-memory кэш (обновлялся каждым тиком). Оказался
+    избыточным: /panel и анонс дня и так имеют живую сессию, а на нескольких
+    процессах/перезапусках кэш у каждого был свой и врал до минуты. Теперь
+    синхронный статус дня читает БД — (сумма подтверждённых ставок, число
+    всех ставок дня), как требует пакет дней.
+    """
     rows = (
         await session.execute(
-            select(Stake.amount_nanotons, Stake.status).where(Stake.round_id == round_row.id)
+            select(Stake.amount_nanotons, Stake.status).where(Stake.round_id == round_id)
         )
     ).all()
     nano = sum(int(amount) for amount, status in rows if status == "confirmed")
-    if len(_POT_CACHE) > 64:
-        _POT_CACHE.clear()
-    _POT_CACHE[round_row.id] = (nano, len(rows))
+    return nano, len(rows)

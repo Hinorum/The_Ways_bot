@@ -314,7 +314,7 @@ async def _on_claim(callback: CallbackQuery, kind: str) -> None:
 async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
     await message.answer(
-        status_text(round_row, show_title=True, include_story=True),
+        await status_text(round_row, show_title=True, include_story=True),
         reply_markup=cards_keyboard(round_row.id, remember=False, day_index=round_row.day_index),
     )
 

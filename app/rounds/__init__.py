@@ -19,7 +19,7 @@ from .lifecycle import (  # noqa: F401
 )
 from .materialization import _materialize_round, _stamp_day_money_mode  # noqa: F401
 from .narrative import previous_beats, write_epilogue  # noqa: F401
-from .pot import _POT_CACHE, get_cached_pot, refresh_round_pot_cache  # noqa: F401
+from .pot import round_pot  # noqa: F401
 from .queries import get_active_round, get_latest_round, get_round  # noqa: F401
 from .rendering import PREPARED_PAYLOAD_VERSION, commit_rule, _plan_and_render  # noqa: F401
 from .time import _ROMAN, _day_window, _next_hour_slot, _now, utc_aware  # noqa: F401
@@ -52,9 +52,7 @@ __all__ = [
     "_stamp_day_money_mode",
     "previous_beats",
     "write_epilogue",
-    "_POT_CACHE",
-    "get_cached_pot",
-    "refresh_round_pot_cache",
+    "round_pot",
     "get_active_round",
     "get_latest_round",
     "get_round",
