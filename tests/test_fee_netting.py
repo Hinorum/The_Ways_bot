@@ -222,3 +222,28 @@ async def test_refunds_proportional_ratio(monkeypatch, session: AsyncSession) ->
     # Возврат = ставка × (1 − 1%) = пропорционально, без плоской потери.
     assert refunds[0].amount_nanotons == int(to_nano(0.7) * 0.99)
     monkeypatch.undo()
+
+
+async def test_auto_refund_marks_stake_refunded(session: AsyncSession) -> None:
+    """Застрявшая ставка (rejected/pending) с авто-возвратом помечается refunded,
+    а не висит вечным «переводов не обработано» в панели и часовом алерте."""
+    session.add(Player(id=51, wallet_address="wallet-51"))
+    round_row = await make_closed_round(session, winner_card=0, day_index=63)
+    session.add_all(
+        [
+            Stake(round_id=round_row.id, player_id=51, amount_nanotons=to_nano(0.7), tx_hash="c", status="rejected"),
+        ]
+    )
+    await session.commit()
+
+    await stakes_mod.finalize_day_payouts(session, round_row)
+    stake = (
+        await session.execute(select(Stake).where(Stake.player_id == 51))
+    ).scalar_one()
+    refunds = (
+        (await session.execute(select(Payout).where(Payout.kind == "refund")))
+        .scalars()
+        .all()
+    )
+    assert len(refunds) == 1
+    assert stake.status == "refunded"

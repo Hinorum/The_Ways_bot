@@ -350,6 +350,35 @@ def _decode_comment(in_msg: dict) -> str:
     return ""
 
 
+async def _ledger_stuck_incoming(
+    session, transfer: Transfer, player_id: int | None, result: str
+) -> None:
+    """Учёт входящего перевода, который НЕ возвращается (пыль/древний).
+
+    Деньги остаются в казне навсегда — без строки Income сверка с балансом
+    цепочки работала бы на «проценты пропажи» для каждой такой суммы. Пыль
+    и старый хлам тоже становятся строчкой дохода: «in:refund:dust» /
+    «in:refund:expired», и ожидания БД сходятся с реальностью.
+    """
+    existing = await session.execute(
+        select(Income.id).where(Income.unit_ref == transfer.tx_hash).limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+    session.add(
+        Income(
+            kind="ton",
+            amount_nanotons=transfer.value_nanotons,
+            round_id=None,
+            player_id=player_id,
+            network=current_network(),
+            unit_ref=transfer.tx_hash,
+            note=f"in:{result};src:…{transfer.source[-10:]}"[:200],
+        )
+    )
+    await session.commit()
+
+
 async def _stash_refund(
     session,
     transfer: Transfer,
@@ -374,10 +403,11 @@ async def _stash_refund(
     age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
     if age_days > max(0, settings.watch_refund_max_age_days):
         logger.warning(
-            "Перевод %s старше %d дн. — авто-возврат не создаётся (спам/хлам остаётся в казнее)",
+            "Перевод %s старше %d дн. — авто-возврат не создаётся (спам/хлам остаётся в казне)",
             transfer.tx_hash[:16],
             int(age_days),
         )
+        await _ledger_stuck_incoming(session, transfer, ledger_player_id, "refund:expired")
         return "refund_expired"
     if transfer.value_nanotons < to_nano(settings.refund_min_gram):
         # Газ возврата дороже самой пыли: микро-перевод остаётся в казне, а не
@@ -388,6 +418,7 @@ async def _stash_refund(
             f"{from_nano(transfer.value_nanotons):g}",
             settings.refund_min_gram,
         )
+        await _ledger_stuck_incoming(session, transfer, ledger_player_id, "refund:dust")
         return "refund_dust"
     duplicate = await session.execute(
         select(Payout.id).where(Payout.kind == "refund", Payout.tx_hash == transfer.tx_hash).limit(1)

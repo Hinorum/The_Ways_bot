@@ -401,6 +401,10 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
         refund = refund_net_amount(stake.amount_nanotons)
         if refund > 0:
             created += add_payout(stake, "refund", refund)
+            # Авто-возврат создан — ставка разобрана. Без этого она навсегда
+            # осталась бы pending/rejected: панель вечно показывала «переводов
+            # не обработано», а часовой алерт звонил по одному и тому же хвосту.
+            stake.status = "refunded"
 
     logger.info("finalize_day_payouts: round %s создано выплат: %d (pot=%d нанотонов)", round_row.id, created, pot)
     await session.commit()

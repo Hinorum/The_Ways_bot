@@ -629,6 +629,46 @@ async def test_unknown_sender_transfer_is_auto_refunded(monkeypatch: pytest.Monk
             await db.commit()
 
 
+async def test_dust_and_expired_transfers_reach_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пыль и древние переводы НЕ возвращаются, но пишут строку Income:
+    деньги остаются в казне и обязан быть учтены в сверке с балансом."""
+    import os
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Income
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "refund_min_gram", 0.05)
+    monkeypatch.setattr(settings, "watch_refund_max_age_days", 14)
+    source = "0:" + os.urandom(32).hex()
+    old_utime = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
+    dust = Transfer("dust-1", source, to_nano(0.01), "", int(datetime.now(timezone.utc).timestamp()))
+    expired = Transfer("exp-1", source, to_nano(0.2), "", old_utime)
+    async with SessionLocal() as db:
+        try:
+            assert await process_transfer(dust) == "refund_dust"
+            assert await process_transfer(expired) == "refund_expired"
+            notes = set(
+                (
+                    await db.execute(
+                        select(Income.note).where(
+                            Income.unit_ref.in_(["dust-1", "exp-1"]),
+                            Income.kind == "ton",
+                        )
+                    )
+                ).scalars()
+            )
+            assert notes == {"in:refund:dust;src:…" + source[-10:], "in:refund:expired;src:…" + source[-10:]}
+        finally:
+            await db.execute(
+                Income.__table__.delete().where(Income.unit_ref.in_(["dust-1", "exp-1"]))
+            )
+            await db.commit()
+
+
 async def test_repeat_stake_and_closed_day_transfers_are_refunded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
