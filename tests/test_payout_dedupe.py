@@ -60,6 +60,14 @@ def test_out_comments_extractors_cover_both_providers() -> None:
     }
     assert ton_pay._out_comments_toncenter(toncenter_item) == ["way:8:refund#11"]
 
+    # Toncenter v3 в проде отдаёт @type=text_comment — покрываем оба формата.
+    toncenter_item_v3 = {
+        "out_msgs": [
+            {"message_content": {"decoded": {"@type": "text_comment", "comment": "way:64:prize#80"}}},
+        ]
+    }
+    assert ton_pay._out_comments_toncenter(toncenter_item_v3) == ["way:64:prize#80"]
+
 
 async def test_dispatch_marks_sent_when_memo_already_broadcast(monkeypatch) -> None:
     """Перевод уже ушёл в цепочку в прошлый раз — ретрай НЕ задваивает платёж."""

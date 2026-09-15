@@ -32,11 +32,11 @@ import asyncio
 import base64
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from aiogram import Bot
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from app.config import settings
 from app.db import SessionLocal
@@ -52,6 +52,14 @@ _wallet_lock = asyncio.Lock()
 _provider = None
 _wallet = None
 _wallet_network: str | None = None
+
+# Батч-контекст диспетчера: seqno кошелька, взятый ОДИН раз на цикл, и счётчик
+# локально наращиваемый на каждый перевод пачки. Без него каждый вызов
+# wallet.transfer() делал бы новый get_seqno() у сети: два перевода подряд
+# (приз + рейк одного дня) получали бы ОДИН seqno, в блок входил бы только
+# один, второй тихо терялся, хотя лайтсервер возвращал результат 1.
+_batch_seqno: int | None = None
+_batch_next_seqno: int | None = None
 
 # Сериализация очереди выплат: dispatch_pending_payouts вызывают ЗАКРЫТИЕ дня
 # (кик в тике), ton-settle (каждые 120 с) и ручные /finalize, /return,
@@ -252,6 +260,31 @@ def _comment_cell(text: str):
     return begin_cell().store_uint(0, 32).store_string(text[:120]).end_cell()
 
 
+async def _send_raw_with_seqno(wallet, seqno: int, dest_address: str, amount_nanotons: int, body) -> int:
+    """Один перевод с ЗАДАННЫМ seqno (без get_seqno у сети).
+
+    Собирает внутреннее сообщение, подписывает external-сообщение кошелька
+    с явным seqno и вещает через лайтсерверы. Версии контракта отличаются
+    параметром wallet_id: v5 держит network_global_id в wallet_id (тестнет и
+    мейннет — разные адреса), v4 — константу. Используем wallet.wallet_id,
+    который кошелёк сам знает из собственного state.
+    """
+    from pytoniq_core import Address
+
+    internal = wallet.create_wallet_internal_message(
+        destination=Address(dest_address),
+        value=amount_nanotons,
+        body=body,
+    )
+    transfer_msg = wallet.raw_create_transfer_msg(
+        private_key=wallet.private_key,
+        seqno=seqno,
+        wallet_id=wallet.wallet_id,
+        messages=[internal],
+    )
+    return await wallet.send_external(body=transfer_msg)
+
+
 # ---------- Анти-дубль: сверка memo с историей казначея ----------
 
 
@@ -287,34 +320,50 @@ def _out_comments_tonapi(item: dict) -> list[str]:
 
 
 def _out_comments_toncenter(item: dict) -> list[str]:
-    """Комментарии исходящих сообщений одной транзакции (формат Toncenter v3)."""
+    """Комментарии исходящих сообщений одной транзакции (формат Toncenter v3).
+
+    Toncenter v3 отдаёт ``"comment"`` или ``"text_comment"`` — поддерживаем
+    оба варианта, чтобы резервный провайдер анти-дубля не был слеп.
+    """
     comments: list[str] = []
     for msg in item.get("out_msgs") or []:
         if not isinstance(msg, dict):
             continue
         content = msg.get("message_content") or {}
         decoded = content.get("decoded") if isinstance(content, dict) else None
-        if isinstance(decoded, dict) and decoded.get("@type") == "comment":
+        if isinstance(decoded, dict) and decoded.get("@type") in ("comment", "text_comment"):
             text = str(decoded.get("comment") or "")
             if text:
                 comments.append(text)
     return comments
 
 
-async def _markers_via_tonapi() -> set[str]:
+async def _tx_map_via_tonapi() -> dict[str, str]:
+    """memo недавних исходящих казначея → реальный хеш (TonAPI v2).
+
+    Каждая исходящая транзакция казначея имеет hash; комментарий берём из
+    её out_msgs. Если в одной транзакции несколько переводов с разными
+    memo — все попадают в карту: индексируются вручную по memo, а на
+    отсутствующий хеш у нас нет данных (unsolveable — requeue).
+    """
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
     headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(url, params={"limit": 128, "sort_order": "desc"}, headers=headers)
         response.raise_for_status()
         items = response.json().get("transactions") or []
-    markers: set[str] = set()
+    tx_map: dict[str, str] = {}
     for item in items:
-        markers.update(_out_comments_tonapi(item))
-    return markers
+        tx_hash = str(item.get("hash") or "")
+        if not tx_hash:
+            continue
+        for comment in _out_comments_tonapi(item):
+            tx_map[comment] = tx_hash
+    return tx_map
 
 
-async def _markers_via_toncenter() -> set[str]:
+async def _tx_map_via_toncenter() -> dict[str, str]:
+    """memo недавних исходящих казначея → реальный хеш (Toncenter v3)."""
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/transactions"
     params = {
         "account": settings.active_treasury_address,
@@ -326,14 +375,33 @@ async def _markers_via_toncenter() -> set[str]:
         response = await http_get_with_retry(client, url, params=params, headers=headers)
         response.raise_for_status()
         items = response.json().get("transactions") or []
-    markers: set[str] = set()
+    tx_map: dict[str, str] = {}
     for item in items:
-        markers.update(_out_comments_toncenter(item))
-    return markers
+        tx_hash = str(item.get("hash") or "")
+        if not tx_hash:
+            continue
+        for comment in _out_comments_toncenter(item):
+            tx_map[comment] = tx_hash
+    return tx_map
+
+
+async def fetch_broadcast_tx_map() -> dict[str, str]:
+    """memo последних исходящих казначея → реальный хеш транзакции.
+
+    TonAPI → фолбэк Toncenter. Пустой результат при сбое сети значит
+    «не знаем»: сверщик (confirm_broadcast_payouts) в этом случае НИЧЕГО
+    не решает — ни подтверждает, ни возвращает в очередь (риск задвоить).
+    """
+    for fetch in (_tx_map_via_tonapi, _tx_map_via_toncenter):
+        try:
+            return await fetch()
+        except Exception as exc:
+            logger.warning("Карта исходящих казначея (%s) недоступна: %s", fetch.__name__, exc)
+    return {}
 
 
 async def fetch_broadcast_markers() -> set[str]:
-    """Memo недавних исходящих переводов казначея (TonAPI → фолбэк Toncenter).
+    """Memo недавних исходящих переводов казначея как set.
 
     Сверка перед ПОВТОРНОЙ отправкой: перевод мог уйти в цепочку в прошлый
     раз, но статус «sent» сохранить не успели (краш/таймаут сразу после
@@ -341,12 +409,7 @@ async def fetch_broadcast_markers() -> set[str]:
     результат при сбое сети значит «не знаем»: ведём себя как раньше и
     пытаемся отправить — узкое окно риска лучше постоянной блокировки очереди.
     """
-    for fetch in (_markers_via_tonapi, _markers_via_toncenter):
-        try:
-            return await fetch()
-        except Exception as exc:
-            logger.warning("История исходящих казначея (%s) недоступна: %s", fetch.__name__, exc)
-    return set()
+    return set(await fetch_broadcast_tx_map())
 
 
 async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: str) -> str | None:
@@ -364,16 +427,111 @@ async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: st
         logger.warning("TON выключен или нет мнемоники: выплата к …%s не отправлена", dest_address[-6:])
         return None
     wallet = await _get_wallet()
-    result = await wallet.transfer(
-        destination=dest_address,
-        amount=amount_nanotons,
-        body=_comment_cell(comment),
-    )
+    global _batch_seqno
+    if _batch_seqno is not None:
+        # Диспетчер держит seqno из одного get_seqno() на цикл: два подряд
+        # перевода не получают одинаковый seqno (иначе один молча потеряется).
+        # Инкремент — только при УСПЕХЕ вещания; при сбое батч отменяется:
+        # последующие переводы получат свежий seqno из нового get_seqno().
+        seqno = _batch_seqno
+        try:
+            result = await _send_raw_with_seqno(
+                wallet, seqno, dest_address, amount_nanotons, _comment_cell(comment)
+            )
+        except Exception:
+            _batch_seqno = None
+            raise
+        if result != 1:
+            _batch_seqno = None
+            raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
+        _batch_seqno += 1
+    else:
+        result = await wallet.transfer(
+            destination=dest_address,
+            amount=amount_nanotons,
+            body=_comment_cell(comment),
+        )
     if result != 1:
         raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
     marker = f"bcast:{int(datetime.now(timezone.utc).timestamp())}"
     logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
     return marker
+
+
+async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
+    """Сверяет «sent»-выплаты с реальным блокчейном и чинит потерю перевода.
+
+    Метка вещания bcast:<unix> фиксирует только «запрос принят лайтсервером»,
+    а не «транзакция в блоке»: при гонке двух быстрых переводов (приз + рейк
+    одного дня) один из них может не попасть в цепочку, хотя результат=1
+    вернулся. База остаётся с sent-статусом и несуществующим переводом —
+    игрок не получает приз, никто не переотправит.
+
+    Каждый цикл:
+      • memo, найденное в истории казначея → пишем реальный хеш вместо bcast;
+      • memo, которого НЕТ в истории дольше payout_confirm_timeout_seconds →
+        строка возвращается в pending (перевод в цепочку не ушёл, анти-дубль
+        при повторной отправке не сработает — мемо там нет);
+      • карта истории пуста (оба провайдера молчат) → НЕ трогаем строки:
+        «не знаем» не имеет права ни подтверждать, ни возвращать в очередь.
+    """
+    network = "testnet" if settings.is_testnet else "mainnet"
+    async with _DISPATCH_LOCK:
+        async with SessionLocal() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(Payout).where(
+                            Payout.status == "sent",
+                            Payout.network == network,
+                            or_(
+                                Payout.tx_hash.is_(None),
+                                Payout.tx_hash.like("bcast:%"),
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not rows:
+                return 0
+            tx_map = await fetch_broadcast_tx_map()
+            if not tx_map:
+                logger.warning("История казначея недоступна — сверка sent-выплат пропущена")
+                return 0
+            confirmed = 0
+            requeued = 0
+            # Сравнение в naive UTC: Postgres (timezone=True) вернёт aware,
+            # SQLite — naive; снос tzinfo с обеих сторон даёт один масштаб.
+            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                seconds=settings.payout_confirm_timeout_seconds
+            )
+            for payout in rows:
+                comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+                real_hash = tx_map.get(comment)
+                if real_hash:
+                    payout.tx_hash = real_hash
+                    confirmed += 1
+                    continue
+                sent_at = payout.sent_at.replace(tzinfo=None) if payout.sent_at is not None else None
+                if sent_at is not None and sent_at > cutoff:
+                    # Свежая вещация: блокчейн мог ещё не успеть — даём время.
+                    continue
+                # memo нет в истории, окно верификации истекло — перевод не ушёл.
+                payout.status = "pending"
+                payout.attempts += 1
+                payout.last_error = (
+                    f"memo «{comment[:40]}» не найдено в блокчейне "
+                    f"за {settings.payout_confirm_timeout_seconds} с после вещания — повторная отправка"
+                )
+                requeued += 1
+            await session.commit()
+    if requeued:
+        logger.warning("Сверка: %d выплат подтверждены, %d возвращены в очередь для ретрая", confirmed, requeued)
+    elif confirmed:
+        logger.info("Сверка: %d выплат подтверждены реальными хешами", confirmed)
+    return confirmed + requeued
 
 
 async def _reset_retriable(session, network: str) -> None:
@@ -619,71 +777,89 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
         markers: set[str] = set()
         if payouts:
             markers = await fetch_broadcast_markers()
-        for payout in payouts:
-            # Свободный комментарий (возвраты при паузе) либо служебное memo
-            # «way:<день>:<тип>#<id>» — по нему же работает анти-дубль.
-            comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
-            if comment in markers:
-                # Перевод уже ушёл в цепочку раньше, но статус тогда не
-                # сохранился (краш/таймаут после вещания). Повтор задвоил бы
-                # платёж — фиксируем доставку без новой отправки.
-                payout.tx_hash = None
-                payout.status = "sent"
-                payout.sent_at = datetime.now(timezone.utc)
-                payout.last_error = None
-                sent += 1
-                logger.warning(
-                    "Выплата %d уже разослана ранее (memo найдено у казначея) — помечена sent без повтора",
-                    payout.id,
-                )
-                continue
+        # Батч: берём seqno кошелька ОДИН раз на цикл и наращиваем его локально
+        # на каждую рассылку. Иначе каждый перевод делал бы свой get_seqno(),
+        # и два подряд перевода (приз + рейк одного дня) получили бы ОДИН и тот
+        # же seqno — в блок входил бы только один, второй тихо терялся.
+        global _batch_seqno
+        _batch_seqno = None
+        if payouts and settings.ton_enabled and settings.active_treasury_mnemonic:
             try:
-                tx_hash = await asyncio.wait_for(
-                    send_ton_transfer(
-                        payout.dest_address,
-                        payout.amount_nanotons,
-                        comment=comment,
-                    ),
-                    timeout=settings.payout_send_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                # Зависший лайтсервер не имеет права замораживать цикл:
-                # таймаут — обычный ретрай с видимой причиной.
-                logger.warning("Выплата %s: таймаут вещания >%ss", payout.id, settings.payout_send_timeout_seconds)
-                payout.last_error = f"таймаут вещания (>{settings.payout_send_timeout_seconds} с)"
-                tx_hash = None
-            except Exception as exc:
-                reason = str(exc)
-                if "no alive peers" in reason.lower():
-                    # Типовой тестнет-случай: встроенный конфиг pytoniq мёртв
-                    # или UDP закрыт окружением. Причина должна звать к решению.
-                    logger.warning("Выплата %s: нет живых лайтсерверов", payout.id)
-                    reason = (
-                        "have no alive peers: лайтсерверы недоступны — задай "
-                        "LITESERVER_CONFIG_URL с живым конфигом тестнета "
-                        "(https://ton.org/testnet-global.config.json) или разошли "
-                        "очередь локально на той же БД"
+                wallet_for_batch = await _get_wallet()
+                _batch_seqno = await wallet_for_batch.get_seqno()
+            except Exception:
+                # Сбой не критичен: выродимся в старый путь, где send_ton_transfer
+                # сам получает seqno (а её тред-безопасность отдельная история).
+                _batch_seqno = None
+                logger.warning("Не удалось получить seqno для батч-отправки — отправлю по одному", exc_info=True)
+        try:
+            for payout in payouts:
+                # Свободный комментарий (возвраты при паузе) либо служебное memo
+                # «way:<день>:<тип>#<id>» — по нему же работает анти-дубль.
+                comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+                if comment in markers:
+                    # Перевод уже ушёл в цепочку раньше, но статус тогда не
+                    # сохранился (краш/таймаут после вещания). Повтор задвоил бы
+                    # платёж — фиксируем доставку без новой отправки.
+                    payout.tx_hash = None
+                    payout.status = "sent"
+                    payout.sent_at = datetime.now(timezone.utc)
+                    payout.last_error = None
+                    sent += 1
+                    logger.warning(
+                        "Выплата %d уже разослана ранее (memo найдено у казначея) — помечена sent без повтора",
+                        payout.id,
                     )
+                    continue
+                try:
+                    tx_hash = await asyncio.wait_for(
+                        send_ton_transfer(
+                            payout.dest_address,
+                            payout.amount_nanotons,
+                            comment=comment,
+                        ),
+                        timeout=settings.payout_send_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    # Зависший лайтсервер не имеет права замораживать цикл:
+                    # таймаут — обычный ретрай с видимой причиной.
+                    logger.warning("Выплата %s: таймаут вещания >%ss", payout.id, settings.payout_send_timeout_seconds)
+                    payout.last_error = f"таймаут вещания (>{settings.payout_send_timeout_seconds} с)"
+                    tx_hash = None
+                except Exception as exc:
+                    reason = str(exc)
+                    if "no alive peers" in reason.lower():
+                        # Типовой тестнет-случай: встроенный конфиг pytoniq мёртв
+                        # или UDP закрыт окружением. Причина должна звать к решению.
+                        logger.warning("Выплата %s: нет живых лайтсерверов", payout.id)
+                        reason = (
+                            "have no alive peers: лайтсерверы недоступны — задай "
+                            "LITESERVER_CONFIG_URL с живым конфигом тестнета "
+                            "(https://ton.org/testnet-global.config.json) или разошли "
+                            "очередь локально на той же БД"
+                        )
+                    else:
+                        logger.warning("Выплата %s не ушла: %s", payout.id, exc)
+                    payout.last_error = reason[:200]
+                    tx_hash = None
+                if tx_hash is None and payout.last_error is None:
+                    # Единственный путь сюда — guard выключенного TON/мнемоники.
+                    payout.last_error = "отправка недоступна: TON выключен или нет мнемоники казначея"
+                if tx_hash:
+                    payout.tx_hash = tx_hash
+                    payout.status = "sent"
+                    payout.sent_at = datetime.now(timezone.utc)
+                    payout.attempts = 0
+                    payout.last_error = None
+                    sent += 1
+                elif payout.attempts >= settings.payout_max_attempts:
+                    payout.status = "failed"
                 else:
-                    logger.warning("Выплата %s не ушла: %s", payout.id, exc)
-                payout.last_error = reason[:200]
-                tx_hash = None
-            if tx_hash is None and payout.last_error is None:
-                # Единственный путь сюда — guard выключенного TON/мнемоники.
-                payout.last_error = "отправка недоступна: TON выключен или нет мнемоники казначея"
-            if tx_hash:
-                payout.tx_hash = tx_hash
-                payout.status = "sent"
-                payout.sent_at = datetime.now(timezone.utc)
-                payout.attempts = 0
-                payout.last_error = None
-                sent += 1
-            elif payout.attempts >= settings.payout_max_attempts:
-                payout.status = "failed"
-            else:
-                # Лимит не исчерпан — вернётся в очередь следующего цикла;
-                # last_error сохраняем: причина видна в /payouts уже сейчас.
-                payout.status = "pending"
+                    # Лимит не исчерпан — вернётся в очередь следующего цикла;
+                    # last_error сохраняем: причина видна в /payouts уже сейчас.
+                    payout.status = "pending"
+        finally:
+            _batch_seqno = None
         await session.commit()
     dead = [p.id for p in payouts if p.status == "failed"]
     if dead:

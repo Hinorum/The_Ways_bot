@@ -192,8 +192,15 @@ async def _ton_maintenance() -> None:
     """Финализация дней, очередь выплат, ретраи, копилки недели и месяца."""
     from app.leaderboard import settle_month_if_due, settle_week_if_due
     from app.ops import check_anomalies
-    from app.ton_pay import settle_closed_rounds
+    from app.ton_pay import confirm_broadcast_payouts, settle_closed_rounds
 
+    try:
+        # Сверка «sent»-выплат с блокчейном: bcast-метка не гарантирует, что
+        # перевод попал в блок (гонка двух быстрых переводов). Потерянные memo
+        # возвращаются в очередь, подтверждённые получают реальный хеш.
+        await confirm_broadcast_payouts(bot=_bot)
+    except Exception:
+        logger.exception("confirm_broadcast_payouts упал (повторится через 120с)")
     try:
         await settle_closed_rounds(bot=_bot)
     except Exception:

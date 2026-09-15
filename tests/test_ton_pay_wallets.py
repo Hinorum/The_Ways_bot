@@ -128,6 +128,82 @@ async def test_send_without_mnemonic_is_noop(monkeypatch: pytest.MonkeyPatch) ->
     assert result is None and called is False
 
 
+# ---------- Регрессия: seqno-гонка при подряд идущих переводах ----------
+
+
+class _BatchWallet(_FakeWallet):
+    """Только интерфейс, нужный _send_raw_with_seqno: подписанное внешнее
+    сообщение собирается из create_wallet_internal_message +
+    raw_create_transfer_msg и уходит через send_external."""
+
+    def __init__(self):
+        super().__init__()
+        self.private_key = b"k" * 32
+        self.wallet_id = 698983191
+        self.seqnos: list[int] = []
+
+    def create_wallet_internal_message(self, destination, value=0, body=None):
+        return ("internal", destination, value)
+
+    def raw_create_transfer_msg(self, private_key, seqno, wallet_id, messages):
+        self.seqnos.append(seqno)
+        return ("transfer", seqno)
+
+    async def send_external(self, body=None):
+        return 1
+
+
+async def test_send_uses_local_seqno_when_batch_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Два перевода в одной пачке получают РАЗНЫЕ seqno (N, N+1), а не два
+    одинаковых: без этого повторный get_seqno() у сети дал бы один и тот же
+    seqno, и второй перевод молча бы потерялся в блокчейне."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(mnemonic_new(24)))
+    fake = _BatchWallet()
+
+    async def fake_get():
+        return fake
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", fake_get)
+    monkeypatch.setattr(ton_pay, "_batch_seqno", 100)
+    try:
+        await ton_pay.send_ton_transfer("0:" + "11" * 32, to_nano(1), comment="a")
+        await ton_pay.send_ton_transfer("0:" + "22" * 32, to_nano(2), comment="b")
+    finally:
+        monkeypatch.setattr(ton_pay, "_batch_seqno", None)
+    assert fake.seqnos == [100, 101]
+    # Батч-путь не ходит в wallet.transfer: каждый перевод — отдельный
+    # подписанный external со своим seqno, вещается напрямую.
+    assert fake.calls == []
+
+
+async def test_send_batch_aborts_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сбой вещания отменяет батч: следующий перевод получит свежий seqno,
+    чтобы не вещать последовательность из уже потраченных номеров."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(mnemonic_new(24)))
+
+    class _BrokenBatchWallet(_BatchWallet):
+        async def send_external(self, body=None):
+            self.broken = True
+            return 0
+
+    fake = _BrokenBatchWallet()
+    fake.broken = False
+
+    async def fake_get():
+        return fake
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", fake_get)
+    monkeypatch.setattr(ton_pay, "_batch_seqno", 100)
+    try:
+        with pytest.raises(RuntimeError, match="не приняли"):
+            await ton_pay.send_ton_transfer("0:" + "11" * 32, to_nano(1), comment="a")
+        assert ton_pay._batch_seqno is None
+    finally:
+        monkeypatch.setattr(ton_pay, "_batch_seqno", None)
+
+
 # ---------- Регрессия формата внешнего сообщения v5 ----------
 
 
