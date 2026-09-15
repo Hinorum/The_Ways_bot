@@ -16,7 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.broadcast import (
     announce_new_day,
@@ -692,6 +692,25 @@ async def cmd_refinalize(message: Message) -> None:
             return
 
         async with dispatch_lock():
+            # Перефинализация может задвоить реальные деньги: строки sent уже
+            # ушли в блокчейн (или в пути), и пересоздание создаст ИХ ПОВТОРНО.
+            # Отказ внятным сообщением: пусть хранитель сам разберётся с уже
+            # ушедшим (сверка /treasury, /adjust), а не плодит вторую выплату.
+            sent_q = await session.execute(
+                select(func.count()).select_from(Payout).where(
+                    Payout.round_id == row.id,
+                    Payout.status == "sent",
+                )
+            )
+            sent_count = int(sent_q.scalar_one())
+            if sent_count:
+                await message.answer(
+                    f"Round#{row.id} (день {target_day}): перефинализация отменена — "
+                    f"уже выполнено {sent_count} выплат (статус sent). Повторное "
+                    "создание задвоило бы реальные переводы в блокчейне. "
+                    "Разберись с ушедшим через /treasury или /adjust."
+                )
+                return
             stale_q = await session.execute(
                 select(Payout).where(
                     Payout.round_id == row.id,
