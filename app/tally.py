@@ -34,18 +34,6 @@ def _tg_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _clip(text: str, limit: int) -> str:
-    """Обрезка по словам с многоточием — не режет слово пополам."""
-    if len(text) <= limit:
-        return text
-    truncated = text[: limit - 1]
-    # Обрезаем по последнему пробелу, чтобы не резать слово
-    last_space = truncated.rfind(" ")
-    if last_space > limit // 2:
-        truncated = truncated[:last_space]
-    return truncated.rstrip(" ,.;:") + "…"
-
-
 def _chunks(ids: list[int], size: int = _CHUNK):
     for start in range(0, len(ids), size):
         yield ids[start : start + size]
@@ -292,95 +280,6 @@ def format_results(
         lines.append(f"🎯 Коэффициент: ×{multiplier:.2f}")
     if getattr(round_row, "tie_note", None):
         lines.append(f"🤝 {round_row.tie_note}")
-    return "\n".join(lines)
-
-
-async def format_world_effects(round_row: Round, session=None) -> str:
-    """Форматирует эффекты AI World Engine для итогов дня."""
-    if not session:
-        return ""
-    lines = []
-    from sqlalchemy import select as sa_select
-
-    # Настроение мира
-    try:
-        from app.models import WorldSnapshot
-        q = sa_select(WorldSnapshot).where(WorldSnapshot.day_index == round_row.day_index)
-        result = await session.execute(q)
-        snapshot = result.scalar_one_or_none()
-        if snapshot:
-            mood_map = {
-                "tense": "напряжён",
-                "peaceful": "спокоен",
-                "chaotic": "хаотичен",
-                "hopeful": "полон надежды",
-                "grim": "мрачен",
-            }
-            mood_desc = mood_map.get(snapshot.mood, snapshot.mood)
-            lines.append(f"🌍 Миp {mood_desc}")
-            if snapshot.summary:
-                lines.append(f"📝 {_clip(snapshot.summary, 150)}")
-    except Exception:
-        logger.debug("Снимок мира дня %s не прочитан", round_row.day_index, exc_info=True)
-
-    # Локация: атмосфера
-    if round_row.place:
-        try:
-            from app.models import WorldLocation
-            q = sa_select(WorldLocation).where(WorldLocation.name == round_row.place)
-            result = await session.execute(q)
-            loc = result.scalar_one_or_none()
-            if loc and loc.atmosphere:
-                lines.append(f"🌫 Атмосфера: {_clip(loc.atmosphere, 120)}")
-        except Exception:
-            logger.debug("Локация дня %s не прочитана", round_row.day_index, exc_info=True)
-
-    # Цепочка последствий: события дня
-    try:
-        from app.models import WorldEvent
-        q = (
-            sa_select(WorldEvent)
-            .where(WorldEvent.day_index == round_row.day_index)
-            .limit(3)
-        )
-        result = await session.execute(q)
-        events = result.scalars().all()
-        if events:
-            for event in events:
-                lines.append(f"🔗 {_clip(event.description, 150)}")
-    except Exception:
-        logger.debug("События дня %s не прочитаны", round_row.day_index, exc_info=True)
-
-    # Состояния NPC: нарративные изменения (без цифр и метрик)
-    try:
-        from app.models import WorldCharacter
-        from sqlalchemy import select as _sa
-        import json as _json
-        q = (
-            _sa.select(WorldCharacter)
-            .where(WorldCharacter.is_alive == True)
-            .where(WorldCharacter.last_seen_day == round_row.day_index)
-            .limit(3)
-        )
-        result = await session.execute(q)
-        chars = result.scalars().all()
-        changes = []
-        for c in chars:
-            story_state = ""
-            if c.metadata_json:
-                try:
-                    meta = _json.loads(c.metadata_json)
-                    if isinstance(meta, dict):
-                        story_state = str(meta.get("story_state", ""))
-                except (_json.JSONDecodeError, TypeError):
-                    story_state = str(c.metadata_json)
-            if story_state:
-                changes.append(f"{c.name}: {story_state[:80]}")
-        if changes:
-            lines.append("🤝 " + "; ".join(changes))
-    except Exception:
-        logger.debug("Состояния NPC дня %s не прочитаны", round_row.day_index, exc_info=True)
-
     return "\n".join(lines)
 
 

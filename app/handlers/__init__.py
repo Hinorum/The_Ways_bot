@@ -13,7 +13,6 @@ from __future__ import annotations
 __all__ = [
     "_ACTIVE_STATUSES",
     "_ADJ_CONFIRM_WINDOW",
-    "_ADJ_PENDING",
     "_DYOR_TEXT",
     "_LAST_UPDATE_ERROR_ALERT",
     "_MONTH_NAMES_RU",
@@ -46,7 +45,6 @@ __all__ = [
     "_personal_keyboard",
     "_refunds_panel_text",
     "_register_error_handler",
-    "_remember_flag",
     "_resolve_player_arg",
     "_revenue_text",
     "_revote_gram_ceiling",
@@ -54,7 +52,6 @@ __all__ = [
     "_revote_status",
     "_score_text",
     "_set_paused_and_broadcast",
-    "_sniff_keyboard",
     "_stake_pay_keyboard",
     "_stake_view_safe",
     "_stake_view_text",

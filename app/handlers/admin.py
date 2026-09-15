@@ -663,14 +663,14 @@ async def cmd_finalize(message: Message) -> None:
 
 @router.message(Command("refinalize"), F.chat.type == ChatType.PRIVATE)
 async def cmd_refinalize(message: Message) -> None:
-    """Принудительная перефинализация: сбрасывает finalized, удаляет старые
-    невыполненные выплаты, пересоздаёт всё заново. /refinalize 1"""
+    """Принудительная перефинализация: сбрасывает finalized, помечает старые
+    невыполненные выплаты dismissed, пересоздаёт всё заново. /refinalize 1"""
     if message.from_user is None or message.from_user.id not in settings.admin_id_set:
         await message.answer("Команда только для хранителя игры.")
         return
 
     from app.stakes import finalize_day_payouts
-    from app.ton_pay import dispatch_pending_payouts
+    from app.ton_pay import dispatch_lock, dispatch_pending_payouts
 
     words = (message.text or "").split()
     if len(words) < 2 or not words[1].isdigit():
@@ -691,30 +691,26 @@ async def cmd_refinalize(message: Message) -> None:
             await message.answer(f"День {target_day}: статус={status}, нужен CLOSED.")
             return
 
-        # 1) Удаляем ВСЕ старые выплаты (включая sent — это дубли от прошлых
-        #    попыток; реальные транзы уже ушли, но записи мешают корректной
-        #    перефинализации). Sent НЕ удаляем — это реальные транзы,
-        #    их наличие защищает от двойной отправки через memo anti-duplicate.
-        stale_q = await session.execute(
-            select(Payout).where(
-                Payout.round_id == row.id,
-                Payout.status.notin_(["sent"]),
+        async with dispatch_lock():
+            stale_q = await session.execute(
+                select(Payout).where(
+                    Payout.round_id == row.id,
+                    Payout.status.notin_(["sent"]),
+                )
             )
-        )
-        stale = list(stale_q.scalars().all())
-        for p in stale:
-            await session.delete(p)
+            stale = list(stale_q.scalars().all())
+            for p in stale:
+                p.status = "dismissed"
 
-        # 2) Сбрасываем finalized.
-        row.payouts_finalized = False
-        await session.commit()
-        deleted = len(stale)
+            row.payouts_finalized = False
+            await session.commit()
+            dismissed = len(stale)
+
         await message.answer(
             f"Round#{row.id} (день {target_day}): finalized сброшен, "
-            f"удалено {deleted} старых выплат. Запускаю финализацию..."
+            f"dismissed {dismissed} старых выплат. Запускаю финализацию..."
         )
 
-    # 3) Финализация в новой сессии.
     try:
         async with SessionLocal() as session:
             row = await session.get(Round, row.id)
@@ -727,7 +723,6 @@ async def cmd_refinalize(message: Message) -> None:
         await message.answer(f"Ошибка финализации: {exc!r}")
         return
 
-    # 4) Отправка.
     try:
         sent = await dispatch_pending_payouts(bot=message.bot)
         await message.answer(f"Отправлено выплат: {sent}")
