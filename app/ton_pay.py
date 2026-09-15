@@ -59,7 +59,6 @@ _wallet_network: str | None = None
 # (приз + рейк одного дня) получали бы ОДИН seqno, в блок входил бы только
 # один, второй тихо терялся, хотя лайтсервер возвращал результат 1.
 _batch_seqno: int | None = None
-_batch_next_seqno: int | None = None
 
 # Сериализация очереди выплат: dispatch_pending_payouts вызывают ЗАКРЫТИЕ дня
 # (кик в тике), ton-settle (каждые 120 с) и ручные /finalize, /return,
