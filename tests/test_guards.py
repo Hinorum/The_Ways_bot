@@ -143,3 +143,20 @@ def test_validate_config_flags_treasury_when_ton_on(monkeypatch: pytest.MonkeyPa
     problems = main_module.validate_config()
     assert any("адреса казначея" in p for p in problems)
     assert any("мнемоники казначея" in p for p in problems)
+
+
+def test_validate_config_flags_owner_same_as_treasury(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OWNER_WALLET_ADDRESS, совпадающий с казначеем, — конфиг-ошибка:
+    рейк уходил бы «сам себе» и rwatcher гонял бы бесконечный refund-цикл."""
+    import os
+
+    address = "0:" + os.urandom(32).hex()
+    monkeypatch.setattr(settings, "bot_token", "123:token")
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "ton_network", "mainnet")
+    monkeypatch.setattr(settings, "treasury_address", address)
+    monkeypatch.setattr(settings, "treasury_mnemonic", "муза мёд")
+    monkeypatch.setattr(settings, "owner_wallet_address", address)
+    problems = main_module.validate_config()
+    assert any("OWNER_WALLET_ADDRESS" in p and "казначе" in p for p in problems)

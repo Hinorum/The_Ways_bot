@@ -13,6 +13,15 @@ from app.db import init_db
 from app.handlers import build_dispatcher, create_bot
 from app.profile import apply_profile
 from app.scheduler import set_bot, start_scheduler, tick
+from app.ton_utils import normalize_address
+
+
+def _same_address(left: str, right: str) -> bool:
+    """Являются ли два адреса одним кошельком (raw/UQ/EQ приводятся к канону)."""
+    try:
+        return normalize_address(left) == normalize_address(right)
+    except Exception:
+        return False
 
 
 logging.basicConfig(level=logging.INFO)
@@ -127,6 +136,15 @@ def validate_config() -> list[str]:
                 "TON_ENABLED=true, но нет мнемоники казначея "
                 "(TREASURY_MNEMONIC / TREASURY_TESTNET_MNEMONIC). "
                 "Выплаты не будут отправляться."
+            )
+        if (
+            settings.owner_wallet_address
+            and settings.active_treasury_address
+            and _same_address(settings.owner_wallet_address, settings.active_treasury_address)
+        ):
+            problems.append(
+                "OWNER_WALLET_ADDRESS совпадает с адресом казначея — рейк хранителя "
+                "и доли копилки уйдут «сами себе». Укажи отдельный кошелёк владельца."
             )
     return problems
 

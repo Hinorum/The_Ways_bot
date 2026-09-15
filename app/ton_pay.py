@@ -973,6 +973,13 @@ async def treasury_diagnostics() -> str:
         "OWNER_WALLET_ADDRESS: "
         + ("задан ✓" if settings.owner_wallet_address else "не задан — доли казны (рейк/копилка) уйти не могут ⚠️")
     )
+    if (
+        settings.active_treasury_address
+        and settings.owner_wallet_address
+        and normalize_address(settings.owner_wallet_address)
+        == normalize_address(settings.active_treasury_address)
+    ):
+        lines.append("⚠️ OWNER_WALLET_ADDRESS совпадает с казначеем: рейк уходит «сам себе» — задай отдельный кошелёк владельца.")
     if settings.active_treasury_address and settings.active_treasury_mnemonic:
         try:
             lines.append(f"Пара мнемоника/адрес: {treasury_pair_check_text()}")

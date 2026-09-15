@@ -669,6 +669,43 @@ async def test_dust_and_expired_transfers_reach_ledger(monkeypatch: pytest.Monke
             await db.commit()
 
 
+async def test_self_transfer_does_not_refund_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Рейк, уходящий «казначею самому себе» (OWNER == TREASURY), не плодит
+    бесконечный refund-цикл: самоперевод распознаётся и молча пропускается."""
+    import os
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Income
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    treasury = "0:" + os.urandom(32).hex()
+    monkeypatch.setattr(settings, "treasury_address", treasury)
+    tx_hash = "self-" + os.urandom(8).hex()
+    transfer = Transfer(
+        tx_hash=tx_hash,
+        source=treasury,
+        value_nanotons=to_nano(0.5),
+        comment="",
+        utime=int(datetime.now(timezone.utc).timestamp()),
+    )
+    async with SessionLocal() as db:
+        try:
+            assert await process_transfer(transfer) == "self_transfer"
+            refunds = (
+                await db.execute(select(Payout).where(Payout.kind == "refund", Payout.tx_hash == tx_hash))
+            ).scalars().all()
+            incomes = (
+                await db.execute(select(Income).where(Income.unit_ref == tx_hash))
+            ).scalars().all()
+            assert refunds == []
+            assert incomes == []
+        finally:
+            await db.commit()
+
+
 async def test_repeat_stake_and_closed_day_transfers_are_refunded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

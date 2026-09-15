@@ -508,6 +508,15 @@ PAUSE_REFUND_COMMENT = "Игра приостановлена: идут техн
 
 async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
+    # Самоперевод казначея: если OWNER_WALLET_ADDRESS совпадает с адресом казны,
+    # рейк и доли копилки уходят «казначею самому себе». Для watcher'а это
+    # «входящий от неизвестного» — без этого фильтра каждый такой перевод
+    # порождал бы бесконечный refund-цикл на себя же (сеть берёт газ за каждое
+    # кольцо). Деньги при этом никуда не уходят — возвращать нечего.
+    if settings.active_treasury_address and normalize_address(transfer.source) == normalize_address(
+        settings.active_treasury_address
+    ):
+        return "self_transfer"
     async with SessionLocal() as session:
         player_result = await session.execute(
             select(Player).where(Player.wallet_address == normalize_address(transfer.source))
