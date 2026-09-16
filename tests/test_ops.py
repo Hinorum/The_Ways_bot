@@ -41,7 +41,7 @@ def _closed_round(day_index: int, tally_at: datetime) -> Round:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=tally_at - timedelta(hours=25),
         voting_ends_at=tally_at - timedelta(hours=1),
         tally_ends_at=tally_at,
@@ -779,7 +779,7 @@ async def test_monthly_pot_waits_until_last_day_finalized(monkeypatch: pytest.Mo
             rule_commitment="c",
             chapter_title="t",
             chapter_text="text",
-            lore_summary="lore",
+
             opens_at=prev_month - timedelta(days=1, hours=1),
             voting_ends_at=prev_month - timedelta(hours=1),
             tally_ends_at=prev_month,
@@ -1019,7 +1019,7 @@ def _open_round(day_index: int) -> Round:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
-        lore_summary="l",
+
         opens_at=now - timedelta(hours=1),
         voting_ends_at=now + timedelta(hours=1),
         tally_ends_at=now + timedelta(hours=2),

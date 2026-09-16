@@ -18,14 +18,13 @@ from .lifecycle import (  # noqa: F401
     reset_game,
 )
 from .materialization import _materialize_round, _stamp_day_money_mode  # noqa: F401
-from .narrative import previous_beats, write_epilogue  # noqa: F401
+from .narrative import write_epilogue  # noqa: F401
 from .pot import round_pot  # noqa: F401
 from .queries import get_active_round, get_latest_round, get_round  # noqa: F401
 from .rendering import PREPARED_PAYLOAD_VERSION, commit_rule, _plan_and_render  # noqa: F401
 from .time import _ROMAN, _day_window, _next_hour_slot, _now, utc_aware  # noqa: F401
 from .voting import (  # noqa: F401
     _TIE_THEATER,
-    _echoes_already_spawned,
     _pick_among,
     _prefer_staked,
     _staked_paths,
@@ -50,7 +49,6 @@ __all__ = [
     "reset_game",
     "_materialize_round",
     "_stamp_day_money_mode",
-    "previous_beats",
     "write_epilogue",
     "round_pot",
     "get_active_round",
@@ -65,7 +63,6 @@ __all__ = [
     "_now",
     "utc_aware",
     "_TIE_THEATER",
-    "_echoes_already_spawned",
     "_pick_among",
     "_prefer_staked",
     "_staked_paths",

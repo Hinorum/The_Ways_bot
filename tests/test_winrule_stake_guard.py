@@ -33,7 +33,7 @@ async def tally_round(
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now - timedelta(hours=25),
         voting_ends_at=now - timedelta(hours=1),
         tally_ends_at=now,

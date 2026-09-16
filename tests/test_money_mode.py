@@ -31,8 +31,8 @@ def _round_row(money_mode: bool, day_index: int, _id: int, with_cards: bool = Fa
         rule_commitment="c:s",
         chapter_title="День версии",
         chapter_text="Текст.",
-        lore_summary="лор",
-        cover_path="",
+
+
         money_mode=money_mode,
         opens_at=datetime.now(timezone.utc),
         voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),

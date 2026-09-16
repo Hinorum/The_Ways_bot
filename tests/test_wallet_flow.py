@@ -149,8 +149,6 @@ async def test_fallback_ignores_strangers() -> None:
 
 
 async def test_rebind_locked_while_stake_in_game(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "use_free_images", False)
-    monkeypatch.setattr(settings, "use_free_story_llm", False)
 
     uid = next_uid()
     now = datetime.now(timezone.utc)
@@ -163,7 +161,7 @@ async def test_rebind_locked_while_stake_in_game(monkeypatch) -> None:
             rule_commitment="c",
             chapter_title="t",
             chapter_text="x",
-            lore_summary="l",
+
             opens_at=now,
             voting_ends_at=now + timedelta(hours=1),
             tally_ends_at=now + timedelta(hours=2),
@@ -390,7 +388,7 @@ async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: i
             rule_commitment="c",
             chapter_title="t",
             chapter_text="x",
-            lore_summary="l",
+
             opens_at=now,
             voting_ends_at=now + timedelta(hours=1),
             tally_ends_at=now + timedelta(hours=2),

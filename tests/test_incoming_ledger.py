@@ -40,7 +40,7 @@ async def _open_round(day_index: int) -> None:
                 rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
-                lore_summary="l",
+
                 opens_at=now,
                 voting_ends_at=now + timedelta(hours=20),
                 tally_ends_at=now + timedelta(hours=21),

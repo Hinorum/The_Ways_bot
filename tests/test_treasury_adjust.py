@@ -175,7 +175,7 @@ async def test_single_stake_not_double_counted(ton_on, monkeypatch) -> None:
                 rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
-                lore_summary="l",
+
                 opens_at=now - timedelta(hours=25),
                 voting_ends_at=now - timedelta(hours=1),
                 tally_ends_at=now,
@@ -278,7 +278,7 @@ async def test_manual_refund_creates_net_payout_and_is_idempotent(ton_on) -> Non
                 rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
-                lore_summary="l",
+
                 opens_at=now - timedelta(hours=25),
                 voting_ends_at=now - timedelta(hours=1),
                 tally_ends_at=now,
@@ -533,7 +533,7 @@ async def test_register_stake_blocked_while_paused(ton_on) -> None:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
-        lore_summary="l",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=10),
         tally_ends_at=now + timedelta(hours=11),
@@ -662,8 +662,6 @@ async def test_pause_commands_toggle_and_guard(
     admin_only, ton_on, monkeypatch, tmp_path
 ) -> None:
     await _wipe_pause()
-    monkeypatch.setattr(settings, "use_free_images", False)
-    monkeypatch.setattr(settings, "use_free_story_llm", False)
     monkeypatch.setattr(settings, "media_dir", str(tmp_path))
     try:
         outsider = make_message(OUTSIDER_ID, "/pause")

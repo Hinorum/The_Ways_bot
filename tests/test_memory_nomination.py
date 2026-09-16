@@ -14,7 +14,7 @@ def _round(day_index: int, opens_at: datetime) -> Round:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
-        lore_summary="l",
+
         opens_at=opens_at,
         voting_ends_at=opens_at + timedelta(hours=23),
         tally_ends_at=opens_at + timedelta(hours=24),

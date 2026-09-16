@@ -31,7 +31,7 @@ def _closed_round(day_index: int) -> Round:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
-        lore_summary="l",
+
         opens_at=now - timedelta(hours=25),
         voting_ends_at=now - timedelta(hours=1),
         tally_ends_at=now,

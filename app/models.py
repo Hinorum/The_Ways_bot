@@ -63,9 +63,6 @@ class Player(Base):
     # совпадение «адрес + код» доказывает контроль. Null — ждать нечего.
     wallet_verify_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wallet_verify_created: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Призвание собаки (ключ из app.callings): косметика нарратива — титулы,
-    # окраска личного эха и касания в главах. На деньги и вес голоса не влияет.
-    calling: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Жетоны «Второго нюха»: за находки памяти и верные серии. Тратятся на
     # личную микросцену дня; информации о законе не дают.
     inspiration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -128,8 +125,6 @@ class Round(Base):
     sealed: Mapped[bool] = mapped_column(Boolean, default=False)
     chapter_title: Mapped[str] = mapped_column(String(300))
     chapter_text: Mapped[str] = mapped_column(Text)
-    lore_summary: Mapped[str] = mapped_column(Text)
-    cover_path: Mapped[str] = mapped_column(String(400), default="")
     opens_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     voting_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     tally_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -141,13 +136,6 @@ class Round(Base):
     # Момент первой успешной рассылки дня: повторный анонс того же дня
     # невозможен даже при гонке двух процессов после деплоя.
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Сезон мира (календарный месяц «YYYY-MM» по UTC): финал сезона — День
-    # Первого Лая последнего дня месяца; 1-го числа, после копилки лидеров,
-    # начинается новый сезон.
-    season: Mapped[str | None] = mapped_column(String(7), nullable=True, index=True)
-    # Место действия дня: даёт сети память о географии — возвращение в место
-    # показывает игрокам перемены от давних выборов.
-    place: Mapped[str | None] = mapped_column(String(80), nullable=True)
     pot_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     rake_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     # Доля дня, ушедшая в копилку недели (2% фонда) — для поста итогов.
@@ -210,29 +198,6 @@ class StoryBeat(Base):
     hook_text: Mapped[str | None] = mapped_column(String(700), default=None)  # Крючок главы дня
     win_rule: Mapped[str] = mapped_column(String(32))
     vote_counts: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class LoreEcho(Base):
-    """Отложенное последствие выбора: спит в каноне и всплывает через несколько дней.
-
-    Каждый итог дня оставляет три эха (по одному на карту). Победившее — сильное
-    (strength=3) и всплывает раньше; невыбранные пути тоже не исчезают, а ждут
-    у края дороги. Сильное эхо при всплытии порождает цепочку «второго эха».
-    """
-
-    __tablename__ = "lore_echoes"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    born_day: Mapped[int] = mapped_column(Integer, index=True)
-    source_day: Mapped[int] = mapped_column(Integer)
-    kind: Mapped[str] = mapped_column(String(32))
-    title: Mapped[str] = mapped_column(String(160))
-    description: Mapped[str] = mapped_column(Text)
-    strength: Mapped[int] = mapped_column(Integer, default=1)
-    earliest_day: Mapped[int] = mapped_column(Integer, index=True)
-    status: Mapped[str] = mapped_column(String(16), default="dormant")
-    surfaced_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

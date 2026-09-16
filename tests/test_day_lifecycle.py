@@ -62,7 +62,7 @@ def _round(day_index: int, status: RoundStatus, *, voting_in_minutes: int) -> Ro
         rule_commitment="c:s",
         chapter_title=f"День {day_index}",
         chapter_text="Текст.",
-        lore_summary="Лор.",
+
         opens_at=now - timedelta(hours=25),
         voting_ends_at=now + timedelta(minutes=voting_in_minutes),
         tally_ends_at=now + timedelta(minutes=voting_in_minutes),
@@ -105,8 +105,6 @@ async def _wipe(days: list[int]) -> None:
 @pytest.fixture()
 def offline_all(monkeypatch, tmp_path):
     """Жизненный цикл без сети: генерация офлайн, картинки не качаются."""
-    monkeypatch.setattr(settings, "use_free_images", False)
-    monkeypatch.setattr(settings, "use_free_story_llm", False)
     monkeypatch.setattr(settings, "media_dir", str(tmp_path))
     monkeypatch.setattr(settings, "admin_ids", str(ADMIN_ID))
 
@@ -261,8 +259,8 @@ async def test_announce_new_day_is_text_only(monkeypatch, tmp_path) -> None:
         rule_commitment="c",
         chapter_title="Один кадр",
         chapter_text="Текст.",
-        lore_summary="лор",
-        cover_path=str(cover),
+
+
         opens_at=datetime.now(timezone.utc),
         voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=20),
         tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=21),

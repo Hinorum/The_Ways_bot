@@ -42,15 +42,12 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 
 _SQLITE_COLUMN_DDL = {
     "rounds": {
-        "cover_path": "ALTER TABLE rounds ADD COLUMN cover_path VARCHAR(400) NOT NULL DEFAULT ''",
         "pot_nanotons": "ALTER TABLE rounds ADD COLUMN pot_nanotons BIGINT NOT NULL DEFAULT 0",
         "rake_nanotons": "ALTER TABLE rounds ADD COLUMN rake_nanotons BIGINT NOT NULL DEFAULT 0",
         "payouts_finalized": "ALTER TABLE rounds ADD COLUMN payouts_finalized BOOLEAN NOT NULL DEFAULT 0",
         "epilogue_text": "ALTER TABLE rounds ADD COLUMN epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
         "announced_at": "ALTER TABLE rounds ADD COLUMN announced_at DATETIME",
         "tie_note": "ALTER TABLE rounds ADD COLUMN tie_note VARCHAR(200)",
-        "season": "ALTER TABLE rounds ADD COLUMN season VARCHAR(7)",
-        "place": "ALTER TABLE rounds ADD COLUMN place VARCHAR(80)",
         "sealed": "ALTER TABLE rounds ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT 0",
         "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
         "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
@@ -61,7 +58,6 @@ _SQLITE_COLUMN_DDL = {
     "players": {
         "wallet_address": "ALTER TABLE players ADD COLUMN wallet_address VARCHAR(80)",
         "wallet_linked_at": "ALTER TABLE players ADD COLUMN wallet_linked_at DATETIME",
-        "calling": "ALTER TABLE players ADD COLUMN calling VARCHAR(32)",
         "inspiration": "ALTER TABLE players ADD COLUMN inspiration INTEGER NOT NULL DEFAULT 0",
         "wallet_verified": "ALTER TABLE players ADD COLUMN wallet_verified BOOLEAN NOT NULL DEFAULT 0",
         "wallet_verify_code": "ALTER TABLE players ADD COLUMN wallet_verify_code VARCHAR(16)",
@@ -96,7 +92,6 @@ def _ensure_sqlite_columns(sync_conn) -> None:
 _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)",
     "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS cover_path VARCHAR(400) NOT NULL DEFAULT ''",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rake_nanotons BIGINT NOT NULL DEFAULT 0",
@@ -104,14 +99,11 @@ _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS season VARCHAR(7)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS place VARCHAR(80)",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS calling VARCHAR(32)",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)",

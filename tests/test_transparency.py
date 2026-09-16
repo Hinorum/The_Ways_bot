@@ -22,11 +22,11 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),
-        cover_path="",
+
     )
     fake_round.cards = []
     for i in range(3):
@@ -119,7 +119,7 @@ async def test_status_text_shows_results_time() -> None:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),

@@ -27,7 +27,7 @@ def _open_round(day_index: int = 5) -> Round:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),
@@ -124,11 +124,9 @@ async def has_unused(session, round_id: int, player_id: int) -> bool:
 async def test_round_schedule_follows_utc_grid(session, monkeypatch) -> None:
     """День открывается в момент конца подсчёта предыдущего и ложится на сетку UTC.
 
-    Голосование закрывается в (day_open_hour_utc - 1):00 UTC, час подсчёта —
-    и сразу после него итоги вместе с новым днём.
+    Голосование закрывается в day_close_hour_utc, дальше — мгновенный подсчёт
+    и итоги вместе с новым днём.
     """
-    monkeypatch.setattr(settings, "use_free_images", False)
-    monkeypatch.setattr(settings, "use_free_story_llm", False)
 
     from app.rounds import create_next_round_detailed
 
@@ -140,7 +138,7 @@ async def test_round_schedule_follows_utc_grid(session, monkeypatch) -> None:
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=base_opens,
         voting_ends_at=base_opens + timedelta(hours=23),
         tally_ends_at=base_opens + timedelta(hours=24),

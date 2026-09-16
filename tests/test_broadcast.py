@@ -25,8 +25,8 @@ def _round(day_index: int, media_dir) -> Round:
         rule_commitment="c:s",
         chapter_title="День проверки рассылки",
         chapter_text="Текст.",
-        lore_summary="лор",
-        cover_path=str(media_dir / cover),
+
+
         opens_at=datetime.now(timezone.utc),
         voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
         tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=24),

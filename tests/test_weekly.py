@@ -114,7 +114,7 @@ async def _seed_closed_round(session: AsyncSession, day_index: int, opens_at: da
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=opens_at,
         voting_ends_at=opens_at + timedelta(hours=23),
         tally_ends_at=opens_at + timedelta(hours=24),
@@ -428,7 +428,7 @@ async def test_settle_week_postponed_until_last_day_finalized(monkeypatch: pytes
             rule_commitment="c",
             chapter_title="t",
             chapter_text="text",
-            lore_summary="lore",
+
             opens_at=prev_end - timedelta(hours=13),
             voting_ends_at=prev_end + timedelta(hours=10),
             tally_ends_at=prev_end + timedelta(hours=11),

@@ -32,8 +32,8 @@ async def _seed(day_index: int, status: RoundStatus, *, voting_in: timedelta, ta
             rule_commitment="c:s",
             chapter_title=f"День {day_index}",
             chapter_text="Текст.",
-            lore_summary="Канон.",
-            cover_path="",
+
+
             opens_at=now - timedelta(hours=30),
             voting_ends_at=now + voting_in,
             tally_ends_at=now + tally_in,

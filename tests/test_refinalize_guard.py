@@ -35,7 +35,7 @@ async def _seed_closed_round(session, day_index: int, *, has_sent: bool) -> int:
         rule_commitment="c",
         chapter_title="Эхо",
         chapter_text="т",
-        lore_summary="т",
+
         opens_at=datetime.now(timezone.utc),
         voting_ends_at=datetime.now(timezone.utc),
         tally_ends_at=datetime.now(timezone.utc),

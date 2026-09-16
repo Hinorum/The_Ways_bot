@@ -121,7 +121,7 @@ async def make_closed_round(
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now - timedelta(hours=25),
         voting_ends_at=now - timedelta(hours=1),
         tally_ends_at=now,
@@ -145,7 +145,7 @@ async def test_register_stake_flow(session: AsyncSession, monkeypatch: pytest.Mo
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),
@@ -479,7 +479,7 @@ async def test_register_stamps_active_network(session: AsyncSession, monkeypatch
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),
@@ -532,7 +532,7 @@ def _open_round(day_index: int, status: RoundStatus = RoundStatus.OPEN) -> Round
         rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
-        lore_summary="lore",
+
         opens_at=now,
         voting_ends_at=now + timedelta(hours=23),
         tally_ends_at=now + timedelta(hours=24),

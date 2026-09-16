@@ -124,8 +124,8 @@ def _transient_round(tmp_path) -> Round:
         rule_commitment="c",
         chapter_title="День проверки /today",
         chapter_text="Текст.",
-        lore_summary="лор",
-        cover_path=str(cover),
+
+
         opens_at=datetime.now(timezone.utc),
         voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
         tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=24),

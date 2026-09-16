@@ -7,7 +7,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import LoreEcho, Round, Stake, Vote, WinRule
+from app.models import Round, Stake, Vote, WinRule
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +151,3 @@ async def _winner_and_tied(
     return pick_winner(counts, round_row.win_rule, seed=seed), tied_positions(
         counts, round_row.win_rule
     )
-
-
-async def _echoes_already_spawned(session: AsyncSession, day_index: int) -> bool:
-    result = await session.execute(
-        select(func.count())
-        .select_from(LoreEcho)
-        .where(LoreEcho.born_day == day_index)
-    )
-    return bool(result.scalar_one())

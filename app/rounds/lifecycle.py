@@ -274,7 +274,6 @@ def public_round_view(round_row: Round) -> dict:
     if round_row.status == RoundStatus.CLOSED:
         view["winner_card"] = round_row.winner_card
         view["vote_counts"] = json.loads(round_row.vote_counts_json or "{}")
-        view["lore_summary"] = round_row.lore_summary
     return view
 
 
