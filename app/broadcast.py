@@ -237,24 +237,7 @@ async def results_body(finished: Round, session=None) -> str:
     path_stakes = (economics_stats or {}).get("path_stakes", {})
     multiplier = (economics_stats or {}).get("multiplier")
 
-    # AI-генерация фразы раскрытия
-    reveal_phrase = None
-    try:
-        from app.tally import generate_reveal_phrase_ai
-        import json as _json
-        _raw = _json.loads(finished.vote_counts_json or "{}")
-        _counts = {int(k): int(v) for k, v in _raw.items()}
-        reveal_phrase = await generate_reveal_phrase_ai(
-            _counts,
-            getattr(finished, "win_rule", None),
-            finished.winner_card,
-            finished.day_index,
-            chapter_title=getattr(finished, "chapter_title", ""),
-        )
-    except Exception:
-        logger.warning("AI-фраза раскрытия дня %s не сгенерирована", getattr(finished, "day_index", "?"), exc_info=True)
-
-    text = format_results(finished, path_stakes, multiplier, reveal_override=reveal_phrase)
+    text = format_results(finished, path_stakes, multiplier)
     if economics_stats is not None:
         try:
             economics = format_economics(economics_stats)

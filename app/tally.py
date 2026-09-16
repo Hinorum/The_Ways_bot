@@ -15,7 +15,6 @@ from app.models import (
     Stake,
     Vote,
     WeeklyPot,
-    WinRule,
     RULE_PHRASES,
 )
 from app.rounds import pick_winner
@@ -119,65 +118,6 @@ async def register_memory_hit(session: AsyncSession, player_id: int, round_id: i
     return True
 
 
-def _reveal_phrase(counts: dict[int, int], win_rule, winner_card: int | None) -> str:
-    """Реплика вскрытия урны: как закон дня сыграл против голосов стаи.
-
-    Детерминированная драматургия без нейросети: сам момент раскрытия цифр —
-    главный твист суток, подавать его протоколом расточительно.
-    """
-    import random as _random
-
-    if not counts or winner_card is None or win_rule is None:
-        return "Урна пуста — стая сегодня промолчала."
-    values = sorted(counts.values())
-    w = counts.get(winner_card, 0)
-    max_v, min_v = values[-1], values[0]
-    rng = _random.Random(f"reveal:{winner_card}:{max_v}:{min_v}:{values}")
-    if win_rule == WinRule.MAJORITY:
-        phrases = (
-            f"большинство ({w} {_votes_word(w)}) само провело этот путь",
-            f"стая кричала за этот путь чаще всех — {w} {_votes_word(w)}",
-            f"{w} хвостов решили всё: закон и толпа совпали",
-        )
-    elif win_rule == WinRule.MINORITY:
-        if w >= max_v > min_v:
-            phrases = (
-                "парадокс: громче всего лаяли за другой путь — архив записал бунт",
-                "стая проголосовала против закона и проиграла сама себе",
-                "закон был против толпы, и толпа этого не заметила",
-            )
-        else:
-            phrases = (
-                f"тихие голоса ({w}) оказались точнее всех",
-                f"всего {w} хвостов пошло сюда — и именно они выбрали канон",
-                "меньшинство взяло своё: тихие оказались дальновиднее",
-            )
-    else:  # MEDIAN
-        median_v = values[len(values) // 2] if len(values) >= 3 else values[0]
-        if w == median_v:
-            phrases = (
-                f"середина ({w} {_votes_word(w)}) взяла своё: крайности остались ни с чем",
-                f"закон выбрал меру — {w} {_votes_word(w)} ровно посередине",
-            )
-        else:
-            phrases = ("счёт разошёлся с правилом так, что дневник промолчал",)
-    return phrases[rng.randrange(len(phrases))]
-
-
-async def generate_reveal_phrase_ai(
-    counts: dict[int, int],
-    win_rule,
-    winner_card: int | None,
-    day_index: int,
-    chapter_title: str = "",
-) -> str | None:
-    """Фраза раскрытия без нейросети (слой сюжета снят).
-
-    Возвращает None: итоги используют детерминированную _reveal_phrase.
-    """
-    return None
-
-
 _FLIP_SEARCH_CAP = 15  # отрыв больше этого уже не «на волоске» — строку не пишем
 
 
@@ -231,7 +171,6 @@ def format_results(
     round_row: Round,
     path_stakes: dict[int, int] | None = None,
     multiplier: float | None = None,
-    reveal_override: str | None = None,
 ) -> str:
     import json
     from app.style import result_mark
@@ -240,18 +179,7 @@ def format_results(
     counts = {int(key): int(value) for key, value in raw.items()}
     names = {card.position: _tg_escape(card.title) for card in round_row.cards}
     mark_key = str(getattr(round_row, "id", round_row.day_index))
-    if reveal_override:
-        reveal = reveal_override
-    else:
-        reveal = _reveal_phrase(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
-    lines = [
-        f"{result_mark(mark_key)} День {round_row.day_index} закрыт",
-        f"📖 Страница {round_row.day_index}: {reveal}.",
-    ]
-    total_votes = sum(counts.values())
-    if total_votes:
-        word_v = _votes_word(total_votes)
-        lines.append(f"🗳 Проголосовало: {total_votes} {word_v}")
+    lines = [f"{result_mark(mark_key)} День {round_row.day_index} закрыт"]
     # «Запись на волоске»: сколько голосов отделяло мир от другого исхода.
     margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
     if margin is not None:

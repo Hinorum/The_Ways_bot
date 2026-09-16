@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Bot
@@ -79,8 +80,14 @@ async def tick(bot: Bot | None = None) -> None:
 
                     await finalize_day_payouts(session, finished)
                     spawn(_payout_dispatch_job(), "payout_dispatch")
-                    spawn(_announce_results_job(finished.id), "announce_results")
-                    spawn(_finalize_new_day_job(finished.id), "finalize_new_day")
+                    results_task = spawn(_announce_results_job(finished.id), "announce_results")
+                    # Новый день ждёт рассылку итогов: без ожидания финализация
+                    # с нейро-контентом обгоняла итоги (флуд-паузы по retry_after)
+                    # и хронология в чатах ломалась.
+                    spawn(
+                        _finalize_new_day_job(finished.id, wait_results=results_task),
+                        "finalize_new_day",
+                    )
         except Exception:
             logger.exception("тик закрытия дня упал — откат транзакции")
             await session.rollback()
@@ -111,15 +118,19 @@ async def _announce_results_job(finished_id: int) -> None:
         logger.exception("Рассылка итогов дня упала (id=%s)", finished_id)
 
 
-async def _finalize_new_day_job(finished_id: int) -> None:
+async def _finalize_new_day_job(
+    finished_id: int, wait_results: asyncio.Task | None = None
+) -> None:
     """Тяжёлая доработка нового дня — фоном, по готовности.
 
-    Итоги уже разосланы отдельно (_announce_results_job). Здесь: write_epilogue
-    (фиксация в БД) → флаг лидерборда (последний день недели/месяца) → новый
-    день (инлайн-генерация) → анонс. Эпилог как текст отключён (слой сюжета
-    снят), но write_epilogue остаётся как пометка лидера БД.
-    Свои краткоживущие сессии (нельзя переиспользовать сессию тика — она за
-    пределами этого контекста).
+    Итоги уже разосланы отдельно (_announce_results_job); если wait_results
+    передан, анонс нового дня откладывается до полной доставки итогов — чтобы
+    игроки видели сначала хронологический итог, а не рассказ следующего дня.
+    Здесь: write_epilogue (фиксация в БД) → флаг лидерборда (последний день
+    недели/месяца) → новый день (инлайн-генерация) → анонс. Эпилог как текст
+    отключён (слой сюжета снят), но write_epilogue остаётся как пометка лидера
+    БД. Свои краткоживущие сессии (нельзя переиспользовать сессию тика — она
+    за пределами этого контекста).
     """
     from app.models import Round
 
@@ -157,6 +168,8 @@ async def _finalize_new_day_job(finished_id: int) -> None:
                 session, base_day_index=finished_day_index
             )
         if created:
+            if wait_results is not None:
+                await wait_results
             # finished не передаём: итоги уже разосланы отдельным постом.
             await announce_new_day(_bot, nxt)
     except Exception:
