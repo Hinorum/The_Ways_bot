@@ -22,7 +22,6 @@ def _round(day_index: int, media_dir) -> Round:
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c:s",
         chapter_title="День проверки рассылки",
         chapter_text="Текст.",
 
@@ -188,7 +187,6 @@ async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
 def _finished(day_index: int, media_dir) -> Round:
     finished = _round(day_index, media_dir)
     finished.status = RoundStatus.CLOSED
-    finished.sealed = False
     finished.winner_card = 1
     finished.vote_counts_json = '{"0":2,"1":1,"2":4}'
     return finished

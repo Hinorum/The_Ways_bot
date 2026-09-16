@@ -36,8 +36,6 @@ async def _materialize_round(
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule(payload["rule"]),
-        rule_commitment=payload["commitment"],
-        sealed=bool(payload.get("sealed", False)),
         chapter_title=payload["chapter_title"],
         chapter_text=payload["chapter_text"],
         opens_at=opens_at,

@@ -37,7 +37,6 @@ async def _open_round(day_index: int) -> None:
                 day_index=day_index,
                 status=RoundStatus.OPEN,
                 win_rule=WinRule.MAJORITY,
-                rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
 

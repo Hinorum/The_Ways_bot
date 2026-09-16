@@ -27,7 +27,6 @@ def _round(day_index: int, media_dir) -> Round:
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c:s",
         chapter_title="День личной рассылки",
         chapter_text="Текст.",
 
@@ -125,7 +124,6 @@ async def test_results_reach_subscribed_players(tmp_path, monkeypatch) -> None:
     await _add_player(subscribed)
     finished = _round(90003, media_dir)
     finished.status = RoundStatus.CLOSED
-    finished.sealed = False
     finished.winner_card = 1
     finished.vote_counts_json = '{"0":1,"1":2,"2":0}'
     try:
@@ -202,7 +200,6 @@ async def test_deliver_day_private_sends_finished_results(tmp_path, monkeypatch)
     subscribed = 88_171
     finished = _round(90004, media_dir)
     finished.status = RoundStatus.CLOSED
-    finished.sealed = False
     finished.winner_card = 2
     finished.vote_counts_json = '{"0":1,"1":1,"2":3}'
     next_day = _round(90005, media_dir)

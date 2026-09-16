@@ -22,7 +22,7 @@ _ECHO_ART_MOTIFS = {
 # Театр жребия: реплики к честному броску при ничьей (детерминированы сидом).
 _TIE_THEATER = (
     "Кость архива стукнула о дно урны: путь {chosen}.",
-    "Жребий запечатанного счёта лёг на {paths} — и указал {chosen}.",
+    "Жребий дня лёг на {paths} — и указал {chosen}.",
     "Дневник перевернул страницу дважды; выпало {chosen}.",
 )
 
@@ -75,8 +75,8 @@ def tied_positions(counts: dict[int, int], rule: WinRule) -> list[int]:
 
 def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) -> int:
     """Победитель по закону дня. Без seed — детерминированный fallback
-    (меньший номер пути); с seed — честный жребий, посеянный утренним
-    обязательством дня, чтобы ничья не решалась «номером карты»."""
+    (меньший номер пути); с seed — честный жребий по закону дня, чтобы
+    ничья не решалась «номером карты»."""
     candidates = tied_positions(counts, rule)
     if len(candidates) > 1 and seed:
         return random.Random(f"law:{seed}").choice(candidates)

@@ -68,16 +68,8 @@ def _utc(value: datetime) -> datetime:
 async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     from app.models import RULE_PHRASES
 
-    sealed = bool(getattr(round_row, "sealed", False))
     if round_row.status.value == "open":
-        if sealed:
-            commitment = round_row.rule_commitment.split(":")[0][:12]
-            phase = (
-                "🗝 Правило дня запечатано до итогов. "
-                f"Обязательство: {commitment}…"
-            )
-        else:
-            phase = f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
+        phase = f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
     elif round_row.status.value == "tallying":
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:

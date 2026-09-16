@@ -19,7 +19,6 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
         day_index=901,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -116,7 +115,6 @@ async def test_status_text_shows_results_time() -> None:
         day_index=3,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 

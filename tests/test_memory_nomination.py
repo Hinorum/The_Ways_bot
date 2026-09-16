@@ -11,7 +11,6 @@ def _round(day_index: int, opens_at: datetime) -> Round:
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
 

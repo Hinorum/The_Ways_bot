@@ -163,10 +163,7 @@ def format_results(
                 f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
                 "и тропа повела бы иначе."
             )
-    if getattr(round_row, "sealed", False):
-        lines.append(f"🗝 Запечатанное правило: {RULE_PHRASES[round_row.win_rule]}")
-    else:
-        lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
+    lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):

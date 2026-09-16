@@ -118,7 +118,6 @@ async def make_closed_round(
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -142,7 +141,6 @@ async def test_register_stake_flow(session: AsyncSession, monkeypatch: pytest.Mo
         day_index=1,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -476,7 +474,6 @@ async def test_register_stamps_active_network(session: AsyncSession, monkeypatch
         day_index=2,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -529,7 +526,6 @@ def _open_round(day_index: int, status: RoundStatus = RoundStatus.OPEN) -> Round
         day_index=day_index,
         status=status,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 

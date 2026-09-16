@@ -28,7 +28,6 @@ def _round_row(money_mode: bool, day_index: int, _id: int, with_cards: bool = Fa
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c:s",
         chapter_title="День версии",
         chapter_text="Текст.",
 

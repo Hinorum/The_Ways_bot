@@ -24,7 +24,6 @@ def _open_round(day_index: int = 5) -> Round:
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -135,7 +134,6 @@ async def test_round_schedule_follows_utc_grid(session, monkeypatch) -> None:
         day_index=1,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 

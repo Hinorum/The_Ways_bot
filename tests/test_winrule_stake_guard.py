@@ -30,7 +30,6 @@ async def tally_round(
         day_index=1,
         status=RoundStatus.TALLYING,
         win_rule=rule,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -124,7 +123,7 @@ async def test_guard_majority_blocks_unstaked_majority(
     )
     await finish_tally(session, round_row)
     loaded = await session.get(Round, round_row.id)
-    # Сырой MAJORITY: пути 0 и 1 поровну (ничья, решается жребием по обязательству).
+    # Сырой MAJORITY: пути 0 и 1 поровну (ничья, решается жребием).
     # За путь 0 есть ставки, за путь 1 — нет → в любом случае выигрывает путь 0.
     assert loaded.winner_card == 0
     monkeypatch.undo()

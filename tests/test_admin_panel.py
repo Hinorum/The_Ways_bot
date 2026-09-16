@@ -56,7 +56,6 @@ async def test_panel_builder_contains_core_sections(session, monkeypatch) -> Non
             day_index=97_500,
             status=RoundStatus.OPEN,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c",
             chapter_title="t",
             chapter_text="x",
 
@@ -238,7 +237,7 @@ async def test_panel_shows_payout_breakdown_and_unprocessed(session, monkeypatch
         db.add(Player(id=uid, username=f"u{uid}", wallet_address=wallet))
         rnd = Round(
             day_index=97_600, status=RoundStatus.OPEN, win_rule=WinRule.MAJORITY,
-            rule_commitment="c", chapter_title="t", chapter_text="x",
+            chapter_title="t", chapter_text="x",
             opens_at=now, voting_ends_at=now + timedelta(hours=1),
             tally_ends_at=now + timedelta(hours=2),
         )
@@ -281,7 +280,7 @@ async def test_panel_stakes_button_lists_unprocessed(monkeypatch) -> None:
         db.add(Player(id=uid, username="staker"))
         rnd = Round(
             day_index=97_601, status=RoundStatus.OPEN, win_rule=WinRule.MAJORITY,
-            rule_commitment="c", chapter_title="t", chapter_text="x",
+            chapter_title="t", chapter_text="x",
             opens_at=now, voting_ends_at=now + timedelta(hours=1),
             tally_ends_at=now + timedelta(hours=2),
         )

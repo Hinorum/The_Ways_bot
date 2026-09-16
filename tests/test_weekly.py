@@ -111,7 +111,6 @@ async def _seed_closed_round(session: AsyncSession, day_index: int, opens_at: da
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -425,7 +424,6 @@ async def test_settle_week_postponed_until_last_day_finalized(monkeypatch: pytes
             day_index=820_001,
             status=RoundStatus.TALLYING,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c",
             chapter_title="t",
             chapter_text="text",
 

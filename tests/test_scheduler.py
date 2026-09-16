@@ -29,7 +29,6 @@ async def _seed(day_index: int, status: RoundStatus, *, voting_in: timedelta, ta
             day_index=day_index,
             status=status,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c:s",
             chapter_title=f"День {day_index}",
             chapter_text="Текст.",
 

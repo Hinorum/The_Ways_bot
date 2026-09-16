@@ -27,7 +27,6 @@ async def make_closed_round(session: AsyncSession, winner_card: int, day_index: 
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 

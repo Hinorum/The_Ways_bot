@@ -59,7 +59,6 @@ def _round(day_index: int, status: RoundStatus, *, voting_in_minutes: int) -> Ro
         day_index=day_index,
         status=status,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c:s",
         chapter_title=f"День {day_index}",
         chapter_text="Текст.",
 
@@ -256,7 +255,6 @@ async def test_announce_new_day_is_text_only(monkeypatch, tmp_path) -> None:
         day_index=8001,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="Один кадр",
         chapter_text="Текст.",
 

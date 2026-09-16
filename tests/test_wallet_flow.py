@@ -158,7 +158,6 @@ async def test_rebind_locked_while_stake_in_game(monkeypatch) -> None:
             day_index=99,
             status=RoundStatus.OPEN,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c",
             chapter_title="t",
             chapter_text="x",
 
@@ -385,7 +384,6 @@ async def _seed_open_day_with_stake(uid: int, day_index: int, amount_nanotons: i
             day_index=day_index,
             status=RoundStatus.OPEN,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c",
             chapter_title="t",
             chapter_text="x",
 

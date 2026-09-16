@@ -172,7 +172,6 @@ async def test_single_stake_not_double_counted(ton_on, monkeypatch) -> None:
                 day_index=97_960,
                 status=RoundStatus.CLOSED,
                 win_rule=WinRule.MAJORITY,
-                rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
 
@@ -275,7 +274,6 @@ async def test_manual_refund_creates_net_payout_and_is_idempotent(ton_on) -> Non
                 day_index=97_961,
                 status=RoundStatus.CLOSED,
                 win_rule=WinRule.MAJORITY,
-                rule_commitment="c",
                 chapter_title="t",
                 chapter_text="x",
 
@@ -530,7 +528,6 @@ async def test_register_stake_blocked_while_paused(ton_on) -> None:
         day_index=97_901,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
 

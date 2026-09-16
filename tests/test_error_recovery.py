@@ -121,7 +121,6 @@ def _transient_round(tmp_path) -> Round:
         day_index=87_000,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="День проверки /today",
         chapter_text="Текст.",
 

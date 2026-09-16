@@ -120,9 +120,6 @@ class Round(Base):
     win_rule: Mapped[WinRule] = mapped_column(
         Enum(WinRule, native_enum=False, values_callable=_enum_values)
     )
-    rule_commitment: Mapped[str] = mapped_column(String(128))
-    # Глухой день: закон запечатан до итогов, игрокам показан только хеш.
-    sealed: Mapped[bool] = mapped_column(Boolean, default=False)
     chapter_title: Mapped[str] = mapped_column(String(300))
     chapter_text: Mapped[str] = mapped_column(Text)
     opens_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -130,8 +127,8 @@ class Round(Base):
     tally_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     winner_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vote_counts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Человеческое объяснение ничьей: «жребий закона по обязательству дня
-    # выбрал путь II из II и III». Null — победа без равенства.
+    # Человеческое объяснение ничьей: «жребий закона выбрал путь II из II и III».
+    # Null — победа без равенства.
     tie_note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Момент первой успешной рассылки дня: повторный анонс того же дня
     # невозможен даже при гонке двух процессов после деплоя.

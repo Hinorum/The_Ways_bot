@@ -247,18 +247,13 @@ async def heal_stale_rounds(session: AsyncSession) -> int:
 
 
 def public_round_view(round_row: Round) -> dict:
-    """Counts stay secret while the round is open; the law is public from the start.
-
-    В глухой день закон скрыт даже из view: наружу уходит только флаг sealed.
-    """
-    sealed = bool(getattr(round_row, "sealed", False))
+    """Counts stay secret while the round is open; the law is public from the start."""
     view = {
         "day_index": round_row.day_index,
         "status": round_row.status.value,
         "title": round_row.chapter_title,
         "text": round_row.chapter_text,
-        "win_rule": None if sealed else round_row.win_rule.value,
-        "sealed": sealed,
+        "win_rule": round_row.win_rule.value,
         "voting_ends_at": round_row.voting_ends_at,
         "tally_ends_at": round_row.tally_ends_at,
         "cards": [
@@ -299,7 +294,7 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     )
     counts = await count_votes_for_tally(session, round_row.id)
     round_row._tally_counts = counts
-    seed = f"{round_row.rule_commitment}:{round_row.day_index}"
+    seed = f"{round_row.day_index}:{round_row.win_rule.value}"
     round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed)
     await session.commit()
     return round_row
@@ -317,19 +312,19 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     counts = getattr(round_row, "_tally_counts", None) or await count_votes_for_tally(
         session, round_row.id
     )
-    seed = f"{round_row.rule_commitment}:{round_row.day_index}"
+    seed = f"{round_row.day_index}:{round_row.win_rule.value}"
     winner, tied = await _winner_and_tied(session, round_row, counts, seed)
     tie_note: str | None = None
     if len(tied) > 1:
         theater = _TIE_THEATER[
-            int(seed[-1], 16) % len(_TIE_THEATER)
+            sum(ord(c) for c in seed) % len(_TIE_THEATER)
         ].format(
             paths=" и ".join(_ROMAN[p] for p in tied),
             chosen=_ROMAN[winner],
         )
         tie_note = (
             f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
-            f"жребий закона по обязательству дня выбрал путь {_ROMAN[winner]}. "
+            f"жребий закона выбрал путь {_ROMAN[winner]}. "
             f"{theater}"
         )[:200]
     if not round_row.cards:

@@ -32,7 +32,6 @@ async def _seed_closed_round(session, day_index: int, *, has_sent: bool) -> int:
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="Эхо",
         chapter_text="т",
 

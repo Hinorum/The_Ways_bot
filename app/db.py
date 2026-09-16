@@ -48,7 +48,6 @@ _SQLITE_COLUMN_DDL = {
         "epilogue_text": "ALTER TABLE rounds ADD COLUMN epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
         "announced_at": "ALTER TABLE rounds ADD COLUMN announced_at DATETIME",
         "tie_note": "ALTER TABLE rounds ADD COLUMN tie_note VARCHAR(200)",
-        "sealed": "ALTER TABLE rounds ADD COLUMN sealed BOOLEAN NOT NULL DEFAULT 0",
         "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
         "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
     },
@@ -90,7 +89,6 @@ def _ensure_sqlite_columns(sync_conn) -> None:
 
 
 _PG_MIGRATIONS: list[str] = [
-    "ALTER TABLE rounds ALTER COLUMN rule_commitment TYPE VARCHAR(128)",
     "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
@@ -100,7 +98,6 @@ _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS sealed BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ",

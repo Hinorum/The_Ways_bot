@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import secrets
 from datetime import datetime
@@ -47,21 +46,16 @@ _TEMPLATE_CARDS: list[dict] = [
 ]
 
 
-def commit_rule(rule: WinRule, salt: str) -> str:
-    return hashlib.sha256(f"{rule.value}:{salt}".encode()).hexdigest()
-
-
 async def _plan_and_render(
     session: AsyncSession,
     day_index: int,
     opens_hint: datetime | None = None,
 ) -> dict:
-    """Собирает день без сюжета: заголовок, три дороги и запечатанный закон.
+    """Собирает день без сюжета: заголовок, три дороги и публичный закон.
 
     Сеть не трогается: никакой главы, арта и библии. Механика дня (банк,
-    голоса TON, жребий по обязательству, выплаты) работает на этом шаблоне.
+    голоса TON, жребий при ничьей, выплаты) работает на этом шаблоне.
     """
-    salt = secrets.token_hex(16)
     rng = secrets.SystemRandom()
     rule = rng.choice(list(WinRule))
     cards_payload = [dict(card) for card in _TEMPLATE_CARDS]
@@ -73,8 +67,6 @@ async def _plan_and_render(
         "v": PREPARED_PAYLOAD_VERSION,
         "day_index": day_index,
         "rule": rule.value,
-        "commitment": commit_rule(rule, salt) + ":" + salt,
-        "sealed": False,
         "chapter_title": f"День {day_index}",
         "chapter_text": chapter_text,
         "cards": cards_payload,

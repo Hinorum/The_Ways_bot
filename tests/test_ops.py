@@ -38,7 +38,6 @@ def _closed_round(day_index: int, tally_at: datetime) -> Round:
         day_index=day_index,
         status=RoundStatus.CLOSED,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="text",
 
@@ -776,7 +775,6 @@ async def test_monthly_pot_waits_until_last_day_finalized(monkeypatch: pytest.Mo
             day_index=704_001,
             status=RoundStatus.TALLYING,
             win_rule=WinRule.MAJORITY,
-            rule_commitment="c",
             chapter_title="t",
             chapter_text="text",
 
@@ -1016,7 +1014,6 @@ def _open_round(day_index: int) -> Round:
         day_index=day_index,
         status=RoundStatus.OPEN,
         win_rule=WinRule.MAJORITY,
-        rule_commitment="c",
         chapter_title="t",
         chapter_text="x",
 
