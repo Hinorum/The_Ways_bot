@@ -159,6 +159,76 @@ async def test_toncenter_stops_at_empty_history(monkeypatch) -> None:
     assert len(capture) == 1
 
 
+# ---------- Сверка «по-требованию»: досрочный стоп по целям ----------
+
+
+async def test_toncenter_reconcile_stops_when_all_targets_found(monkeypatch) -> None:
+    """targets найдены на 2-й странице — дальше вглубь, до конца окна, не ходим.
+
+    Сверка sent-выплат не шерстит всю историю слепо: суммы к подтверждению
+    почти всегда на первой-второй странице, и лишние запросы в провайдера = 0.
+    """
+    now = int(time.time())
+    monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 200)
+    monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
+    monkeypatch.setattr(settings, "ton_network", "testnet")
+    monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
+    pages = _build_pages(now, _toncenter_item)
+    capture: list[dict] = []
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+
+    tx_map = await ton_pay._tx_map_via_toncenter(targets={"way:1:pr#160"})
+    offsets = [p["offset"] for p in capture]
+    assert offsets == [0, 128]
+    assert tx_map["way:1:pr#160"] == "h1000160"  # найдена на второй странице
+
+
+async def test_toncenter_reconcile_stops_at_first_page_when_target_clean(monkeypatch) -> None:
+    """Цель лежит уже на первой странице — один запрос, ноль лишних."""
+    now = int(time.time())
+    monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 200)
+    monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
+    monkeypatch.setattr(settings, "ton_network", "testnet")
+    monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
+    pages = _build_pages(now, _toncenter_item)
+    capture: list[dict] = []
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+
+    tx_map = await ton_pay._tx_map_via_toncenter(targets={"way:1:pr#5"})
+    assert [p["offset"] for p in capture] == [0]
+    assert tx_map["way:1:pr#5"] == "h1000005"
+
+
+async def test_tonapi_reconcile_stops_at_first_page_when_target_clean(monkeypatch) -> None:
+    """Та же досрочная остановка на основном провайдере (TonAPI)."""
+    now = int(time.time())
+    monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 200)
+    monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
+    monkeypatch.setattr(settings, "ton_network", "testnet")
+    monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
+    pages = _build_pages(now, _tonapi_item)
+    capture: list[dict] = []
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+
+    tx_map = await ton_pay._tx_map_via_tonapi(targets={"way:1:pr#5"})
+    assert [p["offset"] for p in capture] == [0]
+    assert tx_map["way:1:pr#5"] == "h1000005"
+
+
+async def test_fetch_broadcast_tx_map_passes_targets_to_fetchers(monkeypatch) -> None:
+    """fetch_broadcast_tx_map пробрасывает цели в оба фетчера."""
+    seen: dict[str, set[str]] = {}
+
+    async def fake_api(targets: set[str] | None) -> dict[str, str]:
+        seen["api"] = targets if targets is None or targets == set() else targets
+        return {}
+
+    monkeypatch.setattr(ton_pay, "_tx_map_via_tonapi", fake_api)
+    result = await ton_pay.fetch_broadcast_tx_map(targets={"way:1:pr#1"})
+    assert result == {}
+    assert seen["api"] == {"way:1:pr#1"}
+
+
 # ---------- Guard: повтор при недоступной истории ----------
 
 

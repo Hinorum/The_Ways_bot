@@ -45,7 +45,7 @@ async def test_confirm_replaces_bcast_marker_with_real_hash(monkeypatch) -> None
     """memo найдено в истории — bcast-метка заменяется реальным хешем."""
     payout_id = await _seed_sent_payout()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {f"way:64:prize#{payout_id}": "0" * 64}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -66,7 +66,7 @@ async def test_confirm_requeues_lost_transfer(monkeypatch) -> None:
     """memo нет в истории, окно верификации истекло — перевод не ушёл: retry."""
     payout_id = await _seed_sent_payout()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {"way:63:prize#1": "0" * 64}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -92,7 +92,7 @@ async def test_confirm_leaves_fresh_broadcast_alone(monkeypatch) -> None:
         row.sent_at = datetime.now(timezone.utc) - timedelta(seconds=30)
         await session.commit()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {"another": "0" * 64}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -115,7 +115,7 @@ async def test_confirm_skips_when_history_empty(monkeypatch) -> None:
     memo могло успеть попасть в блок, а история ещё не отвечает."""
     payout_id = await _seed_sent_payout()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -139,7 +139,7 @@ async def test_confirm_uses_comment_override(monkeypatch) -> None:
         row.comment_override = "техработы 12.09"
         await session.commit()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {"техработы 12.09": "1" * 64}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -173,7 +173,7 @@ async def test_confirm_ignores_other_networks(monkeypatch) -> None:
         payout_id = payout.id
         await session.commit()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {f"way:64:prize#{payout_id}": "2" * 64}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)
@@ -202,7 +202,7 @@ async def test_confirm_skips_rows_with_real_hash(monkeypatch) -> None:
         payout_id = payout.id
         await session.commit()
 
-    async def fake_tx_map() -> dict[str, str]:
+    async def fake_tx_map(**kwargs) -> dict[str, str]:
         return {}
 
     monkeypatch.setattr(ton_pay, "fetch_broadcast_tx_map", fake_tx_map)

@@ -352,7 +352,7 @@ def _out_comments_toncenter(item: dict) -> list[str]:
     return comments
 
 
-async def _tx_map_via_tonapi() -> dict[str, str]:
+async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
     """memo исходящих казначея → реальный хеш (TonAPI v2), страницами вглубь.
 
     Одна страница (128 tx) — слишком мелкое окно: в длинной очереди слово
@@ -360,7 +360,13 @@ async def _tx_map_via_tonapi() -> dict[str, str]:
     глубже 128 свежих транзакций), и сверка возвращает в очередь уже ушедший
     перевод. Ходим страницами (offset) вниз по времени, пока не накроем
     payout_reconcile_history_seconds или не упрёмся в пустую/повторную страницу.
+
+    targets — кому это нужно: жадный полный скан (12 страниц) заменяется
+    проходом до момента, когда ВСЕ цели найдены. Отсутствующая цель при этом
+    вынуждает дойти до конца окна — отрицательный ответ остаётся честным.
     """
+    if not settings.active_treasury_address:
+        return {}
     if not settings.active_treasury_address:
         return {}
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
@@ -394,6 +400,8 @@ async def _tx_map_via_tonapi() -> dict[str, str]:
             # переводов с разными memo — все попадают в карту.
             for comment in _out_comments_tonapi(item):
                 tx_map[comment] = tx_hash
+        if targets and targets <= set(tx_map):
+            break  # цели найдены — дальше вглубь незачем (экономия запросов)
         oldest_utime = items[-1].get("utime")
         if oldest_utime is not None and float(oldest_utime) < cutoff:
             break  # окно истории покрыто
@@ -401,11 +409,12 @@ async def _tx_map_via_tonapi() -> dict[str, str]:
     return tx_map
 
 
-async def _tx_map_via_toncenter() -> dict[str, str]:
+async def _tx_map_via_toncenter(targets: set[str] | None = None) -> dict[str, str]:
     """memo исходящих казначея → реальный хеш (Toncenter v3), страницами вглубь.
 
     То же глубокое окно, что в _tx_map_via_tonapi, но через параметр offset
     резервного провайдера: анти-дубль не должен слепнуть там, где TonAPI молчит.
+    targets — см. _tx_map_via_tonapi: досрочный стоп после нахождения всех целей.
     """
     if not settings.active_treasury_address:
         return {}
@@ -439,6 +448,8 @@ async def _tx_map_via_toncenter() -> dict[str, str]:
                 continue
             for comment in _out_comments_toncenter(item):
                 tx_map[comment] = tx_hash
+        if targets and targets <= set(tx_map):
+            break  # цели найдены — дальше вглубь незачем (экономия запросов)
         oldest_utime = items[-1].get("utime")
         if oldest_utime is not None and float(oldest_utime) < cutoff:
             break
@@ -446,17 +457,21 @@ async def _tx_map_via_toncenter() -> dict[str, str]:
     return tx_map
 
 
-async def fetch_broadcast_tx_map() -> dict[str, str]:
+async def fetch_broadcast_tx_map(targets: set[str] | None = None) -> dict[str, str]:
     """memo последних исходящих казначея → реальный хеш транзакции.
 
     TonAPI → фолбэк Toncenter. Пустой результат при сбое сети значит
     «не знаем»: сверщик (confirm_broadcast_payouts) в этом случае НИЧЕГО
     не решает — ни подтверждает, ни возвращает в очередь (риск задвоить).
+
+    targets (необязательно) — подмножество memo, ради которого ходим:
+    скан останавливается, как только все цели найдены. Кому-то ещё нужен
+    полный скан окна — зовут без targets и получают прежнее поведение.
     """
     global _RECONCILE_HISTORY_OK
     for fetch in (_tx_map_via_tonapi, _tx_map_via_toncenter):
         try:
-            result = await fetch()
+            result = await fetch(targets)
             _RECONCILE_HISTORY_OK = True
             return result
         except Exception as exc:
@@ -599,7 +614,15 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
             )
             if not rows:
                 return 0
-            tx_map = await fetch_broadcast_tx_map()
+            # Сверять нужно ТОЛЬКО эти memo (sent-без-реального-хеша): ищем их,
+            # а не шерстим всю историю слепо. Как только все найдены — стоп:
+            # запросов в квартал провайдера минимум, а «нет в истории» остаётся
+            # правдивым (отсутствующая цель дожимает скан до конца окна).
+            targets = {
+                payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+                for payout in rows
+            }
+            tx_map = await fetch_broadcast_tx_map(targets=targets)
             if not tx_map:
                 logger.warning("История казначея недоступна — сверка sent-выплат пропущена")
                 return 0
