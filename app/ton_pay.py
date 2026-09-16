@@ -424,8 +424,8 @@ async def fetch_masterchain_entropy() -> str | None:
     )
     for url, headers, pick in candidates:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await http_get_with_retry(client, url, headers=headers)
+            async with httpx.AsyncClient(timeout=8) as client:
+                response = await http_get_with_retry(client, url, headers=headers, max_retries=0)
                 response.raise_for_status()
                 block = pick(response.json())
             seqno = block.get("seqno")

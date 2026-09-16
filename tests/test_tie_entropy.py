@@ -165,3 +165,30 @@ async def test_tie_without_ton_falls_back_to_legacy_seed(
         assert "блоком TON" not in (loaded.tie_note or "")
     finally:
         await session.rollback()
+
+
+async def test_tie_note_reaches_results_post(
+    session, monkeypatch: __import__("pytest").MonkeyPatch
+) -> None:
+    """Конечная связь: tie_note с блоком реально уходит в пост итогов (format_results)."""
+    from app.broadcast import results_message
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+
+    async def fake_fetch() -> str:
+        return "93123949:abcdef"
+
+    monkeypatch.setattr("app.ton_pay.fetch_masterchain_entropy", fake_fetch)
+
+    round_row = await _seed_tied_day(session, 840)
+    try:
+        await close_voting(session, round_row)
+        loaded = await session.get(Round, round_row.id)
+        loaded.status = RoundStatus.TALLYING
+        await finish_tally(session, loaded)
+        closed = await session.get(Round, round_row.id)
+        text = await results_message(closed, session)
+        assert "блоком TON №93123949" in text
+        assert "93123949" in text  # seqno блока виден игрокам — можно перепроверить
+    finally:
+        await session.rollback()
