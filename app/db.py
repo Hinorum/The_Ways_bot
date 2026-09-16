@@ -79,6 +79,11 @@ _SQLITE_COLUMN_DDL = {
 }
 
 
+_SQLITE_COLUMN_DROP = {
+    "rounds": ("rule_commitment", "sealed"),
+}
+
+
 def _ensure_sqlite_columns(sync_conn) -> None:
     inspector = inspect(sync_conn)
     for table, statements in _SQLITE_COLUMN_DDL.items():
@@ -86,9 +91,18 @@ def _ensure_sqlite_columns(sync_conn) -> None:
         for name, ddl in statements.items():
             if name not in columns:
                 sync_conn.execute(text(ddl))
+    # Осиротевшие колонки удалённых механик: на живой базе они остаются
+    # из старой схемы и ломают INSERT (NOT NULL без default в модели).
+    for table, columns in _SQLITE_COLUMN_DROP.items():
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        for name in columns:
+            if name in existing:
+                sync_conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {name}"))
 
 
 _PG_MIGRATIONS: list[str] = [
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS rule_commitment",
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS sealed",
     "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
