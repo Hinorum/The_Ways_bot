@@ -4,13 +4,13 @@ import logging
 import signal
 from pathlib import Path
 
-import httpx
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from app.config import settings
 from app.db import init_db
 from app.handlers import build_dispatcher, create_bot
+from app.http_utils import close_http_client, get_http_client
 from app.profile import apply_profile
 from app.scheduler import set_bot, start_scheduler, tick
 from app.ton_utils import normalize_address
@@ -71,8 +71,8 @@ async def _self_ping_loop(stop: asyncio.Event) -> None:
         headers["Authorization"] = f"Bearer {settings.health_token.strip()}"
     while not stop.is_set():
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.get(url, headers=headers)
+            client = get_http_client()
+            response = await client.get(url, headers=headers)
             log.info("self-ping %s -> %s", url, response.status_code)
         except Exception as exc:
             log.warning("self-ping не удался: %s", exc)
@@ -217,6 +217,7 @@ async def run_webhook(bot, dispatcher) -> None:
             await task
     await runner.cleanup()
     await bot.session.close()
+    await close_http_client()
 
 
 def ensure_webhook_secret() -> None:

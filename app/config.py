@@ -180,6 +180,10 @@ class Settings(BaseSettings):
     # (сек от текущего момента), но не дальше payout_reconcile_max_pages страниц.
     payout_reconcile_history_seconds: int = 604800  # 7 суток
     payout_reconcile_max_pages: int = 12
+    # Сколько суток держать запись сбойной транзакции в stuck-списке
+    # watcher_state (ton_watch_stuck_tx). Врачующийся вход помечается
+    # reported и больше не тревожит — без ротации такие записи висят вечно.
+    stuck_retention_days: int = 7
     # Глубина скана входящих переводов казначея за один цикл наблюдателя:
     # до watch_max_pages страниц по watch_page_limit транзакций. Курсор делает
     # покрытие кумулятивным — после простоя хвост догоняется за пару циклов.

@@ -36,13 +36,12 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from aiogram import Bot
 from sqlalchemy import func, or_, select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.http_utils import http_get_with_retry
+from app.http_utils import get_http_client, http_get_with_retry
 from app.models import Income, Payout, Player, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
 from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
@@ -183,10 +182,10 @@ async def resolve_dead_payout(session, payout_id: int, action: str) -> str | Non
 
 async def _fetch_remote_json(url: str) -> dict:
     """Скачивает JSON (конфиг лайтсерверов) с редиректами."""
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.json()
+    client = get_http_client()
+    response = await client.get(url)
+    response.raise_for_status()
+    return response.json()
 
 
 async def _get_wallet():
@@ -371,34 +370,34 @@ async def _tx_map_via_tonapi() -> dict[str, str]:
     max_pages = max(1, settings.payout_reconcile_max_pages)
     offset = 0
     first_hash: str | None = None
-    async with httpx.AsyncClient(timeout=15) as client:
-        for _ in range(max_pages):
-            response = await client.get(
-                url,
-                params={"limit": _RECONCILE_PAGE_LIMIT, "sort_order": "desc", "offset": offset},
-                headers=headers,
-            )
-            response.raise_for_status()
-            items = response.json().get("transactions") or []
-            if not items:
-                break
-            page_first_hash = str(items[0].get("hash") or "")
-            if page_first_hash and page_first_hash == first_hash:
-                break  # пагинация не сдвинулась (провайдер не взял offset) — хватит
-            first_hash = page_first_hash
-            for item in items:
-                tx_hash = str(item.get("hash") or "")
-                if not tx_hash:
-                    continue
-                # Каждая исходящая транзакция казначея имеет hash; комментарий
-                # берём из её out_msgs. Если в одной транзакции несколько
-                # переводов с разными memo — все попадают в карту.
-                for comment in _out_comments_tonapi(item):
-                    tx_map[comment] = tx_hash
-            oldest_utime = items[-1].get("utime")
-            if oldest_utime is not None and float(oldest_utime) < cutoff:
-                break  # окно истории покрыто
-            offset += _RECONCILE_PAGE_LIMIT
+    client = get_http_client()
+    for _ in range(max_pages):
+        response = await client.get(
+            url,
+            params={"limit": _RECONCILE_PAGE_LIMIT, "sort_order": "desc", "offset": offset},
+            headers=headers,
+        )
+        response.raise_for_status()
+        items = response.json().get("transactions") or []
+        if not items:
+            break
+        page_first_hash = str(items[0].get("hash") or "")
+        if page_first_hash and page_first_hash == first_hash:
+            break  # пагинация не сдвинулась (провайдер не взял offset) — хватит
+        first_hash = page_first_hash
+        for item in items:
+            tx_hash = str(item.get("hash") or "")
+            if not tx_hash:
+                continue
+            # Каждая исходящая транзакция казначея имеет hash; комментарий
+            # берём из её out_msgs. Если в одной транзакции несколько
+            # переводов с разными memo — все попадают в карту.
+            for comment in _out_comments_tonapi(item):
+                tx_map[comment] = tx_hash
+        oldest_utime = items[-1].get("utime")
+        if oldest_utime is not None and float(oldest_utime) < cutoff:
+            break  # окно истории покрыто
+        offset += _RECONCILE_PAGE_LIMIT
     return tx_map
 
 
@@ -417,33 +416,33 @@ async def _tx_map_via_toncenter() -> dict[str, str]:
     max_pages = max(1, settings.payout_reconcile_max_pages)
     offset = 0
     first_hash: str | None = None
-    async with httpx.AsyncClient(timeout=15) as client:
-        for _ in range(max_pages):
-            params = {
-                "account": settings.active_treasury_address,
-                "limit": _RECONCILE_PAGE_LIMIT,
-                "sort": "desc",
-                "offset": offset,
-            }
-            response = await http_get_with_retry(client, url, params=params, headers=headers)
-            response.raise_for_status()
-            items = response.json().get("transactions") or []
-            if not items:
-                break
-            page_first_hash = str(items[0].get("hash") or "")
-            if page_first_hash and page_first_hash == first_hash:
-                break
-            first_hash = page_first_hash
-            for item in items:
-                tx_hash = str(item.get("hash") or "")
-                if not tx_hash:
-                    continue
-                for comment in _out_comments_toncenter(item):
-                    tx_map[comment] = tx_hash
-            oldest_utime = items[-1].get("utime")
-            if oldest_utime is not None and float(oldest_utime) < cutoff:
-                break
-            offset += _RECONCILE_PAGE_LIMIT
+    client = get_http_client()
+    for _ in range(max_pages):
+        params = {
+            "account": settings.active_treasury_address,
+            "limit": _RECONCILE_PAGE_LIMIT,
+            "sort": "desc",
+            "offset": offset,
+        }
+        response = await http_get_with_retry(client, url, params=params, headers=headers)
+        response.raise_for_status()
+        items = response.json().get("transactions") or []
+        if not items:
+            break
+        page_first_hash = str(items[0].get("hash") or "")
+        if page_first_hash and page_first_hash == first_hash:
+            break
+        first_hash = page_first_hash
+        for item in items:
+            tx_hash = str(item.get("hash") or "")
+            if not tx_hash:
+                continue
+            for comment in _out_comments_toncenter(item):
+                tx_map[comment] = tx_hash
+        oldest_utime = items[-1].get("utime")
+        if oldest_utime is not None and float(oldest_utime) < cutoff:
+            break
+        offset += _RECONCILE_PAGE_LIMIT
     return tx_map
 
 
@@ -491,10 +490,10 @@ async def fetch_masterchain_entropy() -> str | None:
     )
     for url, headers, pick in candidates:
         try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                response = await http_get_with_retry(client, url, headers=headers, max_retries=0)
-                response.raise_for_status()
-                block = pick(response.json())
+            client = get_http_client()
+            response = await http_get_with_retry(client, url, headers=headers, max_retries=0, timeout=8.0)
+            response.raise_for_status()
+            block = pick(response.json())
             seqno = block.get("seqno")
             root_hash = block.get("root_hash")
             if seqno is not None and root_hash:
@@ -1020,20 +1019,20 @@ async def settle_closed_rounds(bot: Bot | None = None) -> int:
 async def _tonapi_account_raw(address: str) -> dict:
     url = f"{settings.active_ton_api_base}/v2/accounts/{address}"
     headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await http_get_with_retry(client, url, headers=headers)
-        response.raise_for_status()
-        return response.json()
+    client = get_http_client()
+    response = await http_get_with_retry(client, url, headers=headers)
+    response.raise_for_status()
+    return response.json()
 
 
 async def _toncenter_account(address: str) -> dict:
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/accountInformation"
     headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        # v3 ждёт query-параметр «account», а не «address» (как в /api/v3/transactions).
-        response = await http_get_with_retry(client, url, params={"account": address}, headers=headers)
-        response.raise_for_status()
-        return response.json()
+    # v3 ждёт query-параметр «account», а не «address» (как в /api/v3/transactions).
+    client = get_http_client()
+    response = await http_get_with_retry(client, url, params={"account": address}, headers=headers)
+    response.raise_for_status()
+    return response.json()
 
 
 async def fetch_account_state() -> tuple[int | None, str | None, str]:

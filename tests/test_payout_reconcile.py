@@ -50,7 +50,7 @@ class _FakeClient:
     async def __aexit__(self, *exc) -> bool:
         return False
 
-    async def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> _FakeResp:
+    async def get(self, url: str, params: dict | None = None, headers: dict | None = None, **kwargs) -> _FakeResp:
         params = dict(params or {})
         self._capture.append(params)
         offset = int(params.get("offset", 0))
@@ -101,7 +101,7 @@ async def test_toncenter_reconcile_pagination_goes_deep(monkeypatch) -> None:
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
     pages = _build_pages(now, _toncenter_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", lambda *a, **k: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
 
     tx_map = await ton_pay._tx_map_via_toncenter()
     offsets = [p["offset"] for p in capture]
@@ -121,7 +121,7 @@ async def test_tonapi_reconcile_pagination_uses_offset(monkeypatch) -> None:
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
     pages = _build_pages(now, _tonapi_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", lambda *a, **k: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
 
     tx_map = await ton_pay._tx_map_via_tonapi()
     offsets = [p["offset"] for p in capture]
@@ -139,7 +139,7 @@ async def test_toncenter_breaks_when_offset_not_honored(monkeypatch) -> None:
     page = [_toncenter_item(1_000_000 + i, now - i, f"way:5:rake#{i}") for i in range(128)]
     capture: list[dict] = []
     # На любой offset отдаём одну и ту же страницу: первый хеш повторится.
-    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", lambda *a, **k: _FakeClient([page, page], capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient([page, page], capture))
 
     tx_map = await ton_pay._tx_map_via_toncenter()
     assert len(capture) == 2, "провайдер без offset должен обрываться после повтора страницы"
@@ -153,7 +153,7 @@ async def test_toncenter_stops_at_empty_history(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", lambda *a, **k: _FakeClient([], capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient([], capture))
     tx_map = await ton_pay._tx_map_via_toncenter()
     assert tx_map == {}
     assert len(capture) == 1

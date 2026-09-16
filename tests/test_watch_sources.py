@@ -57,7 +57,7 @@ def install_http(monkeypatch: pytest.MonkeyPatch, routes: dict[str, list]) -> li
         async def __aexit__(self, *exc_info) -> bool:
             return False
 
-        async def get(self, url, params=None, headers=None):
+        async def get(self, url, params=None, headers=None, **kwargs):
             calls.append((url, dict(params or {})))
             for fragment, queue in routes.items():
                 if fragment in url:
@@ -68,7 +68,7 @@ def install_http(monkeypatch: pytest.MonkeyPatch, routes: dict[str, list]) -> li
                     return item
             raise AssertionError(f"нет заглушки для {url}")
 
-    monkeypatch.setattr(ton_watch.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(ton_watch, "get_http_client", lambda: _Client())
     return calls
 
 

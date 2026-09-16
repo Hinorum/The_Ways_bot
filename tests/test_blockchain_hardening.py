@@ -149,10 +149,27 @@ def test_cursor_overlap_default_nonnegative(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_stuck_roundtrip(session: AsyncSession) -> None:
-    """json-сериализация stuck-списка переживает чтение/запись."""
-    await ton_watch._write_stuck(session, {"tx-1": {"utime": 100, "fails": 2}})
+    """json-сериализация stuck-списка переживает чтение/запись (свежий utime)."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    await ton_watch._write_stuck(session, {"tx-1": {"utime": now, "fails": 2}})
     loaded = await ton_watch._read_stuck(session)
-    assert loaded == {"tx-1": {"utime": 100, "fails": 2}}
+    assert loaded == {"tx-1": {"utime": now, "fails": 2}}
+
+
+async def test_stuck_retention_drops_old_entries(session: AsyncSession) -> None:
+    """Врачующиеся записи старше stuck_retention_days уходят при записи."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    stale = now - (settings.stuck_retention_days + 1) * 86_400
+    await ton_watch._write_stuck(
+        session,
+        {
+            "old": {"utime": stale, "fails": 9, "reported": True},
+            "frozen": {"utime": stale, "fails": 1},
+            "fresh": {"utime": now, "fails": 2},
+        },
+    )
+    loaded = await ton_watch._read_stuck(session)
+    assert list(loaded) == ["fresh"]
 
 
 def test_stuck_load_tolerates_bad_json(session: AsyncSession) -> None:

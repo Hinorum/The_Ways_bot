@@ -17,7 +17,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from aiogram import Bot
 from sqlalchemy import select
 
@@ -27,7 +26,7 @@ from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, 
 from app.payments import parse_revote_memo, parse_verify_memo
 from app.ops import claim_once, is_game_paused
 from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, STUCK_TX_KEY, WALLET_NORM_KEY
-from app.http_utils import http_get_with_retry
+from app.http_utils import get_http_client, http_get_with_retry
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
 
@@ -86,16 +85,16 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
     headers = _api_headers(settings.ton_api_key)
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await http_get_with_retry(
-                client, url,
-                params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before": before_hash} if before_hash else {})},
-                headers=headers,
-            )
-            if response.status_code == 404:
-                # Пустая история бывает у двух причин: кошелёк правда молчал
-                # или индексатор потерял историю. Различаем честно.
-                return await _resolve_tonapi_empty_history(since_utime)
+        client = get_http_client()
+        response = await http_get_with_retry(
+            client, url,
+            params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before": before_hash} if before_hash else {})},
+            headers=headers,
+        )
+        if response.status_code == 404:
+            # Пустая история бывает у двух причин: кошелёк правда молчал
+            # или индексатор потерял историю. Различаем честно.
+            return await _resolve_tonapi_empty_history(since_utime)
             response.raise_for_status()
             items = response.json().get("transactions", [])
     except Exception as exc:
@@ -144,8 +143,8 @@ async def _tonapi_account_info() -> dict | None:
     """Карточка казначея в TonAPI (/v2/accounts/{адрес}) или None при сбое."""
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}"
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await http_get_with_retry(client, url, headers=_api_headers(settings.ton_api_key))
+        client = get_http_client()
+        response = await http_get_with_retry(client, url, headers=_api_headers(settings.ton_api_key))
     except Exception as exc:
         logger.warning("TonAPI не ответил на запрос карточки аккаунта: %s", exc)
         return None
@@ -302,10 +301,10 @@ async def _toncenter_page(since_utime: int, before_lt: str | None = None) -> tup
     if before_lt:
         params["before_lt"] = before_lt
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await http_get_with_retry(client, url, params=params, headers=_api_headers(settings.toncenter_api_key))
-            response.raise_for_status()
-            items = response.json().get("transactions") or []
+        client = get_http_client()
+        response = await http_get_with_retry(client, url, params=params, headers=_api_headers(settings.toncenter_api_key))
+        response.raise_for_status()
+        items = response.json().get("transactions") or []
     except Exception as exc:
         logger.warning("Toncenter v3 недоступен: %s", exc)
         return [], _PAGE_DEGRADED
@@ -1010,6 +1009,15 @@ async def _read_stuck(session) -> dict:
 
 
 async def _write_stuck(session, stuck: dict) -> None:
+    # Ротация: запись сбойной транзакции живёт ограниченно (stuck_retention_days).
+    # Без прунинга врачующиеся (reported) входы висели бы в watcher_state вечно,
+    # отравляя /blockchain и ручной разбор. Свежие незарепортированные НЕ трогаем.
+    cutoff = time.time() - settings.stuck_retention_days * 86400
+    stuck = {
+        hash_: rec
+        for hash_, rec in stuck.items()
+        if isinstance(rec, dict) and float(rec.get("utime") or 0) >= cutoff
+    }
     row = await session.get(WatcherState, STUCK_TX_KEY)
     if row is None:
         session.add(WatcherState(key=STUCK_TX_KEY, value=json.dumps(stuck)))

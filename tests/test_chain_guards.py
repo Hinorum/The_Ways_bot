@@ -332,12 +332,12 @@ async def test_toncenter_account_uses_account_param(monkeypatch) -> None:
         async def __aexit__(self, *exc_info) -> bool:
             return False
 
-        async def get(self, url, params=None, headers=None):
+        async def get(self, url, params=None, headers=None, **kwargs):
             calls.append((url, dict(params or {})))
             return _AccountResp(200, {"balance": "1234567890", "status": "active"})
 
 
-    monkeypatch.setattr(ton_pay.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _Client())
     data = await ton_pay._toncenter_account(treasury)
     assert data["balance"] == "1234567890"
     _, params = calls[-1]
