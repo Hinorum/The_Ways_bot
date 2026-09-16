@@ -393,3 +393,18 @@ async def cmd_revenue(message: Message) -> None:
         await message.answer("Команда только для хранителя игры.")
         return
     await message.answer(await _revenue_text())
+
+
+@router.message(Command("blockchain"))
+async def cmd_blockchain(message: Message) -> None:
+    """Аудит блокчейн-контура: watcher, очередь выплат, казна, сверка истории."""
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    from app.ton_pay import blockchain_diagnostics
+
+    try:
+        await message.answer(await blockchain_diagnostics())
+    except Exception as exc:
+        logger.exception("Отчёт /blockchain не собран")
+        await message.answer(f"Не собрал отчёт: {exc}")

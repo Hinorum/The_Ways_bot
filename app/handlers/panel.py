@@ -82,6 +82,7 @@ _PANEL_FOOTER = (
     "/payout &lt;id&gt; retry|spam — ручной разбор долга\n"
     "/return &lt;id&gt; — ручной возврат ставки\n"
     "/treasury — казначей: баланс и пара ключей\n"
+    "/blockchain — аудит блокчейн-контура (watcher, очередь, stuck, сверка)\n"
     "/adjust — сверка казны: ручной вывод или пропажа средств ⚖️\n"
     "/fundout &lt;Gram&gt; &lt;причина&gt; — раздача Фонда Стаи\n"
     "/disputes — список открытых споров\n"

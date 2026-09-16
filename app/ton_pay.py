@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -65,6 +67,20 @@ _batch_seqno: int | None = None
 # /refinalize. _reset_retriable оживляет строки sending → pending, поэтому
 # без лока второй цикл, стартовавший, пока первый вещает, задвоил бы платёж.
 _DISPATCH_LOCK = asyncio.Lock()
+
+# Размер страницы истории казначея: одна страница (128 tx) слишком мелкая для
+# анти-дубля в длинной очереди — memo «уже отправленного» уходит за окно, и
+# сверка думает «перевода нет». Глубина покрытия задаётся настройками
+# payout_reconcile_history_seconds / payout_reconcile_max_pages.
+_RECONCILE_PAGE_LIMIT = 128
+# Доступна ли история казначея В ПОСЛЕДНЕМ опросе. Пусто set() в маркерах
+# означает и «транзакций нет вообще», и «провайдеры молчат»; диспетчеру при
+# повторе (>1 попытки) это различие критично: переотправка без возможности
+# проверить memo = риск задвоить уже ушедший перевод. Флаг ставится в
+# fetch_broadcast_tx_map реальными вызовами (True при успехе любого провайдера,
+# False когда оба упали). Стартовое True = «история доступна»: до первого цикла
+# диспетчер всё равно ходит за маркерами до ретраев.
+_RECONCILE_HISTORY_OK = True
 
 
 @asynccontextmanager
@@ -338,49 +354,96 @@ def _out_comments_toncenter(item: dict) -> list[str]:
 
 
 async def _tx_map_via_tonapi() -> dict[str, str]:
-    """memo недавних исходящих казначея → реальный хеш (TonAPI v2).
+    """memo исходящих казначея → реальный хеш (TonAPI v2), страницами вглубь.
 
-    Каждая исходящая транзакция казначея имеет hash; комментарий берём из
-    её out_msgs. Если в одной транзакции несколько переводов с разными
-    memo — все попадают в карту: индексируются вручную по memo, а на
-    отсутствующий хеш у нас нет данных (unsolveable — requeue).
+    Одна страница (128 tx) — слишком мелкое окно: в длинной очереди слово
+    «потерялся» выносится на пустом месте (memo уже отправленного легко лежит
+    глубже 128 свежих транзакций), и сверка возвращает в очередь уже ушедший
+    перевод. Ходим страницами (offset) вниз по времени, пока не накроем
+    payout_reconcile_history_seconds или не упрёмся в пустую/повторную страницу.
     """
+    if not settings.active_treasury_address:
+        return {}
     url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
     headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(url, params={"limit": 128, "sort_order": "desc"}, headers=headers)
-        response.raise_for_status()
-        items = response.json().get("transactions") or []
     tx_map: dict[str, str] = {}
-    for item in items:
-        tx_hash = str(item.get("hash") or "")
-        if not tx_hash:
-            continue
-        for comment in _out_comments_tonapi(item):
-            tx_map[comment] = tx_hash
+    cutoff = time.time() - settings.payout_reconcile_history_seconds
+    max_pages = max(1, settings.payout_reconcile_max_pages)
+    offset = 0
+    first_hash: str | None = None
+    async with httpx.AsyncClient(timeout=15) as client:
+        for _ in range(max_pages):
+            response = await client.get(
+                url,
+                params={"limit": _RECONCILE_PAGE_LIMIT, "sort_order": "desc", "offset": offset},
+                headers=headers,
+            )
+            response.raise_for_status()
+            items = response.json().get("transactions") or []
+            if not items:
+                break
+            page_first_hash = str(items[0].get("hash") or "")
+            if page_first_hash and page_first_hash == first_hash:
+                break  # пагинация не сдвинулась (провайдер не взял offset) — хватит
+            first_hash = page_first_hash
+            for item in items:
+                tx_hash = str(item.get("hash") or "")
+                if not tx_hash:
+                    continue
+                # Каждая исходящая транзакция казначея имеет hash; комментарий
+                # берём из её out_msgs. Если в одной транзакции несколько
+                # переводов с разными memo — все попадают в карту.
+                for comment in _out_comments_tonapi(item):
+                    tx_map[comment] = tx_hash
+            oldest_utime = items[-1].get("utime")
+            if oldest_utime is not None and float(oldest_utime) < cutoff:
+                break  # окно истории покрыто
+            offset += _RECONCILE_PAGE_LIMIT
     return tx_map
 
 
 async def _tx_map_via_toncenter() -> dict[str, str]:
-    """memo недавних исходящих казначея → реальный хеш (Toncenter v3)."""
+    """memo исходящих казначея → реальный хеш (Toncenter v3), страницами вглубь.
+
+    То же глубокое окно, что в _tx_map_via_tonapi, но через параметр offset
+    резервного провайдера: анти-дубль не должен слепнуть там, где TonAPI молчит.
+    """
+    if not settings.active_treasury_address:
+        return {}
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/transactions"
-    params = {
-        "account": settings.active_treasury_address,
-        "limit": 128,
-        "sort": "desc",
-    }
     headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await http_get_with_retry(client, url, params=params, headers=headers)
-        response.raise_for_status()
-        items = response.json().get("transactions") or []
     tx_map: dict[str, str] = {}
-    for item in items:
-        tx_hash = str(item.get("hash") or "")
-        if not tx_hash:
-            continue
-        for comment in _out_comments_toncenter(item):
-            tx_map[comment] = tx_hash
+    cutoff = time.time() - settings.payout_reconcile_history_seconds
+    max_pages = max(1, settings.payout_reconcile_max_pages)
+    offset = 0
+    first_hash: str | None = None
+    async with httpx.AsyncClient(timeout=15) as client:
+        for _ in range(max_pages):
+            params = {
+                "account": settings.active_treasury_address,
+                "limit": _RECONCILE_PAGE_LIMIT,
+                "sort": "desc",
+                "offset": offset,
+            }
+            response = await http_get_with_retry(client, url, params=params, headers=headers)
+            response.raise_for_status()
+            items = response.json().get("transactions") or []
+            if not items:
+                break
+            page_first_hash = str(items[0].get("hash") or "")
+            if page_first_hash and page_first_hash == first_hash:
+                break
+            first_hash = page_first_hash
+            for item in items:
+                tx_hash = str(item.get("hash") or "")
+                if not tx_hash:
+                    continue
+                for comment in _out_comments_toncenter(item):
+                    tx_map[comment] = tx_hash
+            oldest_utime = items[-1].get("utime")
+            if oldest_utime is not None and float(oldest_utime) < cutoff:
+                break
+            offset += _RECONCILE_PAGE_LIMIT
     return tx_map
 
 
@@ -391,11 +454,15 @@ async def fetch_broadcast_tx_map() -> dict[str, str]:
     «не знаем»: сверщик (confirm_broadcast_payouts) в этом случае НИЧЕГО
     не решает — ни подтверждает, ни возвращает в очередь (риск задвоить).
     """
+    global _RECONCILE_HISTORY_OK
     for fetch in (_tx_map_via_tonapi, _tx_map_via_toncenter):
         try:
-            return await fetch()
+            result = await fetch()
+            _RECONCILE_HISTORY_OK = True
+            return result
         except Exception as exc:
             logger.warning("Карта исходящих казначея (%s) недоступна: %s", fetch.__name__, exc)
+    _RECONCILE_HISTORY_OK = False
     return {}
 
 
@@ -811,6 +878,11 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
         # Сверка с историей: если комментарий уже есть среди недавних
         # исходящих казначея — перевод ушёл в прошлом цикле (краш между
         # вещанием и коммитом). Повторная отправка задвоила бы платёж.
+        # Доступность истории считается ЗАНОВО для этого цикла: сбой в прошлом
+        # цикле не должен вечно замораживать повторы — история могла ожить.
+        # Реальный сбой fetch_broadcast_markers ниже снова выставит False.
+        global _RECONCILE_HISTORY_OK
+        _RECONCILE_HISTORY_OK = True
         markers: set[str] = set()
         if payouts:
             markers = await fetch_broadcast_markers()
@@ -847,6 +919,21 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                         "Выплата %d уже разослана ранее (memo найдено у казначея) — помечена sent без повтора",
                         payout.id,
                     )
+                    continue
+                if payout.attempts > 1 and comment not in markers and not _RECONCILE_HISTORY_OK:
+                    # Повтор (>1 попытки) и история казначея НЕДОСТУПНА: не знаем,
+                    # не ушёл ли этот перевод тем же memo в прошлом цикле (краш
+                    # между вещанием и коммитом). Пустой ответ маркеров в этом
+                    # случае означает «молчат оба провайдера», а НЕ «перевода
+                    # нет». Переотправка в «не знаю» = реальный двойной платёж.
+                    # Замораживаем строку с видимой причиной: история вернётся —
+                    # сверка повторится сама, без ручного retry.
+                    payout.status = "pending"
+                    payout.last_error = (
+                        "история казначея недоступна — повтор отложен (анти-дубль), "
+                        "сверка с memo невозможна"
+                    )
+                    logger.warning("Выплата %d: повтор отложен — история казначея недоступна", payout.id)
                     continue
                 try:
                     tx_hash = await asyncio.wait_for(
@@ -1138,4 +1225,131 @@ async def treasury_diagnostics() -> str:
             lines.append("  ⚠️ курсор В БУДУЩЕМ: новые переводы отсекаются как «старые» — обнули ключ ton_watch_cursor_utime в watcher_state")
     elif settings.ton_enabled:
         lines.append("  курсора нет — стартует с отката 12 ч")
+    return "\n".join(lines)
+
+
+async def blockchain_diagnostics() -> str:
+    """Аудит блокчейн-контура одной строкой-текстом для /blockchain.
+
+    Показывает глазами всей связки watcher → очередь выплат → казначей:
+    курсор и источник, stuck-список сбойных входящих, очередь по статусам,
+    неопознанные «sent» (ждут сверки), глубину сверки истории и флаг её
+    доступности в последнем цикле. Поиск «куда делось» начинается здесь,
+    без перебора логов и запросов к индексаторам руками.
+    """
+    network = "testnet" if settings.is_testnet else "mainnet"
+    lines = [f"⛓ Блокчейн-контур ({network})"]
+    if not settings.ton_enabled:
+        lines.append("TON выключен (TON_ENABLED=false): ставки и выплаты не работают.")
+        return "\n".join(lines)
+    # Watcher-состояние одним запросом (курсор, источник, сердцебиение, stuck).
+    from app.ton_watch import (  # локально: ton_watch не импортируется сверху
+        BEAT_KEY,
+        CURSOR_KEY,
+        SOURCE_KEY,
+        STUCK_TX_KEY as STUCK_KEY,
+    )
+
+    cursor_raw: str | None = None
+    source: str | None = None
+    beat_iso: str | None = None
+    stuck: dict = {}
+    queue: dict[str, int] = {}
+    sent_unconfirmed = 0
+    waiting_dest = 0
+    verified_wallets = 0
+    async with SessionLocal() as session:
+        for key, slot in ((BEAT_KEY, "b"), (SOURCE_KEY, "s"), (CURSOR_KEY, "c")):
+            row = await session.get(WatcherState, key)
+            if row is None:
+                continue
+            if slot == "b":
+                beat_iso = row.value
+            elif slot == "s":
+                source = row.value
+            else:
+                cursor_raw = row.value
+        stuck_row = await session.get(WatcherState, STUCK_KEY)
+        if stuck_row is not None:
+            try:
+                stuck = json.loads(stuck_row.value) or {}
+            except (ValueError, TypeError):
+                stuck = {}
+            if not isinstance(stuck, dict):
+                stuck = {}
+        for status in ("pending", "sending", "sent", "failed"):
+            n = (
+                await session.execute(
+                    select(func.count()).select_from(Payout).where(
+                        Payout.status == status, Payout.network == network
+                    )
+                )
+            ).scalar_one()
+            queue[status] = n
+        sent_unconfirmed = (
+            await session.execute(
+                select(func.count()).select_from(Payout).where(
+                    Payout.status == "sent",
+                    Payout.network == network,
+                    or_(Payout.tx_hash.is_(None), Payout.tx_hash.like("bcast:%")),
+                )
+            )
+        ).scalar_one()
+        waiting_dest = (
+            await session.execute(
+                select(func.count()).select_from(Payout).where(
+                    Payout.dest_address == "", Payout.network == network
+                )
+            )
+        ).scalar_one()
+        verified_wallets = (
+            await session.execute(
+                select(func.count()).select_from(Player).where(Player.wallet_verified.is_(True))
+            )
+        ).scalar_one()
+    # Курсор: лаг от текущего времени (тот же расчёт, что в /treasury).
+    now = datetime.now(timezone.utc)
+    if cursor_raw and cursor_raw.isdigit():
+        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=timezone.utc)
+        lines.append(
+            f"Watcher: курсор {cursor_dt:%d.%m %H:%M} UTC "
+            f"({int((now - cursor_dt).total_seconds()):+d} с)"
+            + (f" · источник {source}" if source else "")
+        )
+    else:
+        lines.append("Watcher: курсора нет — стартует с отката 12 ч")
+    if beat_iso:
+        try:
+            beat_moment = datetime.fromisoformat(beat_iso)
+            if beat_moment.tzinfo is None:
+                beat_moment = beat_moment.replace(tzinfo=timezone.utc)
+            beat_age = int((now - beat_moment).total_seconds())
+        except ValueError:
+            beat_age = None
+        lines.append(f"Watcher: успешный цикл {beat_age if beat_age is not None else '?'} с назад")
+        if beat_age is not None and beat_age > 180:
+            lines.append("  ⚠️ циклы не проходят >3 мин: индексаторы недоступны или процесс спит")
+    stuck_entries = sum(1 for rec in stuck.values() if isinstance(rec, dict) and not rec.get("reported"))
+    stuck_sample = ""
+    if stuck_entries:
+        hashes = [h[:10] for h in list(stuck.keys())[:3]]
+        stuck_sample = "· " + ", ".join(hashes) + ("…" if stuck_entries > 3 else "")
+    lines.append(f"Stuck-входящих: {stuck_entries} {stuck_sample} (ключ watcher_state[{STUCK_KEY}])")
+    lines.append(
+        f"Очередь выплат: pending {queue.get('pending', 0)} · sending {queue.get('sending', 0)} · "
+        f"sent {queue.get('sent', 0)} (сверки ждут {sent_unconfirmed}) · failed {queue.get('failed', 0)}"
+    )
+    if waiting_dest:
+        lines.append(f"  {waiting_dest} строк ждут кошелёк игрока (dest пустой) — уйдут после /wallet")
+    lines.append(f"Кошельков verified: {verified_wallets}")
+    balance, _status, balance_source = await fetch_account_state()
+    if balance is not None:
+        lines.append(f"Баланс казначея: {balance / 1e9:.4f} Gram ({balance_source})")
+    else:
+        lines.append("Баланс казначея: недоступен (оба индексатора молчат)")
+    lines.append(
+        f"Сверка истории: {settings.payout_reconcile_history_seconds / 86400:g} сут · "
+        f"до {settings.payout_reconcile_max_pages} стр · "
+        f"история {'доступна' if _RECONCILE_HISTORY_OK else 'НЕДОСТУПНА ⚠️ повторы выплат заморожены'}"
+    )
     return "\n".join(lines)
