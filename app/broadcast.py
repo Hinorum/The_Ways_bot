@@ -65,9 +65,7 @@ def _utc(value: datetime) -> datetime:
     return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
 
 
-async def status_text(
-    round_row: Round, *, show_title: bool = True, include_story: bool = True
-) -> str:
+async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     from app.models import RULE_PHRASES
 
     sealed = bool(getattr(round_row, "sealed", False))
@@ -116,21 +114,15 @@ async def status_text(
     head = ""
     if show_title:
         head += f"{day_mark(str(round_row.id))} {round_row.chapter_title}\n\n"
-    if include_story:
-        head += f"{_clamp(round_row.chapter_text, 2600)}\n\n"
     text = (
         f"{head}{cards}\n\n{phase}{bank_line}\n{deadline}"
     )
     return text[:_MAX_TEXT_LEN]
 
 
-def build_day_post(round_row: Round) -> tuple[list, bool]:
-    """Медиа дня отключено (слой сюжета снят): пост дня — чистый текст.
-
-    Совместимая сигнатура: вторая часть (флаг «история внутри подписи») всегда
-    False, чтобы вызывающие стороны показывали заголовок и главу в тексте.
-    """
-    return [], False
+def build_day_post(round_row: Round) -> list:
+    """Медиа дня отключено (слой сюжета снят): пост дня — чистый текст."""
+    return []
 
 
 async def active_chat_ids() -> list[int]:
@@ -290,7 +282,7 @@ async def _deliver_day(
         # дубль обложки нового дня, а вечерний костёр уже дал отдельный кадр.
         if results_text:
             await bot.send_message(chat_id, results_text)
-    media, story_in_caption = build_day_post(round_row)
+    media = build_day_post(round_row)
     if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
     elif media:
@@ -300,12 +292,7 @@ async def _deliver_day(
         await bot.send_photo(chat_id, photo=media[0].media, caption=media[0].caption)
     await bot.send_message(
         chat_id,
-        await status_text(
-            round_row,
-            # Медиа отключено, заголовок живёт в тексте поста — его не дублировать незачем.
-            show_title=True,
-            include_story=not story_in_caption,
-        ),
+        await status_text(round_row, show_title=True),
         reply_markup=cards_keyboard(round_row.id, remember=remember, day_index=round_row.day_index),
     )
 
