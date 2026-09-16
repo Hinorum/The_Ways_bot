@@ -38,11 +38,23 @@ class _FakeResp:
 
 
 class _FakeClient:
-    """httpx.AsyncClient-замена: page выбирается по offset (0, 128, 256...)."""
+    """httpx.AsyncClient-замена: страница = клиентский срез данных (offset-пагинация).
 
-    def __init__(self, pages: list[list[dict]], capture: list[dict]) -> None:
-        self._pages = pages
+    Честно повторяет семантику провайдера: offset указывает старт окна в
+    непрерывном потоке транзакций. always_first_page — «сломанная пагинация»:
+    провайдер на любой offset отдаёт первые записи (для проверки стоп-условия).
+    """
+
+    def __init__(
+        self,
+        items: list[dict],
+        capture: list[dict],
+        *,
+        always_first_page: bool = False,
+    ) -> None:
+        self._items = items
         self._capture = capture
+        self._always_first_page = always_first_page
 
     async def __aenter__(self) -> "_FakeClient":
         return self
@@ -54,10 +66,12 @@ class _FakeClient:
         params = dict(params or {})
         self._capture.append(params)
         offset = int(params.get("offset", 0))
-        index = offset // 128
-        if index >= len(self._pages):
-            return _FakeResp({"transactions": []})
-        return _FakeResp({"transactions": self._pages[index]})
+        limit = int(params.get("limit", 128))
+        if self._always_first_page:
+            page = self._items[:limit]
+        else:
+            page = self._items[offset : offset + limit]
+        return _FakeResp({"transactions": page})
 
 
 def _tonapi_item(lt: int, utime: int, memo: str) -> dict:
@@ -78,13 +92,9 @@ def _toncenter_item(lt: int, utime: int, memo: str) -> dict:
     }
 
 
-def _build_pages(now: int, item_builder) -> list[list[dict]]:
-    # Три полные страницы по 128 записей, utime строго убывает.
-    pages: list[list[dict]] = []
-    for page in range(3):
-        base = page * 128
-        pages.append([item_builder(1_000_000 + base + i, now - base - i, f"way:1:pr#{base + i}") for i in range(128)])
-    return pages
+def _build_stream(now: int, item_builder, count: int = 384) -> list[dict]:
+    """Непрерывный поток исходящих казначея: utime строго убывает, memo уникальны."""
+    return [item_builder(1_000_000 + i, now - i, f"way:1:pr#{i}") for i in range(count)]
 
 
 async def test_toncenter_reconcile_pagination_goes_deep(monkeypatch) -> None:
@@ -92,24 +102,24 @@ async def test_toncenter_reconcile_pagination_goes_deep(monkeypatch) -> None:
 
     Регрессия: прежний лимит 128 терял memo выпавших из окна старых выплат,
     и 2-часовой requeue переотправлял уже ушедший перевод (двойной платёж).
-    Здесь memo из ТРЕТЬЕЙ страницы (дальше 256 tx) должен найтись.
+    Здесь memo из глубины (дальше 160 tx) должен найтись.
     """
     now = int(time.time())
     monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 200)
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    pages = _build_pages(now, _toncenter_item)
+    items = _build_stream(now, _toncenter_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
 
     tx_map = await ton_pay._tx_map_via_toncenter()
     offsets = [p["offset"] for p in capture]
-    # Первая страница (0) → вторая (128); третья уже вне окна 200с — стоп.
-    assert offsets == [0, 128]
-    assert tx_map["way:1:pr#160"] == "h1000160"  # со второй страницы, за окном 128
+    # Страница (0) → шаг с перекрытием (112); следующая уже вне окна 200с — стоп.
+    assert offsets == [0, 112]
+    assert tx_map["way:1:pr#160"] == "h1000160"  # в глубине, за пределами 128 tx
     assert "way:1:pr#0" in tx_map  # первая страница тоже собрана
-    assert len(tx_map) == 256
+    assert len(tx_map) == 240  # 128 + (112 новых, стык 112..127 перечитан идемпотентно)
 
 
 async def test_tonapi_reconcile_pagination_uses_offset(monkeypatch) -> None:
@@ -119,31 +129,70 @@ async def test_tonapi_reconcile_pagination_uses_offset(monkeypatch) -> None:
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    pages = _build_pages(now, _tonapi_item)
+    items = _build_stream(now, _tonapi_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
 
     tx_map = await ton_pay._tx_map_via_tonapi()
     offsets = [p["offset"] for p in capture]
-    assert offsets == [0, 128]
+    assert offsets == [0, 112]
     assert tx_map["way:1:pr#200"] == "h1000200"
 
 
 async def test_toncenter_breaks_when_offset_not_honored(monkeypatch) -> None:
-    """Провайдер проигнорировал offset (те же 128 поверх) — не проходимся по кругу."""
+    """Провайдер проигнорировал offset (та же страница поверх) — не проходимся по кругу."""
     now = int(time.time())
     monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 3600 * 24)
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    page = [_toncenter_item(1_000_000 + i, now - i, f"way:5:rake#{i}") for i in range(128)]
+    items = _build_stream(now, _toncenter_item, count=128)
     capture: list[dict] = []
     # На любой offset отдаём одну и ту же страницу: первый хеш повторится.
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient([page, page], capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture, always_first_page=True))
 
     tx_map = await ton_pay._tx_map_via_toncenter()
     assert len(capture) == 2, "провайдер без offset должен обрываться после повтора страницы"
     assert len(tx_map) == 128
+
+
+async def test_toncenter_reconcile_overlap_covers_boundary(monkeypatch) -> None:
+    """Шаг пагинации перекрывает стык страниц: memo на границе окна не теряется.
+
+    Окно истории широкое (24ч), поток из 384 tx: страницы идут с перекрытием
+    16 записей (offset 0, 112, 224, 336), и memo с самого края потока находится.
+    """
+    now = int(time.time())
+    monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 3600 * 24)
+    monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
+    monkeypatch.setattr(settings, "ton_network", "testnet")
+    monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
+    items = _build_stream(now, _toncenter_item, count=384)
+    capture: list[dict] = []
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
+
+    tx_map = await ton_pay._tx_map_via_toncenter()
+    offsets = [p["offset"] for p in capture]
+    assert offsets == [0, 112, 224, 336]
+    assert tx_map["way:1:pr#200"] == "h1000200"  # внутри второй окна шага
+    assert tx_map["way:1:pr#340"] == "h1000340"  # хвост потока, частичная страница
+    assert len(tx_map) == 384  # стыки перечитаны идемпотентно, дыр нет
+
+
+async def test_toncenter_stops_at_partial_page(monkeypatch) -> None:
+    """Хвост истории: неполная страница (< limit) — дальше запрос не нужен."""
+    now = int(time.time())
+    monkeypatch.setattr(settings, "payout_reconcile_history_seconds", 3600 * 24)
+    monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
+    monkeypatch.setattr(settings, "ton_network", "testnet")
+    monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
+    items = _build_stream(now, _toncenter_item, count=100)
+    capture: list[dict] = []
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
+
+    tx_map = await ton_pay._tx_map_via_toncenter()
+    assert len(capture) == 1
+    assert len(tx_map) == 100
 
 
 async def test_toncenter_stops_at_empty_history(monkeypatch) -> None:
@@ -173,13 +222,13 @@ async def test_toncenter_reconcile_stops_when_all_targets_found(monkeypatch) -> 
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    pages = _build_pages(now, _toncenter_item)
+    items = _build_stream(now, _toncenter_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
 
     tx_map = await ton_pay._tx_map_via_toncenter(targets={"way:1:pr#160"})
     offsets = [p["offset"] for p in capture]
-    assert offsets == [0, 128]
+    assert offsets == [0, 112]
     assert tx_map["way:1:pr#160"] == "h1000160"  # найдена на второй странице
 
 
@@ -190,9 +239,9 @@ async def test_toncenter_reconcile_stops_at_first_page_when_target_clean(monkeyp
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    pages = _build_pages(now, _toncenter_item)
+    items = _build_stream(now, _toncenter_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
 
     tx_map = await ton_pay._tx_map_via_toncenter(targets={"way:1:pr#5"})
     assert [p["offset"] for p in capture] == [0]
@@ -206,9 +255,9 @@ async def test_tonapi_reconcile_stops_at_first_page_when_target_clean(monkeypatc
     monkeypatch.setattr(settings, "payout_reconcile_max_pages", 12)
     monkeypatch.setattr(settings, "ton_network", "testnet")
     monkeypatch.setattr(settings, "treasury_testnet_address", "0:" + os.urandom(32).hex())
-    pages = _build_pages(now, _tonapi_item)
+    items = _build_stream(now, _tonapi_item)
     capture: list[dict] = []
-    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(pages, capture))
+    monkeypatch.setattr(ton_pay, "get_http_client", lambda: _FakeClient(items, capture))
 
     tx_map = await ton_pay._tx_map_via_tonapi(targets={"way:1:pr#5"})
     assert [p["offset"] for p in capture] == [0]

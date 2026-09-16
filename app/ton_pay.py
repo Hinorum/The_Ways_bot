@@ -72,6 +72,12 @@ _DISPATCH_LOCK = asyncio.Lock()
 # сверка думает «перевода нет». Глубина покрытия задаётся настройками
 # payout_reconcile_history_seconds / payout_reconcile_max_pages.
 _RECONCILE_PAGE_LIMIT = 128
+# Шаг пагинации: страница шагает НЕ на весь лимит, а с перекрытием хвоста
+# (16 записей). В живой казне между двумя запросами может прийти новая
+# транзакция, и граница ровно «128...256» сползут: memo на стыке уедет за край
+# недосчитанной страницы. Перекрытие перечитывает стык — карта memo→хеш
+# идемпотентна, лишнее перечтение безвредно, а дыры не бывает.
+_RECONCILE_PAGE_OVERLAP = 16
 # Доступна ли история казначея В ПОСЛЕДНЕМ опросе. Пусто set() в маркерах
 # означает и «транзакций нет вообще», и «провайдеры молчат»; диспетчеру при
 # повторе (>1 попытки) это различие критично: переотправка без возможности
@@ -405,7 +411,9 @@ async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
         oldest_utime = items[-1].get("utime")
         if oldest_utime is not None and float(oldest_utime) < cutoff:
             break  # окно истории покрыто
-        offset += _RECONCILE_PAGE_LIMIT
+        if len(items) < _RECONCILE_PAGE_LIMIT:
+            break  # неполная страница = хвост истории, следующая запрос пуста
+        offset += _RECONCILE_PAGE_LIMIT - _RECONCILE_PAGE_OVERLAP
     return tx_map
 
 
@@ -453,7 +461,9 @@ async def _tx_map_via_toncenter(targets: set[str] | None = None) -> dict[str, st
         oldest_utime = items[-1].get("utime")
         if oldest_utime is not None and float(oldest_utime) < cutoff:
             break
-        offset += _RECONCILE_PAGE_LIMIT
+        if len(items) < _RECONCILE_PAGE_LIMIT:
+            break  # неполная страница = хвост истории, дальше пусто
+        offset += _RECONCILE_PAGE_LIMIT - _RECONCILE_PAGE_OVERLAP
     return tx_map
 
 
