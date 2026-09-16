@@ -90,34 +90,6 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
     return len(winner_ids)
 
 
-async def register_memory_hit(session: AsyncSession, player_id: int, round_id: int) -> bool:
-    """Одна отметка «Я помню» на игрока в день. True — отметка создана сейчас.
-
-    Создание отметки дарит жетон вдохновения: внимательность вознаграждается
-    нарративом, не деньгами.
-    """
-    from sqlalchemy import select as _select
-
-    from app.models import MemoryHit
-
-    existing = (
-        await session.execute(
-            _select(MemoryHit).where(
-                MemoryHit.player_id == player_id,
-                MemoryHit.round_id == round_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return False
-    session.add(MemoryHit(player_id=player_id, round_id=round_id))
-    await session.execute(
-        update(Player).where(Player.id == player_id).values(inspiration=Player.inspiration + 1)
-    )
-    await session.commit()
-    return True
-
-
 _FLIP_SEARCH_CAP = 15  # отрыв больше этого уже не «на волоске» — строку не пишем
 
 

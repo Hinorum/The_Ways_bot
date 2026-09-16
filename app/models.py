@@ -36,21 +36,6 @@ class WinRule(str, enum.Enum):
     MEDIAN = "median"
 
 
-class StakeStatus(str, enum.Enum):
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    REJECTED = "rejected"
-    REFUNDED = "refunded"
-
-
-class PayoutStatus(str, enum.Enum):
-    PENDING = "pending"
-    SENDING = "sending"
-    SENT = "sent"
-    FAILED = "failed"
-    DISMISSED = "dismissed"
-
-
 RULE_PHRASES = {
     WinRule.MAJORITY: "побеждает карта, собравшая больше всех голосов",
     WinRule.MINORITY: "побеждает карта, собравшая меньше всех голосов",

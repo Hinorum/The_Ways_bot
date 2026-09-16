@@ -92,16 +92,3 @@ async def change_vote(session: AsyncSession, round_row: Round, player_id: int, p
         await session.rollback()
         return "no_grant"
     return "ok"
-
-
-async def has_unused_grant(session: AsyncSession, round_id: int, player_id: int) -> bool:
-    result = await session.execute(
-        select(RevoteGrant.id)
-        .where(
-            RevoteGrant.round_id == round_id,
-            RevoteGrant.player_id == player_id,
-            RevoteGrant.status == "granted",
-        )
-        .limit(1)
-    )
-    return result.scalar_one_or_none() is not None

@@ -287,7 +287,7 @@ def _prize_tied_groups(
         pid, correct, gram, _w = prize_slice[i]
         j = i + 1
         while j < len(prize_slice):
-            p2, c2, g2, _w2 = prize_slice[j]
+            _p2, c2, g2, _w2 = prize_slice[j]
             if c2 == correct and g2 == gram:
                 j += 1
             else:
@@ -296,16 +296,6 @@ def _prize_tied_groups(
             groups.append([p for p, _c, _g, _w in prize_slice[i:j]])
         i = j
     return groups
-
-
-def _is_tied_player(
-    tied_groups: list[list[int]], player_id: int
-) -> bool:
-    """Проверяет, есть ли игрок хотя бы в одной связанной группе."""
-    for group in tied_groups:
-        if player_id in group:
-            return True
-    return False
 
 
 async def _open_claim_window(

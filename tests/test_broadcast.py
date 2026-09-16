@@ -174,7 +174,7 @@ async def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None
 
 async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
     """Шаблонный день: пути читаются текстом статуса, медиа дня отключено."""
-    from app.broadcast import day_media_group, status_text
+    from app.broadcast import status_text
 
     round_row = _round(9300, tmp_path)
     for card in round_row.cards:
@@ -183,19 +183,6 @@ async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
     for position in range(3):
         assert f"{['I', 'II', 'III'][position]}. Путь {position} — описание" in status
     assert len(status) <= 4096
-
-    media = day_media_group(round_row)
-    assert media == []  # без медиа: обложки и фото-карт нет
-
-
-def test_media_group_always_empty_in_template_mode(tmp_path) -> None:
-    """Медиа дня отключено полностью: ни обложки, ни стартового кадра."""
-    from app.broadcast import day_media_group
-
-    first_day = _round(1, tmp_path)
-    second_day = _round(2, tmp_path)
-    assert day_media_group(first_day) == []
-    assert day_media_group(second_day) == []
 
 
 def _finished(day_index: int, media_dir) -> Round:

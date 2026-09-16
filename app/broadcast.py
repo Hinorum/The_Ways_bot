@@ -133,11 +133,6 @@ def build_day_post(round_row: Round) -> tuple[list, bool]:
     return [], False
 
 
-def day_media_group(round_row: Round) -> list:
-    """Совместимая обёртка: без медиа возвращает пустой список."""
-    return []
-
-
 async def active_chat_ids() -> list[int]:
     async with SessionLocal() as session:
         rows = await session.execute(select(Chat.id).where(Chat.active.is_(True)))
@@ -468,22 +463,6 @@ async def announce_results(bot: Bot | None, finished: Round) -> int:
     return delivered
 
 
-async def announce_epilogue(bot: Bot | None, finished: Round) -> int:
-    """Доносит нейро-эпилог отдельным коротким постом, когда он дописан.
-
-    Итоги ушли сразу без эпилога; здесь эпилог приходит следом. Возвращает
-    число доставленных чатов.
-    """
-    if bot is None:
-        return 0
-    epilogue = (getattr(finished, "epilogue_text", "") or "").strip()
-    if not epilogue:
-        return 0
-    delivered = await _broadcast_text(bot, epilogue)
-    logger.info("Эпилог дня %s разослан: доставлено %d чатов", getattr(finished, "day_index", "?"), delivered)
-    return delivered
-
-
 async def whisper_to_chats(bot: Bot | None, text: str) -> int:
     """Полуденный шёпот мира: короткое сообщение во все живые чаты.
 
@@ -521,53 +500,6 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
     # Вечерний привал — и в личку подписчикам (личный дубликат вечернего поста).
     delivered_dm = await _dm_send_all(
         bot, lambda pid: bot.send_message(pid, text), "Личный шёпот (текст)"
-    )
-    return delivered + delivered_dm
-
-
-async def whisper_photo_to_chats(bot: Bot | None, photo, caption: str) -> int:
-    """Вечерний кадр: фото с подписью-микросценой во все живые чаты.
-
-    Параллелен whisper_to_chats, только мимо send_photo (чтобы кадр костра
-    летел вместе с текстом). Возвращает число доставленных чатов.
-    """
-    if bot is None or not caption:
-        return 0
-    # Лимит подписи фото в Telegram — 1024 знака. Не даём длинной микросцене
-    # ронять send_photo и молча лишать все чаты вечернего кадра.
-    caption = caption[:1024]
-    chat_ids = await active_chat_ids()
-    semaphore = asyncio.Semaphore(_BROADCAST_PARALLELISM)
-
-    async def worker(chat_id: int) -> bool:
-        async with semaphore:
-            try:
-                await bot.send_photo(chat_id, photo=photo, caption=caption)
-                return True
-            except TelegramRetryAfter as exc:
-                await asyncio.sleep(exc.retry_after + 1)
-                try:
-                    await bot.send_photo(chat_id, photo=photo, caption=caption)
-                    return True
-                except Exception:
-                    return False
-            except TelegramForbiddenError:
-                await deactivate_chat(chat_id)
-                return False
-            except Exception as exc:
-                lowered = str(exc).lower()
-                if any(mark in lowered for mark in _FORGET_MARKS):
-                    await deactivate_chat(chat_id)
-                return False
-
-    outcomes = await asyncio.gather(*(worker(c) for c in chat_ids))
-    delivered = sum(1 for ok in outcomes if ok)
-    logger.info("Вечерний кадр доставлен в %d из %d чатов", delivered, len(chat_ids))
-    # Вечерний кадр костра — и в личку подписчикам (самим фото с подписью).
-    delivered_dm = await _dm_send_all(
-        bot,
-        lambda pid: bot.send_photo(pid, photo=photo, caption=caption),
-        "Личный вечерний кадр",
     )
     return delivered + delivered_dm
 
