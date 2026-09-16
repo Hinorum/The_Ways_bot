@@ -34,6 +34,8 @@ from .voting import (
     _TIE_THEATER,
     _winner_and_tied,
     count_votes_for_tally,
+    tie_seed,
+    tied_positions,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,7 +296,14 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     )
     counts = await count_votes_for_tally(session, round_row.id)
     round_row._tally_counts = counts
-    seed = f"{round_row.day_index}:{round_row.win_rule.value}"
+    # Честная жеребьёвка: при ничьей снимаем энтропию мастерчейна TON и
+    # фиксируем в дне ОДИН раз. heal/пересчёт используют ту же сохранённую
+    # энтропию, исход не зависит от состояния сети в момент подсчёта.
+    if len(tied_positions(counts, round_row.win_rule)) > 1 and not round_row.tie_entropy:
+        from app.ton_pay import fetch_masterchain_entropy
+
+        round_row.tie_entropy = await fetch_masterchain_entropy()
+    seed = tie_seed(round_row)
     round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed)
     await session.commit()
     return round_row
@@ -312,7 +321,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     counts = getattr(round_row, "_tally_counts", None) or await count_votes_for_tally(
         session, round_row.id
     )
-    seed = f"{round_row.day_index}:{round_row.win_rule.value}"
+    seed = tie_seed(round_row)
     winner, tied = await _winner_and_tied(session, round_row, counts, seed)
     tie_note: str | None = None
     if len(tied) > 1:
@@ -322,10 +331,14 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             paths=" и ".join(_ROMAN[p] for p in tied),
             chosen=_ROMAN[winner],
         )
+        block_ref = ""
+        if round_row.tie_entropy:
+            seqno = round_row.tie_entropy.split(":", 1)[0]
+            block_ref = f" Жребий брошен блоком TON №{seqno}, проверяемо в эксплорере."
         tie_note = (
             f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
             f"жребий закона выбрал путь {_ROMAN[winner]}. "
-            f"{theater}"
+            f"{theater}{block_ref}"
         )[:200]
     if not round_row.cards:
         loaded = await get_round(session, round_row.id)

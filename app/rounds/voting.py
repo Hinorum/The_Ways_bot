@@ -83,6 +83,20 @@ def pick_winner(counts: dict[int, int], rule: WinRule, seed: str | None = None) 
     return candidates[0]
 
 
+def tie_seed(round_row: Round) -> str:
+    """Сидовое значение жеребьёвки дня — с честной энтропией мастерчейна.
+
+    Формат «{day}:{law}[:{entropy}]»: при ничьей энтропия снимается ОДИН раз
+    (close_voting) и сохраняется в день, поэтому пересчёт (heal, finish_tally)
+    даёт тот же победитель. Без энтропии — прежний детерминированный жребий.
+    """
+    base = f"{round_row.day_index}:{round_row.win_rule.value}"
+    entropy = getattr(round_row, "tie_entropy", None)
+    if entropy:
+        return f"{base}:{entropy}"
+    return base
+
+
 async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
     """Пути дня, за которые есть хотя бы один подтверждённый ставщик."""
     rows = await session.execute(

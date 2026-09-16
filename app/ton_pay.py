@@ -399,6 +399,44 @@ async def fetch_broadcast_tx_map() -> dict[str, str]:
     return {}
 
 
+async def fetch_masterchain_entropy() -> str | None:
+    """«seqno:root_hash» последнего мастерхчейн-блока TON — честная энтропия ничьей.
+
+    Блок уже лежит в цепочке в момент жеребьёвки: его нельзя подменить или
+    подогнать задним числом, а каждый игрок может проверить seqno в эксплорере
+    и пересчитать исход. TonAPI → фолбэк Toncenter. При выключенном TON или
+    сбое обоих узлов возвращает None — день откатится на легаси-жребий (seed
+    без энтропии), чтобы ничья никогда не «зависала» на сетевой ошибке.
+    """
+    if not settings.ton_enabled:
+        return None
+    candidates = (
+        (
+            f"{settings.active_ton_api_base}/v2/blockchain/masterchain-head",
+            {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {},
+            lambda data: data,
+        ),
+        (
+            f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/masterchainInfo",
+            {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {},
+            lambda data: data.get("last") or data,
+        ),
+    )
+    for url, headers, pick in candidates:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await http_get_with_retry(client, url, headers=headers)
+                response.raise_for_status()
+                block = pick(response.json())
+            seqno = block.get("seqno")
+            root_hash = block.get("root_hash")
+            if seqno is not None and root_hash:
+                return f"{seqno}:{root_hash}"
+        except Exception as exc:
+            logger.warning("Энтропия мастерчейна (%s) недоступна: %s", url, exc)
+    return None
+
+
 async def fetch_broadcast_markers() -> set[str]:
     """Memo недавних исходящих переводов казначея как set.
 

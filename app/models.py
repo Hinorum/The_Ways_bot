@@ -130,6 +130,12 @@ class Round(Base):
     # Человеческое объяснение ничьей: «жребий закона выбрал путь II из II и III».
     # Null — победа без равенства.
     tie_note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Честная жеребьёвка на цепи: «seqno:hash» мастерхчейн-блока TON, взятого
+    # в момент завязки при ничьей. Блок публичен и проверяем в эксплорере,
+    # поэтому исход не манипулируем и не предсказуем заранее. Снимается ОДИН раз
+    # (close_voting) и фиксируется в дне; heal/пересчёт используют ту же энтропию,
+    # иначе исход мог бы измениться. Null — ничьей не было либо TON недоступен.
+    tie_entropy: Mapped[str | None] = mapped_column(String(80), nullable=True)
     # Момент первой успешной рассылки дня: повторный анонс того же дня
     # невозможен даже при гонке двух процессов после деплоя.
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

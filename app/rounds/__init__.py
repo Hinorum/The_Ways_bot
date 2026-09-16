@@ -31,6 +31,7 @@ from .voting import (  # noqa: F401
     _winner_and_tied,
     count_votes_for_tally,
     pick_winner,
+    tie_seed,
     tied_positions,
 )
 
@@ -68,5 +69,6 @@ __all__ = [
     "_winner_and_tied",
     "count_votes_for_tally",
     "pick_winner",
+    "tie_seed",
     "tied_positions",
 ]
