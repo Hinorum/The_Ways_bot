@@ -207,7 +207,7 @@ async def test_finalize_payouts_proportional_and_rake(
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "owner_wallet_address", "keeper-wallet")
     for pid in (1, 2, 3):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0)
     # Победил путь 0; голоса: игроки 1 и 2, ставки только у 1 и 3.
     session.add_all(
@@ -304,7 +304,7 @@ async def test_finalize_routes_free_pool_without_recipients(
     """Угадавшие без ставки (даже без кошелька) — их 2% целиком в копилку недели."""
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "owner_wallet_address", "keeper")
-    session.add(Player(id=1, wallet_address="wallet-1"))
+    session.add(Player(id=1, wallet_address="wallet-1", wallet_verified=True))
     session.add(Player(id=2))  # угадал, но кошелька нет
     round_row = await make_closed_round(session, winner_card=0)
     session.add_all(
@@ -336,7 +336,7 @@ async def test_leaderboard_pot_accumulates_across_days(
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "owner_wallet_address", "keeper")
     for pid in (1,):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     first = await make_closed_round(session, winner_card=0, day_index=101)
     second = await make_closed_round(session, winner_card=0, day_index=102)
     second.tally_ends_at += timedelta(days=12_000)  # другой месяц
@@ -367,7 +367,7 @@ async def test_finalize_refunds_when_no_winning_stakes(
 ) -> None:
     monkeypatch.setattr(settings, "ton_enabled", True)
     for pid in (1, 2):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=2)
     # Победивший путь не выбрал ни один игрок со ставкой — делить нечего,
     # все подтверждённые ставки возвращаются.
@@ -391,7 +391,7 @@ async def test_finalize_refunds_when_no_winning_stakes(
 
 async def test_finalize_skips_unconfirmed(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "ton_enabled", True)
-    session.add(Player(id=1, wallet_address="w"))
+    session.add(Player(id=1, wallet_address="w", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0)
     session.add(
         Stake(round_id=round_row.id, player_id=1, amount_nanotons=to_nano(1), tx_hash="a", status="pending")
@@ -409,7 +409,7 @@ async def test_networks_are_isolated(session: AsyncSession, monkeypatch: pytest.
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "owner_wallet_address", "keeper")
     for pid in (1, 2):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0)
     session.add_all(
         [

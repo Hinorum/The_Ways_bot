@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ from app.db import SessionLocal
 from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
 from app.payments import parse_revote_memo, parse_verify_memo
 from app.ops import claim_once, is_game_paused
-from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, WALLET_NORM_KEY
+from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, STUCK_TX_KEY, WALLET_NORM_KEY
 from app.http_utils import http_get_with_retry
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
@@ -38,7 +39,9 @@ _CURSOR_FALLBACK_HOURS = 12
 # последний обработанный, у индексатора могут появиться с задержкой. Берём
 # курсор на N секунд раньше и пересматриваем окно заново каждым циклом —
 # идемпотентность держится на tx_hash (duplicate_tx / refund_duplicated).
-_CURSOR_OVERLAP_SECONDS = 90
+# Настраивается через watch_cursor_overlap_seconds: сеть с частыми reorg
+# требует глубже перечитывать историю.
+_CURSOR_OVERLAP_SECONDS = max(0, settings.watch_cursor_overlap_seconds)
 # TonAPI v2 отдаёт страницы транзакций; идём вглубь, пока не накроем курсор
 # или не упрёмся в пустое место (история кончилась / подряд пустые страницы).
 _PAGE_LIMIT = max(1, settings.watch_page_limit)
@@ -980,6 +983,41 @@ async def _write_source(session, source: str) -> None:
     await session.commit()
 
 
+# Сколько циклов подряд транзакция может падать, пока курсор держится за неё
+# (не уходит вперёд — иначе упавшая навсегда теряется за окном перекрытия).
+# После исчерпания лимита курсор проходит мимо, но транзакция остаётся в
+# stuck-списке (watcher_state, ключ STUCK_TX_KEY) для ручного разбора админом —
+# не теряется молча, но и не тормозит весь входящий поток вечно.
+_STUCK_MAX_FAILS = 5
+
+
+def _load_stuck(raw: str | None) -> dict:
+    """Разбор JSON stuck-списка из watcher_state (битый/пустой — пустой словарь)."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            return value
+    except (ValueError, TypeError):
+        logger.warning("Стuck-список ton_watch повреждён (%r) — начинаю заново", raw[:128])
+    return {}
+
+
+async def _read_stuck(session) -> dict:
+    row = await session.get(WatcherState, STUCK_TX_KEY)
+    return _load_stuck(row.value if row is not None else None)
+
+
+async def _write_stuck(session, stuck: dict) -> None:
+    row = await session.get(WatcherState, STUCK_TX_KEY)
+    if row is None:
+        session.add(WatcherState(key=STUCK_TX_KEY, value=json.dumps(stuck)))
+    else:
+        row.value = json.dumps(stuck)
+    await session.commit()
+
+
 # Состояние страницы провайдера: доверенная или нет.
 _PAGE_OK = "ok"
 _PAGE_DEGRADED = "degraded"
@@ -1145,8 +1183,11 @@ async def watch_once(bot: Bot | None = None) -> None:
         await _migrate_wallet_formats(session)
         since = await _read_cursor(session)
         raw_cursor = await _read_cursor_raw(session)
+        stuck = await _read_stuck(session)
     transfers, api_ok, source = await _collect_transfers(since)
     processed_through = since
+    # Сбойные транзакции попадают в stuck-список (watcher_state): они не должны
+    # остаться за окном перекрытия навсегда (см. генерацию курсора ниже).
     for i, transfer in enumerate(transfers):
         try:
             status = await process_transfer(transfer, bot=bot)
@@ -1159,8 +1200,21 @@ async def watch_once(bot: Bot | None = None) -> None:
                 transfer.utime,
             )
         except Exception as exc:
+            # Сбойная транзакция НЕ двигает курсор за себя: обрабатываем остаток
+            # пачки (skip без потери), но курсор останавливается перед ней, и в
+            # следующем цикле окно перечитает её заново. Так временный сбой
+            # (сеть, провайдер, баг версии) не стирает деньги молча.
             logger.warning("Перевод %s не обработан: %s (продолжаем остаток пачки)", transfer.tx_hash[:16], exc)
+            entry = stuck.get(transfer.tx_hash)
+            if entry is None:
+                stuck[transfer.tx_hash] = {"utime": transfer.utime, "fails": 1}
+            else:
+                entry["fails"] += 1
             continue
+        # Успешно обработанная транзакция выходит из stuck-списка: повторный
+        # сбой той же пачки/цикла не должен вечно топить её в ручном разборе.
+        if transfer.tx_hash in stuck:
+            del stuck[transfer.tx_hash]
         processed_through = max(processed_through, transfer.utime)
         if i % 50 == 49:
             await asyncio.sleep(0.05)
@@ -1173,8 +1227,39 @@ async def watch_once(bot: Bot | None = None) -> None:
     # курсора вперёд потерял бы те транзакции, до которых проход не дошёл.
     # Следующий цикл начнётся с той же позиции и догонит пропущенное.
     if api_ok and processed_through > raw_cursor:
+        # Стuck-защита: курсор не уходит дальше самой свежей ТАК И НЕ обработанной
+        # транзакции — иначе упавшая навсегда теряется за окном перекрытия.
+        # max(raw_cursor, floor) хранит монотонность: сбойная в окне перекрытия
+        # (ниже raw_cursor) не откатывает курсор, а просто не двигает его, и окно
+        # следующего цикла перечитает её заново (skip без потери).
+        fresh_floor = min(
+            (r["utime"] for r in stuck.values() if r.get("fails", 0) <= _STUCK_MAX_FAILS),
+            default=None,
+        )
+        if fresh_floor is not None:
+            processed_through = min(processed_through, max(raw_cursor, fresh_floor))
+        expired = [
+            r for r in stuck.values()
+            if r.get("fails", 0) > _STUCK_MAX_FAILS and not r.get("reported")
+        ]
+        if expired:
+            logger.error(
+                "%d транзакций не обработаны за %d циклов и курсор прошёл мимо: "
+                "смотри watcher_state[%s] (нужно ручное вмешательство)",
+                len(expired), _STUCK_MAX_FAILS, STUCK_TX_KEY,
+            )
+            for record in expired:
+                record["reported"] = True
         async with SessionLocal() as session:
             await _write_cursor(session, processed_through)
+    if api_ok:
+        async with SessionLocal() as session:
+            # stuck-список фиксируем каждым полным проходом, когда в нём что-то
+            # есть ИЛИ когда его нужно очистить после успешных повторов: прежний
+            # сбой уже записан в БД, молчание сейчас оставило бы устаревшую
+            # запись висеть в ручном разборе. Пустой dict=пустой список.
+            if stuck or (await session.get(WatcherState, STUCK_TX_KEY)) is not None:
+                await _write_stuck(session, stuck)
     if api_ok:
         async with SessionLocal() as session:
             # Сердцебиение ставится каждым успешным циклом — даже без
@@ -1183,8 +1268,9 @@ async def watch_once(bot: Bot | None = None) -> None:
             await _write_source(session, source)
     if transfers:
         logger.info(
-            "Цикл watcher: найдено %d переводов, курсор %d → %d, проход %s (источник %s)",
+            "Цикл watcher: найдено %d переводов, курсор %d → %d, проход %s (источник %s), stuck %d",
             len(transfers), since, processed_through,
             "полный" if api_ok else "ЧАСТИЧНЫЙ (курсор не сдвинут)",
             source,
+            len(stuck),
         )

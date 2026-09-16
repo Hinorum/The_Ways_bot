@@ -45,3 +45,8 @@ CURSOR_KEY = "ton_watch_cursor_utime"
 BEAT_KEY = "ton_watch_beat_iso"
 SOURCE_KEY = "ton_watch_last_source"
 WALLET_NORM_KEY = "wallet_norm_v1"
+# Хронически падающие транзакции (после нескольких попыток их обработки):
+# JSON-объект {tx_hash: {"utime": int, "fails": int}}. Держимся за них, пока
+# fails < минимума, а исчерпавшие лимит — пропускаем, НЕ двигая курсор за них
+# с потерей: админ видит их в watcher_state и может разобрать вручную.
+STUCK_TX_KEY = "ton_watch_stuck_tx"

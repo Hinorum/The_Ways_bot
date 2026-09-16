@@ -252,11 +252,20 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     logger.info("finalize_day_payouts: round %s confirmed=%d stuck=%d", round_row.id, len(confirmed), len(stuck))
 
     # Pre-load кошельков всех игроков одним запросом (eliminate N+1).
+    # Только ПОДТВЕРЖДЁННЫЕ кошельки: приз не должен уходить на адрес, чьё
+    # владение не доказано (`bv:`-верификация). Если игрок привязал адрес, но не
+    # подтвердил — dest_address пуст, выплата ждёт в очереди, а hydrate дозаполнит
+    # её, когда кошелёк пройдёт верификацию. Неподтверждённая ставка всё равно
+    # не могла стать confirmed (register_stake), но перепривязка/краевые случаи
+    # не должны вытащить приз на непроверенный адрес.
     all_player_ids = {s.player_id for s in confirmed + stuck}
     wallet_map: dict[int, str] = {}
     if all_player_ids:
         players_result = await session.execute(
-            select(Player.id, Player.wallet_address).where(Player.id.in_(all_player_ids))
+            select(Player.id, Player.wallet_address).where(
+                Player.id.in_(all_player_ids),
+                Player.wallet_verified.is_(True),
+            )
         )
         wallet_map = {pid: addr for pid, addr in players_result.all()}
 

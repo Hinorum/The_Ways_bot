@@ -52,7 +52,7 @@ def _ton_on(monkeypatch: pytest.MonkeyPatch):
 async def test_fee_is_deducted_proportionally(session: AsyncSession) -> None:
     """Два победителя с разными ставками: газ делится пропорционально, а не плоско."""
     for pid in (1, 2, 3):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0)
     session.add_all(
         [
@@ -98,7 +98,7 @@ async def test_dust_shares_roll_to_weekly_pot(session: AsyncSession, monkeypatch
     """Микродоля ниже min_payout_gram не идёт в очередь — капает в копилку недели."""
     monkeypatch.setattr(settings, "min_payout_gram", 6.0)  # обе доли (≈5.8 и ≈3.9) ниже порога
     for pid in (11, 12):
-        session.add(Player(id=pid, wallet_address=f"wallet-{pid}"))
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0, day_index=41)
     session.add_all(
         [
@@ -141,7 +141,7 @@ async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
 ) -> None:
     """Комиссии съели пул целиком: деньги в копилке недели, без строки возврата."""
     monkeypatch.setattr(settings, "payout_fee_gram", 100.0)  # газ больше любого пула
-    session.add(Player(id=21, wallet_address="wallet-21"))
+    session.add(Player(id=21, wallet_address="wallet-21", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0, day_index=42)
     session.add_all(
         [
@@ -177,7 +177,7 @@ async def test_gas_eaten_pool_goes_to_week_and_is_not_refund(
 
 async def test_refunds_deduct_gas(session: AsyncSession) -> None:
     """Возвраты (никто не поставил на верный путь) тоже платят газ сети."""
-    session.add(Player(id=31, wallet_address="wallet-31"))
+    session.add(Player(id=31, wallet_address="wallet-31", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0, day_index=43)
     session.add_all(
         [
@@ -202,7 +202,7 @@ async def test_refunds_deduct_gas(session: AsyncSession) -> None:
 async def test_refunds_proportional_ratio(monkeypatch, session: AsyncSession) -> None:
     """refund_fee_ratio: комиссия на возврат пропорциональна ставке, а не плоская."""
     monkeypatch.setattr(settings, "refund_fee_ratio", 0.01)  # 1%
-    session.add(Player(id=41, wallet_address="wallet-41"))
+    session.add(Player(id=41, wallet_address="wallet-41", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0, day_index=53)
     session.add_all(
         [
@@ -226,7 +226,7 @@ async def test_refunds_proportional_ratio(monkeypatch, session: AsyncSession) ->
 async def test_auto_refund_marks_stake_refunded(session: AsyncSession) -> None:
     """Застрявшая ставка (rejected/pending) с авто-возвратом помечается refunded,
     а не висит вечным «переводов не обработано» в панели и часовом алерте."""
-    session.add(Player(id=51, wallet_address="wallet-51"))
+    session.add(Player(id=51, wallet_address="wallet-51", wallet_verified=True))
     round_row = await make_closed_round(session, winner_card=0, day_index=63)
     session.add_all(
         [
