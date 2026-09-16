@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.registry import WEEK_CLAIM_WINDOW_KEY
 from app.db import SessionLocal
 from app.leaderboard import (
     WEEKLY_MARKER_KEY,
@@ -51,6 +53,18 @@ def _week_prize_contract():
 async def _set_week_ready(session: AsyncSession, week_key: str) -> None:
     """Ставит флаг готовности недельного лидерборда (эпилог последнего дня недели записан)."""
     session.add(WatcherState(key=WEEK_READY_KEY, value=week_key))
+    await session.commit()
+
+
+async def _seed_expired_week_window(session: AsyncSession, week_key: str, players: list[int]) -> None:
+    """Ставит окно Claim, дедлайн которого давно прошёл: выплата может идти сразу."""
+    opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    session.add(
+        WatcherState(
+            key=WEEK_CLAIM_WINDOW_KEY,
+            value=json.dumps({"period": week_key, "players": players, "opened_at": opened_at}),
+        )
+    )
     await session.commit()
 
 
@@ -260,6 +274,9 @@ async def test_settle_week_pays_top_three_individuals_not_tiers(monkeypatch: pyt
         await session.commit()
         try:
             await _set_week_ready(session, week_key)
+            # a7 и b7 абсолютно равны (верность и Gram) — ничья блокирует выплату
+            # до дедлайна Claim; в тесте окно уже протухло, платим по тайбрейку id.
+            await _seed_expired_week_window(session, week_key, [pid_a7, pid_b7])
             assert await settle_week_if_due(bot=None) is True
             rows = (
                 (
@@ -333,6 +350,9 @@ async def test_settle_week_two_tied_roll_third_place(monkeypatch: pytest.MonkeyP
         await session.commit()
         try:
             await _set_week_ready(session, week_key)
+            # Двое абсолютно равных — окно Claim открыто и его дедлайн прошёл:
+            # без заявок место решает меньший player_id.
+            await _seed_expired_week_window(session, week_key, pids)
             assert await settle_week_if_due(bot=None) is True
             rows = (
                 (await session.execute(select(Payout).where(Payout.kind == "weekly")))
@@ -756,6 +776,9 @@ async def test_settle_week_claimer_beats_silent_rival(monkeypatch: pytest.Monkey
         )
         session.add(WeeklyPot(week=week_key, nanotons=to_nano(10)))
         await _set_week_ready(session, week_key)
+        # Тихий соперник так и не нажал Claim: дедлайн окна истёк — заявивший
+        # опережает молчуна при бОльшем id.
+        await _seed_expired_week_window(session, week_key, [pid_quiet, pid_claimer])
         await session.commit()
         try:
             assert await settle_week_if_due(bot=None) is True
@@ -802,5 +825,171 @@ def test_weighted_amounts_distributes_full_pot(monkeypatch) -> None:
 
     assert _weighted_amounts(0, payable, weights) == []
     assert _weighted_amounts(1000, [], weights) == []
+
+
+async def _seed_week_tie_scene(
+    session: AsyncSession,
+    base: int,
+    n_days: int,
+) -> tuple[int, int, list[Round]]:
+    """Два абсолютно равных игрока за неделю: (pid_one, pid_two, rounds)."""
+    pids = [base, base + 1]
+    wallets = {pid: "0:" + os.urandom(32).hex() for pid in pids}
+    session.add_all(
+        [
+            Player(id=pids[0], username="tie1", wallet_address=wallets[pids[0]]),
+            Player(id=pids[1], username="tie2", wallet_address=wallets[pids[1]]),
+        ]
+    )
+    prev_start, _ = week_bounds(previous_week_key())
+    rounds: list[Round] = []
+    for offset in range(n_days):
+        round_row = await _seed_closed_round(
+            session, 848_500 + offset, prev_start + timedelta(days=offset, hours=11)
+        )
+        rounds.append(round_row)
+        for pid in pids:
+            session.add(Vote(round_id=round_row.id, player_id=pid, card_position=0))
+        if offset == 0:
+            for pid in pids:
+                _set_stake(session, round_row, pid)
+    session.add(WeeklyPot(week=previous_week_key(), nanotons=to_nano(10)))
+    await session.commit()
+    return pids[0], pids[1], rounds
+
+
+async def test_settle_week_tie_opens_claim_window_and_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ничья без заявок: выплата блокируется, окно Claim открывается с tied-игроками."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    week_key = previous_week_key()
+    async with SessionLocal() as session:
+        pid_one, pid_two, rounds = await _seed_week_tie_scene(session, 982_000, 3)
+        try:
+            await _set_week_ready(session, week_key)
+            assert await settle_week_if_due(bot=None) is False
+            paid = (
+                (await session.execute(select(Payout).where(Payout.kind == "weekly"))).scalars().all()
+            )
+            assert paid == []
+            # Метка не сдвинута (может существовать пустой ряд-замок).
+            marker = await session.get(WatcherState, WEEKLY_MARKER_KEY)
+            assert marker is None or marker.value == ""
+            window_row = await session.get(WatcherState, WEEK_CLAIM_WINDOW_KEY)
+            assert window_row is not None
+            window = json.loads(window_row.value)
+            assert window["period"] == week_key
+            assert set(window["players"]) == {pid_one, pid_two}
+            # Повторный вызов (дедлайн не прошёл) — снова ждём.
+            assert await settle_week_if_due(bot=None) is False
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(
+                WatcherState.__table__.delete().where(WatcherState.key.in_(
+                    [WEEKLY_MARKER_KEY, WEEK_CLAIM_WINDOW_KEY]
+                ))
+            )
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_one, pid_two):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_tie_pays_after_all_claimed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Все tied подали Claim — ничья разрешена временем заявок, выплата идёт."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    week_key = previous_week_key()
+    base_t = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        pid_one, pid_two, rounds = await _seed_week_tie_scene(session, 983_000, 2)
+        try:
+            await _set_week_ready(session, week_key)
+            # Первый заход открывает окно и ждёт.
+            assert await settle_week_if_due(bot=None) is False
+            session.add(
+                LeaderboardClaim(
+                    player_id=pid_one, kind="week", period=week_key, claimed_at=base_t + timedelta(hours=1)
+                )
+            )
+            session.add(
+                LeaderboardClaim(
+                    player_id=pid_two, kind="week", period=week_key, claimed_at=base_t + timedelta(hours=2)
+                )
+            )
+            await session.commit()
+            # Все tied заявились — платим: раньше заявивший выше.
+            assert await settle_week_if_due(bot=None) is True
+            by_pid = {
+                p.player_id: p.amount_nanotons
+                for p in (await session.execute(select(Payout).where(Payout.kind == "weekly"))).scalars()
+            }
+            assert by_pid == {
+                pid_one: to_nano(10) * 50 // 100,
+                pid_two: to_nano(10) * 30 // 100,
+            }
+            # Окно закрыто после выплаты.
+            assert await session.get(WatcherState, WEEK_CLAIM_WINDOW_KEY) is None
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(LeaderboardClaim.__table__.delete())
+            await session.execute(
+                WatcherState.__table__.delete().where(WatcherState.key.in_(
+                    [WEEKLY_MARKER_KEY, WEEK_CLAIM_WINDOW_KEY]
+                ))
+            )
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_one, pid_two):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_settle_week_tie_reopens_stale_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Окно от прошлого периода не наследуется: под новый период открывается свежее."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "weekly_min_days", 1)
+    week_key = previous_week_key()
+    async with SessionLocal() as session:
+        pid_one, pid_two, rounds = await _seed_week_tie_scene(session, 984_000, 2)
+        try:
+            await _seed_expired_week_window(session, "2025-W01", [pid_one, pid_two])
+            await _set_week_ready(session, week_key)
+            # Окно мертво (другой период): ничья открывает новое и ждёт.
+            assert await settle_week_if_due(bot=None) is False
+            window_row = await session.get(WatcherState, WEEK_CLAIM_WINDOW_KEY)
+            assert window_row is not None
+            window = json.loads(window_row.value)
+            assert window["period"] == week_key
+            marker = await session.get(WatcherState, WEEKLY_MARKER_KEY)
+            assert marker is None or marker.value == ""
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "weekly"))
+            await session.execute(
+                WatcherState.__table__.delete().where(WatcherState.key.in_(
+                    [WEEKLY_MARKER_KEY, WEEK_CLAIM_WINDOW_KEY]
+                ))
+            )
+            await session.execute(WeeklyPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (pid_one, pid_two):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
 
 

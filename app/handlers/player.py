@@ -160,9 +160,9 @@ async def _record_start_referral(session, message: Message) -> None:
 async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
     """Личное меню /start: кнопка подписки на личку + претензии на места.
 
-    Кнопки Claim видны только тем, кто может на них претендовать: кошелёк
-    привязан и в текущем периоде (неделя/месяц) есть хотя бы одна ставка.
-    Претензия решает только ничьи — кто раньше нажал, тот выше.
+    Кнопки Claim появляются только у игроков, попавших в ничью за призовые
+    места закрытого периода, пока окно заявок открыто (приз ещё не роздан).
+    Остальным кнопка не видна: заявлять нечего.
     """
     subscribed = bool(getattr(player, "dm_subscribed", True))
     label = (
@@ -173,27 +173,17 @@ async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text=label, callback_data="dm:toggle")]
     ]
-    if settings.leaderboard_claim_enabled and player.wallet_address:
-        from app.leaderboard import _players_with_stake
-        from app.weeks import iso_week_key, week_bounds
+    buttons: list[InlineKeyboardButton] = []
+    if settings.leaderboard_claim_enabled:
+        from app.leaderboard import _claim_window_players
 
-        now = datetime.now(timezone.utc)
-        week_start, week_end = week_bounds(iso_week_key(now))
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        next_month = (month_start + timedelta(days=35)).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        week_staked = await _players_with_stake(session, week_start, week_end, by="opens_at")
-        month_staked = await _players_with_stake(session, month_start, next_month, by="tally_ends_at")
-        buttons: list[InlineKeyboardButton] = []
-        if player.id in week_staked:
-            buttons.append(
-                InlineKeyboardButton(text="🗓 Заявить приз недели", callback_data="claim:week")
-            )
-        if player.id in month_staked:
-            buttons.append(
-                InlineKeyboardButton(text="🗓 Заявить приз месяца", callback_data="claim:month")
-            )
+        for kind, text, data in (
+            ("week", "🗓 Заявить приз недели", "claim:week"),
+            ("month", "🗓 Заявить приз месяца", "claim:month"),
+        ):
+            tied_players, _period = await _claim_window_players(session, kind)
+            if player.id in tied_players:
+                buttons.append(InlineKeyboardButton(text=text, callback_data=data))
         if buttons:
             rows.append(buttons)
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -253,30 +243,40 @@ def _human_claim_period(kind: str, period: str) -> str:
 async def _on_claim(callback: CallbackQuery, kind: str) -> None:
     """Претензия на место лидерборда: решает ничьи по времени Claim.
 
-    Кошелёк обязателен, иначе приз физически некуда отправить. Идемпотентно:
+    Кнопка видна только tied-игрокам, пока окно Claim открыто (приз не
+    распределён из-за ничьей). Дублирующий check здесь — защита от hand-craft
+    callback: период берётся из окна, а не из текущей даты. Кошелёк обязателен,
+    иначе приз физически некуда отправить. Идемпотентно:
     unique(player_id, kind, period) — повторный тап не заводит вторую запись.
     """
     if callback.from_user is None:
         await callback.answer()
         return
-    from app.leaderboard import active_claim_period
+    from app.leaderboard import _claim_window_players
 
-    period = active_claim_period(kind)
-    human = _human_claim_period(kind, period)
-    confirm = (
-        f"Заявка на копилку недели ({human}) принята: при равенстве верных "
-        "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
-        if kind == "week"
-        else f"Заявка на копилку месяца ({human}) принята: при равенстве верных "
-        "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
-    )
     async with SessionLocal() as session:
+        tied_players, period = await _claim_window_players(session, kind)
         player = await upsert_player(session, callback.from_user)
+        if not period or not tied_players or player.id not in tied_players:
+            await callback.answer(
+                "Сейчас нет открытых заявок: приз этого периода уже распределён "
+                "или ничьей среди лидеров нет.",
+                show_alert=True,
+            )
+            return
         if not player.wallet_address:
             await callback.answer(
                 "Сначала привяжи кошелёк — без него приз не уйдёт.", show_alert=True
             )
             return
+        human = _human_claim_period(kind, period)
+        confirm = (
+            f"Заявка на копилку недели ({human}) принята: при равенстве верных "
+            "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
+            if kind == "week"
+            else f"Заявка на копилку месяца ({human}) принята: при равенстве верных "
+            "путей и ставок Gram ты выше тех, кто заявился позже (или не заявился вовсе)."
+        )
         existing = await session.scalar(
             select(LeaderboardClaim.id).where(
                 LeaderboardClaim.player_id == player.id,

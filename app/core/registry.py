@@ -38,6 +38,8 @@ MARKER_KEY = "leaderboard_settled_through"
 WEEKLY_MARKER_KEY = "weekly_settled_through"
 MONTH_READY_KEY = "month_leaderboard_ready"
 WEEK_READY_KEY = "week_leaderboard_ready"
+WEEK_CLAIM_WINDOW_KEY = "claim_window:week"
+MONTH_CLAIM_WINDOW_KEY = "claim_window:month"
 
 # --- Сезон / сюжет (app/season.py) ---
 

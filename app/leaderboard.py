@@ -30,10 +30,12 @@ week_leaderboard_ready в watcher_state). Претендент обязан им
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import case, delete, func, or_, select, text
 
 from app.config import settings
@@ -52,7 +54,9 @@ from app.models import (
 )
 from app.core.registry import (
     MARKER_KEY,
+    MONTH_CLAIM_WINDOW_KEY,
     MONTH_READY_KEY,
+    WEEK_CLAIM_WINDOW_KEY,
     WEEK_READY_KEY,
     WEEKLY_MARKER_KEY,
 )
@@ -130,18 +134,6 @@ def previous_month_key(now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
-
-
-def active_claim_period(kind: str, now: datetime | None = None) -> str:
-    """Период открытой претензии Claim: неделя «YYYY-Www» или месяц «YYYY-MM».
-
-    Кнопка в /start живёт в течение периода, в который игрок мог вложиться
-    ставкой; запись фиксирует момент претензии под settle того же периода.
-    """
-    now = now or datetime.now(timezone.utc)
-    if kind == "month":
-        return now.strftime("%Y-%m")
-    return iso_week_key(now)
 
 
 async def _top_correct_voters(session, since: datetime, until: datetime) -> list[tuple[int, int]]:
@@ -269,6 +261,204 @@ async def _claim_times(session, kind: str, periods: list[str]) -> dict[int, date
 
 
 _FAR_FUTURE = datetime(9999, 12, 31, tzinfo=timezone.utc)
+
+
+def _prize_tied_groups(
+    candidates: list[tuple[int, int, int, str]],
+    top_k: int,
+) -> list[list[int]]:
+    """Группы связанных (tied) игроков на призовых местах.
+
+    Кандидаты уже отсортированы _order_by_ties (correct ↓, gram ↓, claim, pid ↑).
+    top_k — число призовых мест (3 для недели, monthly_prize_top_k для месяца).
+
+    Ничья = группа ≥2 кандидатов с одинаковыми (correct, gram), чья позиция
+    в отсортированном списке ≤ top_k (или группа «перекрывает» cutoff).
+
+    Возвращает список групп (каждая группа — список player_id).
+    """
+    if not candidates or top_k <= 0:
+        return []
+
+    prize_slice = candidates[:top_k]
+    groups: list[list[int]] = []
+    i = 0
+    while i < len(prize_slice):
+        pid, correct, gram, _w = prize_slice[i]
+        j = i + 1
+        while j < len(prize_slice):
+            p2, c2, g2, _w2 = prize_slice[j]
+            if c2 == correct and g2 == gram:
+                j += 1
+            else:
+                break
+        if j - i >= 2:
+            groups.append([p for p, _c, _g, _w in prize_slice[i:j]])
+        i = j
+    return groups
+
+
+def _is_tied_player(
+    tied_groups: list[list[int]], player_id: int
+) -> bool:
+    """Проверяет, есть ли игрок хотя бы в одной связанной группе."""
+    for group in tied_groups:
+        if player_id in group:
+            return True
+    return False
+
+
+async def _open_claim_window(
+    session, kind: str, period: str, tied_player_ids: list[int]
+) -> None:
+    """Открывает окно Claim: записывает JSON в watcher_state."""
+    key = WEEK_CLAIM_WINDOW_KEY if kind == "week" else MONTH_CLAIM_WINDOW_KEY
+    data = json.dumps({
+        "period": period,
+        "players": tied_player_ids,
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+    })
+    row = await session.get(WatcherState, key)
+    if row is None:
+        session.add(WatcherState(key=key, value=data))
+    else:
+        row.value = data
+
+
+async def _load_claim_window(
+    session, kind: str
+) -> dict | None:
+    """Читает окно Claim из watcher_state. None = окна нет."""
+    key = WEEK_CLAIM_WINDOW_KEY if kind == "week" else MONTH_CLAIM_WINDOW_KEY
+    row = await session.get(WatcherState, key)
+    if row is None or not row.value:
+        return None
+    try:
+        return json.loads(row.value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+async def _clear_claim_window(session, kind: str) -> None:
+    """Закрывает окно Claim."""
+    key = WEEK_CLAIM_WINDOW_KEY if kind == "week" else MONTH_CLAIM_WINDOW_KEY
+    await session.execute(delete(WatcherState).where(WatcherState.key == key))
+
+
+async def _claim_window_players(
+    session, kind: str
+) -> tuple[list[int], str]:
+    """Tied-игроки и период активного окна Claim (пусто — окна нет)."""
+    window = await _load_claim_window(session, kind)
+    if window is None:
+        return [], ""
+    return window.get("players", []) or [], window.get("period", "") or ""
+
+
+async def _notify_tied_players(
+    bot: Bot | None,
+    kind: str,
+    period: str,
+    tied_player_ids: list[int],
+) -> None:
+    """Отправляет DM tied-игрокам с кнопкой Claim."""
+    if bot is None or not tied_player_ids:
+        return
+    human = (
+        f"недели {period}"
+        if kind == "week"
+        else f"месяца {period}"
+    )
+    text = (
+        f"🏆 Ничья за призовые места leaderboard {human}!\n\n"
+        "Ты и ещё кто-то набрали одинаковые верные пути и вклад Gram. "
+        "Чтобы решить, кто выше — нажми кнопку заявки ниже. "
+        "Кто раньше нажал — тот выше. "
+        f"Дедлайм: {settings.claim_window_hours}ч."
+    )
+    button_text = (
+        "🗓 Заявить приз недели" if kind == "week"
+        else "🗓 Заявить приз месяца"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=button_text, callback_data=f"claim:{kind}")]
+    ])
+    for pid in tied_player_ids:
+        try:
+            await bot.send_message(pid, text, reply_markup=kb)
+        except Exception as exc:
+            logger.warning("DM tied-игроку %s не доставлен: %s", pid, exc)
+
+
+async def _resolve_claim_window(
+    session,
+    bot: Bot | None,
+    kind: str,
+    period: str,
+    placed: list[tuple[int, int, int, str]],
+    top_k: int,
+    claims: dict[int, datetime],
+    now: datetime,
+) -> bool:
+    """Решает, продолжать ли выплату или ждать Claim от tied-игроков.
+
+    Возвращает True, когда можно платить дальше: ничьей на призовых местах
+    нет, все tied уже заявились, или дедлайн заявок прошёл. False — окно
+    Claim открыто/ещё живо и выплату надо отложить (такое окно открывается
+    один раз и рассылает DM tied-игрокам).
+
+    Ничья без заявок никогда не разрешается меньшим player_id немедленно:
+    сначала tied-игроки получают шанс подать Claim (кто раньше — тот выше).
+    """
+    if not settings.leaderboard_claim_enabled:
+        await _clear_claim_window(session, kind)
+        return True
+
+    tied_groups = _prize_tied_groups(placed, top_k=top_k)
+    if not tied_groups:
+        await _clear_claim_window(session, kind)
+        return True
+
+    all_tied = [pid for group in tied_groups for pid in group]
+    window = await _load_claim_window(session, kind)
+    if window is not None and window.get("period") != period:
+        # Окно от прошлого периода — устарело, переоткрываем под текущий.
+        await _clear_claim_window(session, kind)
+        window = None
+
+    claimed_ids = {pid for pid in all_tied if claims.get(pid) is not None}
+    if claimed_ids >= set(all_tied):
+        # Все tied заявились — ничья разрешена временем Claim (раньше — выше).
+        # Закрываем окно (если было) и платим сразу.
+        await _clear_claim_window(session, kind)
+        return True
+
+    if window is None:
+        await _open_claim_window(session, kind, period, all_tied)
+        await session.commit()
+        if bot is not None:
+            await _notify_tied_players(bot, kind, period, all_tied)
+        logger.info("Ничья %s %s: tied %s — открыто окно Claim", kind, period, all_tied)
+        return False
+
+    opened_at_str = window.get("opened_at", "")
+    try:
+        opened_at = datetime.fromisoformat(opened_at_str)
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        opened_at = now
+    deadline_passed = (
+        settings.claim_window_hours > 0
+        and (now - opened_at).total_seconds() >= settings.claim_window_hours * 3600
+    )
+    if not deadline_passed:
+        # Дедлайн не прошёл — ждём заявок.
+        return False
+
+    await _clear_claim_window(session, kind)
+    logger.info("Ничья %s %s: дедлайн Claim прошёл, окно закрыто", kind, period)
+    return True
 
 
 def _order_by_ties(
@@ -486,6 +676,11 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
                 )
                 return False
             placed = _order_by_ties(candidates, claims)
+            if not await _resolve_claim_window(
+                session, bot, "month", prev_key, placed, top_k=top_k,
+                claims=claims, now=now,
+            ):
+                return False
             weights = parse_prize_pcts(settings.monthly_prize_weights)
             if not weights:
                 # Пустой список весов (опечатка конфига) не должен сжечь горш:
@@ -774,6 +969,12 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
                 min_days or settings.weekly_min_days,
                 " (короткая стартовая неделя — порог снят)" if relaxed else "",
             )
+            return False
+
+        # --- Ничья: блокировка выплаты до Claim или дедлайма ---
+        if not await _resolve_claim_window(
+            session, bot, "week", prev_key, places, top_k=3, claims=claims, now=now
+        ):
             return False
 
         amounts, rolled = _week_prize_amounts(total, len(places))

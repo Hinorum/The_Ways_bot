@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import ton_pay
 from app.config import settings
+from app.core.registry import MONTH_CLAIM_WINDOW_KEY
 from app.db import SessionLocal
 from app.leaderboard import MARKER_KEY, MONTH_READY_KEY, previous_month_key, settle_month_if_due
 from app.payments import parse_revote_memo
@@ -47,6 +49,18 @@ def _closed_round(day_index: int, tally_at: datetime) -> Round:
         vote_counts_json="{}",
         payouts_finalized=True,
     )
+
+
+async def _seed_expired_month_window(session: AsyncSession, period: str, players: list[int]) -> None:
+    """Окно месячного Claim с истёкшим дедлайном: выплата может идти сразу."""
+    opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    session.add(
+        WatcherState(
+            key=MONTH_CLAIM_WINDOW_KEY,
+            value=json.dumps({"period": period, "players": players, "opened_at": opened_at}),
+        )
+    )
+    await session.commit()
 
 
 # ---------- Ретраи выплат ----------
@@ -579,6 +593,8 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
         month_key = pot.month
         session.add(pot)
         session.add(WatcherState(key=MONTH_READY_KEY, value=previous_month_key()))
+        # Двое абсолютно равных: дедлайн окна Claim истёк — места по меньшему id.
+        await _seed_expired_month_window(session, month_key, [pid_a, pid_b])
         await session.commit()
         try:
             assert await settle_month_if_due(bot=None) is True
