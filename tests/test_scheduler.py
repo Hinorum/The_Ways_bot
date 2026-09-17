@@ -141,21 +141,27 @@ async def test_start_scheduler_registers_only_zero_arg_jobs(monkeypatch) -> None
 
     from app import scheduler as scheduler_mod
 
-    registered: list[tuple[str, object]] = []
+    registered: list[tuple[str, object, str, int | None]] = []
 
     def fake_add_job(func, trigger, *, id, **kwargs):
-        registered.append((id, func))
+        registered.append((id, func, trigger, kwargs.get("seconds")))
 
     monkeypatch.setattr(scheduler_mod.scheduler, "add_job", fake_add_job)
     monkeypatch.setattr(scheduler_mod.scheduler, "start", lambda: None)
     monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "ton_watch_interval_seconds", 123)
 
     scheduler_mod.start_scheduler()
 
-    ids = [job_id for job_id, _func in registered]
+    ids = [job_id for job_id, _func, _trigger, _sec in registered]
     assert {"way-tick", "db-backup", "ton-watch", "ton-settle",
             "ws-cleanup", "vote-reminder"} <= set(ids)
-    for job_id, fn in registered:
+    watch_trigger, watch_seconds = next(
+        (trigger, seconds) for job_id, _fn, trigger, seconds in registered if job_id == "ton-watch"
+    )
+    assert watch_trigger == "interval"
+    assert watch_seconds == 123, "частота наблюдателя берётся из настроек (рычаг экономии квоты)"
+    for job_id, fn, _trigger, _sec in registered:
         try:
             inspect.signature(fn).bind()
         except TypeError as exc:

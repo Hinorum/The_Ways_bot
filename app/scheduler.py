@@ -345,7 +345,7 @@ def start_scheduler() -> None:
         minute=17,
     )
     if settings.ton_enabled:
-        _register_job("ton-watch", _watch_job_guarded, "interval", seconds=60)
+        _register_job("ton-watch", _watch_job_guarded, "interval", seconds=settings.ton_watch_interval_seconds)
         _register_job("ton-settle", _ton_maintenance_guarded, "interval", seconds=120)
     # Сброс разросшегося watcher_state: еженедельно в ночь после нагрузок.
     _register_job(
