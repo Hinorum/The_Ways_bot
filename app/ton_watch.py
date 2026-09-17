@@ -96,8 +96,8 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
             # Пустая история бывает у двух причин: кошелёк правда молчал
             # или индексатор потерял историю. Различаем честно.
             return await _resolve_tonapi_empty_history(since_utime)
-            response.raise_for_status()
-            items = response.json().get("transactions", [])
+        response.raise_for_status()
+        items = response.json().get("transactions", [])
     except Exception as exc:
         logger.warning("TonAPI недоступен: %s", exc)
         return [], False
@@ -265,8 +265,8 @@ def _parse_toncenter_item(item: dict, since_utime: int) -> Transfer | None:
             return None
         decoded = (in_msg.get("message_content") or {}).get("decoded") or {}
         comment = ""
-        if isinstance(decoded, dict) and decoded.get("@type") == "comment":
-            comment = str(decoded.get("comment") or "")
+        if isinstance(decoded, dict) and decoded.get("@type") in ("comment", "text_comment"):
+            comment = _clean_comment(str(decoded.get("comment") or ""))
         return Transfer(
             tx_hash=_norm_tx_hash(str(item.get("hash") or "")),
             source=str(source),
@@ -337,9 +337,9 @@ def _clean_comment(text: str) -> str:
 
 
 def _decode_comment(in_msg: dict) -> str:
-    raw = in_msg.get("raw_message") or ""
-    if raw:
-        return _clean_comment(raw)
+    decoded_body = in_msg.get("decoded_body")
+    if isinstance(decoded_body, dict) and in_msg.get("decoded_op_name") == "text_comment":
+        return _clean_comment(str(decoded_body.get("text") or ""))
     msg_data = in_msg.get("msg_data") or {}
     decoded = msg_data.get("decoded_comment") or ""
     if decoded:
@@ -350,7 +350,7 @@ def _decode_comment(in_msg: dict) -> str:
             return _clean_comment(base64.b64decode(text_b64).decode("utf-8", "ignore"))
         except Exception:
             return ""
-    return ""
+    return _clean_comment(str(in_msg.get("raw_message") or ""))
 
 
 async def _ledger_stuck_incoming(
@@ -572,6 +572,8 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     ):
         return "self_transfer"
     async with SessionLocal() as session:
+        if await session.get(WatcherState, f"refund:{transfer.tx_hash}") is not None:
+            return "refund_duplicated"
         player_result = await session.execute(
             select(Player).where(Player.wallet_address == normalize_address(transfer.source))
         )
@@ -627,6 +629,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     None,
                     ledger_result="walletverify:ok",
                     ledger_player_id=player.id,
+                    force=True,
                 )
                 if result == "refund_queued":
                     await _dm_stake(
@@ -657,6 +660,34 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 session, transfer, None, ledger_result="unknown", force=True
             )
             await _dm_verify_mismatch(bot, player, transfer)
+            return result
+        # Кошелёк привязан, но владение ещё не доказано (bv:<код> ждёт встречного
+        # микро-перевода). Любой ДРУГОЙ перевод с адреса уже не может быть ни
+        # ставкой, ни платой за смену пути: ветки ниже (rv:-мемо и авто-грант по
+        # сумме из вилки [revote_ton, stake_min_ton)) молча съедали проверочный
+        # микро-перевод с искажённым/обрезанным комментарием — деньги уходили
+        # как грант смены пути, кошелёк не привязывался, а игрок не получал ни
+        # возврата, ни удержанного приза. Возвращаем всё до доказательства
+        # владения, со внятным объяснением и образцом верного memo.
+        if player.wallet_verify_code and not player.wallet_verified:
+            result = await _stash_refund(
+                session,
+                transfer,
+                None,
+                ledger_result="verify:pending",
+                ledger_player_id=player.id,
+                force=True,
+            )
+            await _dm_stake(
+                bot,
+                player.id,
+                f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+                "кошелёк привязан, но ещё не подтверждён. Докажи владение — отправь "
+                "с него микро-перевод казначею с комментарием "
+                f"<code>bv:{player.wallet_verify_code}</code> (код виден в /wallet); "
+                "сумма вернётся целиком. Пока кошелёк не подтверждён, ставки и плата "
+                "за смену пути с него не принимаются.",
+            )
             return result
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:

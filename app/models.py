@@ -150,6 +150,13 @@ class Round(Base):
     # (close_voting) и фиксируется в дне; heal/пересчёт используют ту же энтропию,
     # иначе исход мог бы измениться. Null — ничьей не было либо TON недоступен.
     tie_entropy: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Энтропия закона дня: «seqno:root_hash» мастерхчейн-блока TON, из root_hash
+    # которого детерминированно выводится правило дня (root_hash % 3). Блок уже
+    # лежит в цепочке в момент открытия дня: его нельзя подогнать задним числом,
+    # каждый игрок может проверить seqno в эксплорере и пересчитать закон.
+    # Снимается один раз при открытии дня. Null — TON выключен или оба узла
+    # молчали (правило падает на локальный честный жребий).
+    rule_entropy: Mapped[str | None] = mapped_column(String(80), nullable=True)
     # Момент первой успешной рассылки дня: повторный анонс того же дня
     # невозможен даже при гонке двух процессов после деплоя.
     announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

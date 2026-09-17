@@ -187,7 +187,9 @@ async def _wallet_view_text(user) -> str:
                 "Чтобы перепривязать: пришли одной строкой <code>/wallet</code> и адрес.\n"
                 "Как поставить на путь: /stake"
             )
-            if not player.wallet_verified and player.wallet_verify_code:
+            if player.wallet_verified:
+                body += "\n\nКошелёк подтверждён. Начисленные призы обрабатываются очередью выплат."
+            elif player.wallet_verify_code:
                 body += (
                     "\n\n⚠️ Кошелёк ещё не подтверждён — с него не считаются ставки.\n"
                     f"Подтверди владение: отправь с него перевод казначею (/stake) "

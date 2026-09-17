@@ -109,6 +109,42 @@ def _v3_tx(utime: int, value_nano: int, comment: str | None = None) -> dict:
     }
 
 
+async def test_tonapi_success_reads_verify_comment(monkeypatch) -> None:
+    item = _api_tx(1500, to_nano(0.03))
+    item["in_msg"].update(
+        raw_message="b5ee9c72",
+        decoded_op_name="text_comment",
+        decoded_body={"text": "bv:ABC123"},
+    )
+    install_http(monkeypatch, {_HISTORY: [_Response(200, {"transactions": [item]})]})
+    transfers, ok = await ton_watch.fetch_recent_transfers(1000)
+    assert ok is True
+    assert len(transfers) == 1
+    assert transfers[0].comment == "bv:ABC123"
+
+
+async def test_tonapi_http_error_falls_back(monkeypatch) -> None:
+    install_http(
+        monkeypatch,
+        {
+            _HISTORY: [_Response(403)],
+            _V3: [_Response(200, {"transactions": [_v3_tx(1500, to_nano(0.03))]})],
+        },
+    )
+    transfers, ok, source = await ton_watch._collect_transfers(1000)
+    assert ok is True
+    assert source == "toncenter"
+    assert len(transfers) == 1
+
+
+@pytest.mark.parametrize("kind", ["comment", "text_comment"])
+def test_toncenter_verify_comment_formats(kind) -> None:
+    item = _v3_tx(1500, to_nano(0.03), comment="\ufeffbv:ABC\u200b123")
+    item["in_msg"]["message_content"]["decoded"]["@type"] = kind
+    transfer = ton_watch._parse_toncenter_item(item, 1000)
+    assert transfer.comment == "bv:ABC123"
+
+
 # ---------- Честная трактовка 404 ----------
 
 

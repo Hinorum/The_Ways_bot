@@ -402,15 +402,19 @@ async def _vote_reminder_job() -> None:
             if not unbotted:
                 return
 
-            law_name = {
-                "MAJORITY": "Большинство",
-                "MINORITY": "Меньшинство",
-                "MEDIAN": "Медиана",
-            }.get(current.win_rule.value, "???")
+            stake_mode = (
+                settings.ton_enabled
+                and getattr(settings, "winner_by_stakes", True)
+                and getattr(current, "money_mode", True) is not False
+            )
+            from app.models import RULE_PHRASES, VOTE_RULE_PHRASES
 
+            rule_phrase = (RULE_PHRASES if stake_mode else VOTE_RULE_PHRASES)[
+                current.win_rule
+            ]
             text = (
                 f"🐺 Голосование закрывается через час.\n"
-                f"⚖️ Закон дня: {law_name}."
+                f"⚖️ Закон дня: {rule_phrase}."
             )
 
             from app.broadcast import _dm_send_all

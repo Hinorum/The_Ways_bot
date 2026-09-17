@@ -24,7 +24,7 @@ from sqlalchemy import delete, select
 from app.config import settings
 from app.db import SessionLocal
 from app.handlers import cmd_wallet
-from app.models import Payout, Player, Round, RoundStatus, Stake, WinRule
+from app.models import Payout, Player, RevoteGrant, Round, RoundStatus, Stake, Vote, WinRule
 from app.payments import parse_verify_memo
 from app.stakes import register_stake
 from app.ton_utils import friendly_address, normalize_address, to_nano
@@ -486,6 +486,76 @@ async def test_stake_accepted_after_verification(ton_on) -> None:
         assert status == "ok"
 
 
+async def test_pending_verify_transfer_not_consumed_as_revote(ton_on) -> None:
+    """Кошелёк привязан, но не подтверждён: проверочный микро-перевод с memo,
+    который не разобрался как bv:<код> (обрезан/искажён кошельком), не должен
+    превращаться в грант смены пути по сумме (вилка [revote_ton, stake_min_ton))
+    — деньги обязаны вернуться, а кошелёк остаться неподтверждённым. Раньше
+    такой перевод молча уходил как «оплата смены пути», приз оставался
+    удержанным, а игрок не получал ни возврата, ни привязанного кошелька."""
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE16)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="still-unverified",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        round_row = Round(
+            day_index=908_000,
+            status=RoundStatus.OPEN,
+            win_rule=WinRule.MAJORITY,
+            chapter_title="t",
+            chapter_text="x",
+            opens_at=datetime.now(timezone.utc),
+            voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=20),
+            tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=21),
+        )
+        session.add(round_row)
+        await session.flush()
+        session.add(Vote(round_id=round_row.id, player_id=uid, card_position=0))
+        await session.commit()
+        round_id = round_row.id
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-revote-trap-{uid}",
+            source=raw,
+            value_nanotons=to_nano(settings.revote_ton),
+            comment="ABC",  # не похоже на bv:ABC123 и не равно коду целиком
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        ),
+        bot=bot,
+    )
+    assert status == "refund_queued"
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+        assert player.wallet_verified is False
+        assert player.wallet_verify_code == "ABC123"
+        grant = (
+            await session.execute(select(RevoteGrant).where(RevoteGrant.player_id == uid))
+        ).scalar_one_or_none()
+        assert grant is None, "проверочный перевод не должен становиться грантом ревоута"
+        refund = (
+            await session.execute(
+                select(Payout).where(Payout.tx_hash == f"wv-revote-trap-{uid}")
+            )
+        ).scalar_one_or_none()
+        assert refund is not None and refund.kind == "refund"
+        assert refund.dest_address == raw
+        await session.execute(delete(Vote).where(Vote.round_id == round_id))
+        await session.execute(delete(Round).where(Round.id == round_id))
+        await session.commit()
+    assert len(bot.messages) == 1
+    assert "bv:ABC123" in bot.messages[0][1]
+
+
 async def test_process_transfer_returns_stake_until_verified(ton_on) -> None:
     """Скват-сценарий: чужой адрес привязан, но код не подтверждён — ставка
     с реального владельца кошелька возвращается, а не засчитывается агрессору."""
@@ -513,9 +583,13 @@ async def test_process_transfer_returns_stake_until_verified(ton_on) -> None:
             utime=int(datetime.now(timezone.utc).timestamp()),
         )
     )
-    assert status == "wallet_unverified"
+    assert status == "refund_queued"
     async with SessionLocal() as session:
         stake = (
             await session.execute(select(Stake).where(Stake.tx_hash == f"sq-tx-{uid}"))
         ).scalar_one_or_none()
         assert stake is None
+        refund = (
+            await session.execute(select(Payout).where(Payout.tx_hash == f"sq-tx-{uid}"))
+        ).scalar_one_or_none()
+        assert refund is not None and refund.kind == "refund"

@@ -98,7 +98,13 @@ async def create_next_round_detailed(
         if latest is not None and latest.tally_ends_at is not None
         else None
     )
-    payload = await _plan_and_render(session, day_index, opens_hint=opens_hint)
+    # Закон дня выводится из честной энтропии мастерчейна TON (root_hash % 3),
+    # как жребий ничьей: блок уже в цепочке до открытия дня, подогнать закон
+    # задним числом нельзя. TON выключен / оба узла молчат → локальный жребий.
+    from app.ton_pay import fetch_masterchain_entropy
+
+    entropy = await fetch_masterchain_entropy()
+    payload = await _plan_and_render(session, day_index, opens_hint=opens_hint, entropy=entropy)
     try:
         round_row = await _materialize_round(session, payload, latest)
         await _stamp_day_money_mode(session, round_row)
