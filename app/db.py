@@ -20,6 +20,10 @@ engine = create_async_engine(
     settings.async_database_url,
     echo=False,
     pool_pre_ping=True,
+    # Пулеры (Supabase/pgbouncer) закрывают простаивающие серверные соединения
+    # по server_lifetime: пересоздаём нашу сторону раньше, не дожидаясь, когда
+    # pre_ping зацепит мёртвый сокет (лишний round-trip на каждый checkout).
+    pool_recycle=1800,
     connect_args=(
         _sqlite_connect_args()
         if settings.async_database_url.startswith("sqlite")
