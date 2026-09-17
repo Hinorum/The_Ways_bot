@@ -1,0 +1,39 @@
+name: db-backup
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client 17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl ca-certificates gnupg
+          echo "deb http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo $VERSION_CODENAME)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+      - name: pg_dump
+        env:
+          PGURL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          stamp="$(date -u +%Y%m%d-%H%M)"
+          dsn="${PGURL}"
+          case "${dsn}" in
+            *\?*) dsn="${dsn}&sslmode=verify-full&sslrootcert=$GITHUB_WORKSPACE/certs/supabase-root.pem" ;;
+            *)    dsn="${dsn}?sslmode=verify-full&sslrootcert=$GITHUB_WORKSPACE/certs/supabase-root.pem" ;;
+          esac
+          pg_dump --format=custom --file="backup-${stamp}.dump" "${dsn}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: backup-*.dump
+          retention-days: 90
+          if-no-files-found: error
