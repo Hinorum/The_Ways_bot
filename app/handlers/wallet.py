@@ -190,9 +190,11 @@ async def _wallet_view_text(user) -> str:
             if not player.wallet_verified and player.wallet_verify_code:
                 body += (
                     "\n\n⚠️ Кошелёк ещё не подтверждён — с него не считаются ставки.\n"
-                    f"Подтверди владение: отправь с него микро-перевод казначею (/stake) "
-                    f"с комментарием <code>bv:{player.wallet_verify_code}</code>. "
-                    "Сумма вернётся целиком."
+                    f"Подтверди владение: отправь с него перевод казначею (/stake) "
+                    f"от {settings.refund_min_gram:g} Gram с комментарием "
+                    f"<code>bv:{player.wallet_verify_code}</code>. "
+                    f"Сумма от {settings.refund_min_gram:g} Gram вернётся целиком; "
+                    "меньше — не вернётся (газ возврата дороже пыли)."
                 )
         else:
             body = (
@@ -296,10 +298,11 @@ async def _bind_wallet(message: Message, address: str) -> bool:
     if settings.ton_enabled:
         confirmation = (
             f"{ok_mark(str(uid))} Кошелёк привязан — осталось подтвердить, что он твой.\n"
-            f"Отправь с него микро-перевод казначею (адрес: /stake) с комментарием:\n"
+            f"Отправь с него перевод казначею (адрес: /stake) с комментарием:\n"
             f"<code>bv:{player.wallet_verify_code}</code>\n"
-            "Сумму вернём целиком. Играть со ставками можно только после подтверждения — "
-            "перевод до него вернётся обратно."
+            f"от {settings.refund_min_gram:g} Gram — сумма вернётся целиком; "
+            "перевод меньше не вернётся (газ возврата дороже). Играть со ставками можно "
+            "только после подтверждения — перевод до него вернётся обратно."
         )
     else:
         confirmation = f"{ok_mark(str(uid))} Кошелёк привязан. Теперь переводы с него будут считаться твоими ставками."

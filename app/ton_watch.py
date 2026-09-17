@@ -547,10 +547,17 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 session, transfer, None, ledger_result="unknown"
             )
         # Подтверждение владения кошельком (защита от сквата чужих публичных
-        # адресов): микро-перевод с мемо bv:<код>. Код при привязке получил
+        # адресов): перевод с мемо bv:<код>. Код при привязке получил
         # только владелец телеграм-аккаунта, а перевести с адреса может только
         # владелец кошелька — совпадение «отправитель + код» доказывает контроль.
         verify_code = parse_verify_memo(transfer.comment)
+        if verify_code is None and player.wallet_verify_code:
+            # Частая ошибка игрока: копирует только код без префикса bv:.
+            # Голый код — тот же секрет владельца, принимаем точное совпадение
+            # (регистр не важен, вокруг допустимы пробелы кошелька).
+            bare = (transfer.comment or "").strip().upper()
+            if bare == player.wallet_verify_code.upper():
+                verify_code = player.wallet_verify_code
         if verify_code:
             if (
                 player.wallet_verify_code

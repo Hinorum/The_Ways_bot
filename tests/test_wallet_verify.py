@@ -187,6 +187,42 @@ async def test_watcher_verifies_and_refunds(ton_on) -> None:
     assert [(m[0], "подтверждён" in m[1]) for m in bot.messages] == [(uid, True)]
 
 
+async def test_watcher_verifies_bare_code(ton_on) -> None:
+    """Игрок часто шлёт код без префикса bv: — голый код владельца тоже
+    доказывает контроль и принимается как верификация."""
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE11)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="bare",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        await session.commit()
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-bare-{uid}",
+            source=raw,
+            value_nanotons=to_nano(0.2),
+            comment="ABC123",
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        ),
+        bot=bot,
+    )
+    assert status.startswith("walletverify_")
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+        assert player.wallet_verified is True
+        assert player.wallet_verify_code is None
+
+
 async def test_watcher_ignores_wrong_code(ton_on) -> None:
     uid = next_uid()
     await _reset_player(uid)
