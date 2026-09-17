@@ -105,8 +105,7 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
 
         async with SessionLocal() as db:
             nano, _bets = await round_pot(db, round_row.id)
-        if nano:
-            bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram"
+        bank_line = f"\n💰 Банк дня: {nano / 1e9:.2f} Gram"
     # Бесшовные сутки: подсчёт мгновенный, оба времени совпадают — хватит
     # одного дедлайна. Легаси-раунды с зазором показывают обе строки.
     voting_at = _utc(round_row.voting_ends_at)

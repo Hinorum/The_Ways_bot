@@ -166,9 +166,9 @@ async def test_status_bank_line_shows_amount_only(monkeypatch, tmp_path) -> None
             await db.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
             await db.commit()
 
-    # Пустой банк — строки нет вовсе.
+    # Пустой банк — строка остаётся: банк дня виден с самого открытия.
     text = await status_text(round_row)
-    assert "Банк дня" not in text
+    assert "Банк дня: 0.00 Gram" in text
 
 
 async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
