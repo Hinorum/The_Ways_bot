@@ -80,17 +80,27 @@ _SQLITE_COLUMN_DDL = {
 }
 
 
-_SQLITE_COLUMN_DROP = {
-    "rounds": ("rule_commitment", "sealed", "lore_summary", "cover_path", "season", "place"),
-    "cards": (
-        "food_cost",
-        "water_cost",
-        "health_risk",
-        "trust_change",
-        "emotional_consequence",
-        "npc_reactions_json",
-    ),
-}
+def _drop_orphan_not_null_columns(sync_conn) -> None:
+    """Дроп осиротевших NOT NULL-колонок удалённых механик.
+
+    Колонка есть в живой БД, но её больше нет в модели ORM → INSERT нового
+    дня не передаёт её значение и падает на NOT NULL (если нет default).
+    Универсально: сравниваем БД с model, дропаем только такой актуальный
+    «поломщик INSERT», nullable-сироты безвредны и остаются.
+    """
+    inspector = inspect(sync_conn)
+    meta = Base.metadata
+    for table_name in inspector.get_table_names():
+        if table_name not in meta.tables:
+            continue
+        model_columns = set(meta.tables[table_name].columns.keys())
+        for col in inspector.get_columns(table_name):
+            name = col["name"]
+            if name in model_columns:
+                continue
+            if col.get("nullable") is False and col.get("default") is None:
+                logger.info("DROP orphan NOT NULL column %s.%s", table_name, name)
+                sync_conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN {name}"))
 
 
 def _ensure_sqlite_columns(sync_conn) -> None:
@@ -100,28 +110,10 @@ def _ensure_sqlite_columns(sync_conn) -> None:
         for name, ddl in statements.items():
             if name not in columns:
                 sync_conn.execute(text(ddl))
-    # Осиротевшие колонки удалённых механик: на живой базе они остаются
-    # из старой схемы и ломают INSERT (NOT NULL без default в модели).
-    for table, columns in _SQLITE_COLUMN_DROP.items():
-        existing = {column["name"] for column in inspector.get_columns(table)}
-        for name in columns:
-            if name in existing:
-                sync_conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {name}"))
+    _drop_orphan_not_null_columns(sync_conn)
 
 
 _PG_MIGRATIONS: list[str] = [
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS rule_commitment",
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS sealed",
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS lore_summary",
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS cover_path",
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS season",
-    "ALTER TABLE rounds DROP COLUMN IF EXISTS place",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS food_cost",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS water_cost",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS health_risk",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS trust_change",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS emotional_consequence",
-    "ALTER TABLE cards DROP COLUMN IF EXISTS npc_reactions_json",
     "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
@@ -190,6 +182,11 @@ async def init_db() -> None:
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
             await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
+        # Осиротевшие NOT NULL-колонки удалённых механик (rule_commitment,
+        # sealed, lore_summary, cover_path, card-поля AI-слоя и т.п.) на живой
+        # базе остаются из старой схемы и ломают INSERT нового дня. Дропаем
+        # универсально — по разнице БД и модели, без ручного списка.
+        await conn.run_sync(_drop_orphan_not_null_columns)
 
     if settings.async_database_url.startswith("postgresql"):
         # Phase 2: each migration in its own transaction.
