@@ -390,6 +390,7 @@ async def _stash_refund(
     *,
     ledger_result: str | None = None,
     ledger_player_id: int | None = None,
+    force: bool = False,
 ) -> str:
     """Авто-возврат перевода + запись в ledger доходов за один коммит.
 
@@ -402,6 +403,10 @@ async def _stash_refund(
     comment — свободный текст перевода вместо служебного memo «way:…»
     (возвраты при паузе игры объясняют игроку, что идут техработы).
     ledger_result — если передан, создаётся запись Income в том же коммите.
+    force — вернуть даже сумму меньше refund_min_gram («пыль»). По умолчанию
+    пыль не возвращается (газ дороже), НО это верно для анонимного спама;
+    известный отправитель (привязанный игрок, неудачная верификация кошелька)
+    должен получить свои копейки назад — иначе деньги пропадают молча.
     """
     age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
     if age_days > max(0, settings.watch_refund_max_age_days):
@@ -412,7 +417,7 @@ async def _stash_refund(
         )
         await _ledger_stuck_incoming(session, transfer, ledger_player_id, "refund:expired")
         return "refund_expired"
-    if transfer.value_nanotons < to_nano(settings.refund_min_gram):
+    if not force and transfer.value_nanotons < to_nano(settings.refund_min_gram):
         # Газ возврата дороже самой пыли: микро-перевод остаётся в казне, а не
         # превращается в убыточный dead-letter. Игроку не пишем — это спам-боты.
         logger.info(
@@ -634,9 +639,11 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
             # bv: с неверным/чужим кодом или не с привязанного адреса — возвращаем
             # штатно, но объясняем игроку, почему кошелёк НЕ привязался: деньги
             # уже едут обратно, а не гадаеется в тишине (источник этого кейса —
-            # обрезанный игроком код после двоеточия).
+            # обрезанный игроком код после двоеточия). force=True — возврат даже
+            # проверочной «пыли» < refund_min_gram: это конкретный привязанный
+            # человек, а не анонимный спам-бот.
             result = await _stash_refund(
-                session, transfer, None, ledger_result="unknown"
+                session, transfer, None, ledger_result="unknown", force=True
             )
             await _dm_verify_mismatch(bot, player, transfer)
             return result

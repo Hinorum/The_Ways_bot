@@ -296,6 +296,44 @@ async def test_wrong_code_refunds_and_explains_in_dm(ton_on) -> None:
     assert "bv:ABC123" in bot.messages[0][1]
 
 
+async def test_dust_size_verify_mismatch_still_refunds(ton_on) -> None:
+    """Проверочный перевод дешевле порога авто-возврата (0.05 Gram) — НО от
+    привязанного игрока: возвращаем даже «пыль» (обычный спам-бот её не
+    получает), чтобы человек не гадал, куда делись его копейки."""
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE15)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="dusty",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        await session.commit()
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-dust-{uid}",
+            source=raw,
+            value_nanotons=to_nano(0.03),
+            comment="bv:XYZ789",
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        ),
+        bot=bot,
+    )
+    assert status == "refund_queued", "пыль привязанного игрока возвращается, а не пылится"
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+        assert player.wallet_verified is False
+    assert len(bot.messages) == 1
+    assert "bv:ABC123" in bot.messages[0][1]
+
+
 async def test_verification_kicks_dispatch_for_held(ton_on, monkeypatch) -> None:
     """После успешной верификации очередь выплат подталкивается: приз,
     удержанный на неподтверждённом кошельке, уходит сразу, без ожидания
