@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -475,6 +476,41 @@ async def _dm_stake(bot: Bot | None, player_id: int, text: str) -> None:
         logger.info("Сообщение игроку %s не доставлено: %s", player_id, exc)
 
 
+async def _dm_verify_mismatch(bot: Bot | None, player: Player | None, transfer: Transfer) -> None:
+    """Личное объяснение, почему микро-перевод с verify-мемо не привязал кошелёк.
+
+    Перевод уже возвращается отправителю штатным авто-возвратом, но без
+    сообщения игрок, обрезавший/перепутавший код, не понимает, что случилось —
+    и награда за его верные дни продолжает ждать подтверждения кошелька.
+    """
+    if bot is None or player is None:
+        return
+    code = player.wallet_verify_code
+    code_hint = f" с кодом <code>bv:{code}</code>" if code else ""
+    await _dm_stake(
+        bot,
+        player.id,
+        f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
+        "код подтверждения кошелька не сошёлся (код другой или переведено "
+        f"не с привязанного адреса). Повтори микро-перевод строго с привязанного "
+        f"адреса{code_hint} — префикс bv: писать не обязательно.",
+    )
+
+
+async def _kick_dispatch_after_verify(bot: Bot | None) -> None:
+    """После верификации кошелька — кик очереди выплат (разумеется, под замком).
+
+    Удержанные на неподтверждённом кошельке призы разблокированы: без кика
+    диспетчер сработает только на закрытии дня, а игрок ждал бы награды до 11:00.
+    """
+    try:
+        from app.ton_pay import dispatch_pending_payouts
+
+        await dispatch_pending_payouts(bot=bot)
+    except Exception as exc:
+        logger.info("Кик очереди выплат после верификации не удался: %s", exc)
+
+
 async def _ledger_incoming(
     session, transfer: Transfer, player_id: int | None, round_id: int | None, result: str
 ) -> None:
@@ -554,8 +590,9 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
         if verify_code is None and player.wallet_verify_code:
             # Частая ошибка игрока: копирует только код без префикса bv:.
             # Голый код — тот же секрет владельца, принимаем точное совпадение
-            # (регистр не важен, вокруг допустимы пробелы кошелька).
-            bare = (transfer.comment or "").strip().upper()
+            # (регистр, обычные пробелы и «невидимые» нулевые символы кошелька
+            # значения не имеют). Неусечённое совпадение — не перебор по маске.
+            bare = re.sub(r"[\s\u200b\u200c\u200d]+", "", (transfer.comment or "")).upper()
             if bare == player.wallet_verify_code.upper():
                 verify_code = player.wallet_verify_code
         if verify_code:
@@ -588,12 +625,21 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                         player.id,
                         "✅ Кошелёк подтверждён — теперь переводы с него засчитываются ставками.",
                     )
+                # Приз/доли, удержанные на неподтверждённом кошельке (last_error
+                # «кошелёк привязан, но не подтверждён»), разблокированы: кикаем
+                # очередь выплат, чтобы игрок получил награду сразу, а не ждал
+                # следующего закрытия дня.
+                await _kick_dispatch_after_verify(bot)
                 return f"walletverify_{result}"
-            # bv: с неверным/чужим кодом или не с привязанного адреса — это
-            # чужой перевод, возвращаем штатно.
-            return await _stash_refund(
+            # bv: с неверным/чужим кодом или не с привязанного адреса — возвращаем
+            # штатно, но объясняем игроку, почему кошелёк НЕ привязался: деньги
+            # уже едут обратно, а не гадаеется в тишине (источник этого кейса —
+            # обрезанный игроком код после двоеточия).
+            result = await _stash_refund(
                 session, transfer, None, ledger_result="unknown"
             )
+            await _dm_verify_mismatch(bot, player, transfer)
+            return result
         revote_round_id = parse_revote_memo(transfer.comment)
         if revote_round_id is not None:
             status = await _process_revote(session, transfer, player, revote_round_id)

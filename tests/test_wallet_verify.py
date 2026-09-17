@@ -223,6 +223,115 @@ async def test_watcher_verifies_bare_code(ton_on) -> None:
         assert player.wallet_verify_code is None
 
 
+async def test_bare_code_ignores_spaces_and_zero_width(ton_on) -> None:
+    """Обрезанный до кода memo с пробелами/невидимыми символами кошелька
+    всё равно принимается: регистр и мусор вокруг кода значения не имеют."""
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE12)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="spaced",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        await session.commit()
+
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-spaced-{uid}",
+            source=raw,
+            value_nanotons=to_nano(0.2),
+            comment="   abc123\u200b  ",
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        )
+    )
+    assert status.startswith("walletverify_")
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+        assert player.wallet_verified is True
+        assert player.wallet_verify_code is None
+
+
+async def test_wrong_code_refunds_and_explains_in_dm(ton_on) -> None:
+    """Обрезанный/чужой код: деньги возвращаются штатно, а игроку в личку
+    объясняется, почему кошелёк не привязался, с образцом верного memo."""
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE13)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="trunc",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        await session.commit()
+
+    bot = _RecorderBot()
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-trunc-{uid}",
+            source=raw,
+            value_nanotons=to_nano(0.2),
+            comment="bv:XYZ789",
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        ),
+        bot=bot,
+    )
+    assert status == "refund_queued"
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+        assert player.wallet_verified is False
+        assert player.wallet_verify_code == "ABC123"
+    assert len(bot.messages) == 1
+    assert "возвращается" in bot.messages[0][1]
+    assert "bv:ABC123" in bot.messages[0][1]
+
+
+async def test_verification_kicks_dispatch_for_held(ton_on, monkeypatch) -> None:
+    """После успешной верификации очередь выплат подталкивается: приз,
+    удержанный на неподтверждённом кошельке, уходит сразу, без ожидания
+    закрытия дня."""
+    from app import ton_pay
+
+    kicked = AsyncMock(return_value=0)
+    monkeypatch.setattr(ton_pay, "dispatch_pending_payouts", kicked)
+    uid = next_uid()
+    await _reset_player(uid)
+    raw = _raw(0xCAFE14)
+    async with SessionLocal() as session:
+        session.add(
+            Player(
+                id=uid,
+                username="kicker",
+                wallet_address=raw,
+                wallet_verified=False,
+                wallet_verify_code="ABC123",
+            )
+        )
+        await session.commit()
+
+    status = await process_transfer(
+        Transfer(
+            tx_hash=f"wv-kick-{uid}",
+            source=raw,
+            value_nanotons=to_nano(0.2),
+            comment="ABC123",
+            utime=int(datetime.now(timezone.utc).timestamp()),
+        )
+    )
+    assert status.startswith("walletverify_")
+    assert kicked.await_count == 1
+
+
 async def test_watcher_ignores_wrong_code(ton_on) -> None:
     uid = next_uid()
     await _reset_player(uid)
