@@ -8,9 +8,9 @@ NANO = 1_000_000_000
 
 
 def is_valid_ton_address(address: str) -> bool:
-    """Принимает user-friendly base64url (EQ/UQ/0Q, 48 символов) и raw hex."""
+    """Принимает user-friendly base64url (EQ/UQ/kQ/0Q, 48 символов) и raw hex."""
     candidate = address.strip()
-    if len(candidate) == 48 and candidate[:2] in {"EQ", "UQ", "0Q"}:
+    if len(candidate) == 48 and candidate[:2] in {"EQ", "UQ", "kQ", "0Q"}:
         try:
             normalized = candidate.replace("-", "+").replace("_", "/")
             decoded = base64.b64decode(normalized, validate=True)
@@ -39,7 +39,7 @@ def normalize_address(address: str) -> str:
     байты 2..33 — хеш аккаунта, байты 34..35 — CRC.
     """
     candidate = address.strip()
-    if len(candidate) == 48 and candidate[:2] in {"EQ", "UQ", "0Q"}:
+    if len(candidate) == 48 and candidate[:2] in {"EQ", "UQ", "kQ", "0Q"}:
         normalized = candidate.replace("-", "+").replace("_", "/")
         decoded = base64.b64decode(normalized, validate=True)
         wc = decoded[1] - 256 if decoded[1] >= 0x80 else decoded[1]

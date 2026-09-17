@@ -33,16 +33,27 @@ def test_normalize_address_matches_friendly_and_raw() -> None:
 
 def test_friendly_address_roundtrip() -> None:
     """friendly_address обращает normalize_address: CRC и теги сходятся."""
-    for source in (USER_FRIENDLY, "UQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPuwA", RAW):
+    for source in (
+        USER_FRIENDLY,  # mainnet bounceable EQ…
+        "UQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPuwA",  # mainnet non-bounce
+        "0QDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPleK",  # testnet non-bounce 0Q…
+        "kQDKbjIcfM6ezt8KjKJJLshZJJSqX7XOA4ff-W72r5gqPgpP",  # testnet bounceable kQ…
+        RAW,
+    ):
         raw = normalize_address(source)
-        shown = friendly_address(raw, testnet=False)
-        assert is_valid_ton_address(shown)
-        assert len(shown) == 48
-        assert normalize_address(shown) == raw
-        # Тестнет-бит не ломает сверку, но меняет префикс.
-        test_shown = friendly_address(raw, testnet=True)
-        assert test_shown[:2] != shown[:2]
-        assert normalize_address(test_shown) == raw
+        assert is_valid_ton_address(source)
+        assert len(source) == 48 or source == RAW
+        for testnet in (False, True):
+            for bounceable in (False, True):
+                shown = friendly_address(raw, testnet=testnet, bounceable=bounceable)
+                assert is_valid_ton_address(shown)
+                assert len(shown) == 48
+                # Префикс отвечает сети и bounce-биту: mainnet EQ/UQ, testnet kQ/0Q.
+                expected_prefix = {(False, False): "UQ", (False, True): "EQ", (True, False): "0Q", (True, True): "kQ"}[
+                    (testnet, bounceable)
+                ]
+                assert shown[:2] == expected_prefix
+                assert normalize_address(shown) == raw
     # Мусор на входе проходит насквозь, а не падает.
     assert friendly_address("мусор") == "мусор"
     assert friendly_address("ff:00") == "ff:00"
