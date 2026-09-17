@@ -171,6 +171,18 @@ BEGIN
   ) THEN
     ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT;
   END IF;
+  -- Клейм-маркеры refund:<tx_hash>/ledger:<tx_hash> длиннее старого PK
+  -- VARCHAR(64): 'refund:' + 64 hex = 71 символ ронял INSERT
+  -- (StringDataRightTruncationError), перевод навсегда зацикливался в stuck.
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'watcher_state'
+      AND column_name = 'key'
+      AND character_maximum_length IS NOT NULL
+      AND character_maximum_length < 80
+  ) THEN
+    ALTER TABLE watcher_state ALTER COLUMN key TYPE VARCHAR(80);
+  END IF;
 END $$;
 """
 

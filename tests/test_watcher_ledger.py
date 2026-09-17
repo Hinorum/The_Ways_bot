@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from app import ton_watch
 from app.db import SessionLocal
-from app.models import Income
+from app.models import Income, WatcherState
 
 
 def _transfer(tx_hash: str) -> SimpleNamespace:
@@ -64,3 +64,22 @@ async def test_stuck_double_pass_keeps_single_row() -> None:
     async with SessionLocal() as session:
         await ton_watch._ledger_stuck_incoming(session, transfer, None, "refund:dust")
     assert await _income_count(tx) == 1
+
+
+async def test_claim_once_accepts_full_tx_hash_key() -> None:
+    """Клейм-маркер refund:<64 hex> (71 символ) влезает в watcher_state.key.
+
+    Прод-инцидент: PK был VARCHAR(64), и INSERT клейма падал
+    StringDataRightTruncationError — перевод навсегда зацикливался в
+    stuck, возврат игроку не создавался, выигрыш не уходил.
+    """
+    tx = "dd" * 32
+    key = f"refund:{tx}"
+    assert len(key) == 71
+    assert WatcherState.__table__.c.key.type.length >= len(key)
+    async with SessionLocal() as session:
+        first = await ton_watch.claim_once(session, key)
+        second = await ton_watch.claim_once(session, key)
+        await session.commit()
+    assert first is True
+    assert second is False
