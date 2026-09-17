@@ -30,7 +30,9 @@ jobs:
             *\?*) dsn="${dsn}&sslmode=verify-full&sslrootcert=$GITHUB_WORKSPACE/certs/supabase-root.pem" ;;
             *)    dsn="${dsn}?sslmode=verify-full&sslrootcert=$GITHUB_WORKSPACE/certs/supabase-root.pem" ;;
           esac
-          pg_dump --format=custom --file="backup-${stamp}.dump" "${dsn}"
+          pg_dump17="/usr/lib/postgresql/17/bin/pg_dump"
+          "${pg_dump17}" --format=custom --file="backup-${stamp}.dump" "${dsn}"
+          ls -lh backup-*.dump
       - uses: actions/upload-artifact@v4
         with:
           name: db-backup
