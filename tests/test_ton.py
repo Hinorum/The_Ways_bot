@@ -31,6 +31,22 @@ def test_normalize_address_matches_friendly_and_raw() -> None:
     assert normalize_address(USER_FRIENDLY) == normalize_address(RAW)
 
 
+def test_normalize_address_never_raises_on_garbage() -> None:
+    """Неразбираемые строки не роняют watcher/миграции: канонизация только
+    того, что разобралось. Реальный инцидент-класс: легаси-запись в БД или
+    источник блокчейна с битым base64 валит весь цикл исключением."""
+    # Правильная длина и префикс, но битый base64url.
+    assert normalize_address("UQ" + "!" * 46) == ("uq" + "!" * 46)
+    # Правильный base64, но неверная длина декода (35 байт вместо 36).
+    import base64 as _b64
+
+    short = _b64.b64encode(b"\x51\x00" + b"\x01" * 33).decode()
+    assert normalize_address(short) == short.lower()
+    # Мусор других форм — насквозь.
+    assert normalize_address("мусор") == "мусор"
+    assert normalize_address("") == ""
+
+
 def test_friendly_address_roundtrip() -> None:
     """friendly_address обращает normalize_address: CRC и теги сходятся."""
     for source in (

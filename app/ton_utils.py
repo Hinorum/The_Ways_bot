@@ -37,11 +37,23 @@ def normalize_address(address: str) -> str:
 
     User-friendly раскладка: байт 0 — тег, байт 1 — воркчейн (знаковый),
     байты 2..33 — хеш аккаунта, байты 34..35 — CRC.
+
+    Разбираемая строка всегда канонизируется, неразбираемая возвращается
+    как есть (в нижнем регистре): функция вызывается и на данных из
+    блокчейна, и на пользовательском вводе, и на легаси-записях БД —
+    исключение здесь ломало бы watcher/миграции на мусорной строке.
+    CRC не проверяется: сравнение адресов это допускает (валидность
+    контролирует is_valid_ton_address на входе от игрока).
     """
     candidate = address.strip()
     if len(candidate) == 48 and candidate[:2] in {"EQ", "UQ", "kQ", "0Q"}:
         normalized = candidate.replace("-", "+").replace("_", "/")
-        decoded = base64.b64decode(normalized, validate=True)
+        try:
+            decoded = base64.b64decode(normalized, validate=True)
+        except Exception:
+            return candidate.lower()
+        if len(decoded) != 36:
+            return candidate.lower()
         wc = decoded[1] - 256 if decoded[1] >= 0x80 else decoded[1]
         return f"{wc}:{decoded[2:34].hex()}"
     return candidate.lower()
