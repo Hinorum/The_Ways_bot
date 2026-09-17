@@ -671,17 +671,45 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
 
 
 async def _reset_retriable(session, network: str) -> None:
-    """Оживляем зависшие sending/failed, пока не исчерпан лимит попыток."""
-    await session.execute(
-        update(Payout)
-        .where(
-            Payout.status.in_(["failed", "sending"]),
-            Payout.attempts < settings.payout_max_attempts,
-            Payout.dest_address != "",
-            Payout.network == network,
+    """Оживляем зависшие sending/failed, пока не исчерпан лимит попыток.
+
+    failed возвращается в очередь сразу (в мёртвой строке никто не «живёт»);
+    sending — ТОЛЬКО если клейм заведомо «мёртв»: он старше
+    payout_send_timeout_seconds + 30 c. Живое вещание (другая копия
+    диспетчера держит строку до таймаута вещания) не перехватывается —
+    иначе та копия на следующем цикле забрала бы строку и перевела деньги
+    второй раз; memo-антидубль не поможет — перевод ещё не в цепочке.
+    claimed_at IS NULL (строки, упавшие до появления колонки) считаем
+    зависшими: живой клейм всегда пишет claimed_at сейчас. Сверка в naive
+    UTC: Postgres вернёт aware, SQLite — naive (см. confirm_broadcast_payouts).
+    """
+    rows = (
+        await session.execute(
+            select(Payout.id, Payout.status, Payout.claimed_at).where(
+                Payout.status.in_(["failed", "sending"]),
+                Payout.attempts < settings.payout_max_attempts,
+                Payout.dest_address != "",
+                Payout.network == network,
+            )
         )
-        .values(status="pending")
+    ).all()
+    if not rows:
+        return
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        seconds=settings.payout_send_timeout_seconds + 30
     )
+    reset_ids = [payout_id for payout_id, status, _claimed in rows if status == "failed"]
+    for payout_id, status, claimed_at in rows:
+        if status != "sending":
+            continue
+        if claimed_at is None:
+            reset_ids.append(payout_id)
+        elif claimed_at.replace(tzinfo=None) <= cutoff:
+            reset_ids.append(payout_id)
+    if reset_ids:
+        await session.execute(
+            update(Payout).where(Payout.id.in_(reset_ids)).values(status="pending")
+        )
 
 
 async def _alert_admin(bot: Bot | None, network: str) -> None:
@@ -902,6 +930,7 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                 continue
             payout.attempts += 1
             payout.status = "sending"
+            payout.claimed_at = datetime.now(timezone.utc)
             claimed_ids.add(payout.id)
         await session.commit()
         # Работаем только строками, что реально забрали мы: сама рассылка

@@ -268,6 +268,11 @@ class Payout(Base):
     network: Mapped[str] = mapped_column(String(16), default="mainnet")
     status: Mapped[str] = mapped_column(String(16), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # Момент клейма строки в работу (sending). _reset_retriable возвращает
+    # sending → pending только когда клейм заведомо «мёртв» (старше окна
+    # вещания): живой вещающий процесс строку не перехватывает — иначе вторая
+    # копия диспетчера перевела бы деньги дважды. См. _reset_retriable.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Причина последней неудачи отправки: видно в /payouts и алертах админу,
     # диагноз не требует раскопок логов сервиса.
     last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)

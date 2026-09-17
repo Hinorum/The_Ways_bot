@@ -368,6 +368,13 @@ async def _ledger_stuck_incoming(
     )
     if existing.scalar_one_or_none() is not None:
         return
+    # Cross-process в той же транзакции, что и сама запись: два watcher-инстанса
+    # на один перевод не гоняются по check-then-insert (Income.unit_ref
+    # уникален, но проигравший поймал бы IntegrityError и ушёл в stuck-список
+    # ложным «не обработано»). Проигравший против метки выходит без изменений;
+    # откат транзакции снимает метку вместе с записью.
+    if not await claim_once(session, f"ledger:{transfer.tx_hash}"):
+        return
     session.add(
         Income(
             kind="ton",
@@ -529,6 +536,10 @@ async def _ledger_incoming(
         select(Income.id).where(Income.unit_ref == transfer.tx_hash).limit(1)
     )
     if existing.scalar_one_or_none() is not None:
+        return
+    # Cross-process в той же транзакции, что и строка дохода: два инстанса на
+    # один перевод не дерутся по check-then-insert (см. _ledger_stuck_incoming).
+    if not await claim_once(session, f"ledger:{transfer.tx_hash}"):
         return
     session.add(
         Income(

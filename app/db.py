@@ -21,9 +21,11 @@ engine = create_async_engine(
     echo=False,
     pool_pre_ping=True,
     # Пулеры (Supabase/pgbouncer) закрывают простаивающие серверные соединения
-    # по server_lifetime: пересоздаём нашу сторону раньше, не дожидаясь, когда
-    # pre_ping зацепит мёртвый сокет (лишний round-trip на каждый checkout).
-    pool_recycle=1800,
+    # по server_lifetime (~15 мин у Supabase; поверх этого копятся «Idle session
+    # timeout»). Пересоздаём нашу сторону явно и раньше — 900 с < 15 мин — чтобы
+    # pre_ping не зацеплял мёртвый сокет (лишний round-trip на каждый checkout)
+    # и слоты пулера не висели занятыми весь срок жизни серверного коннекта.
+    pool_recycle=900,
     connect_args=(
         _sqlite_connect_args()
         if settings.async_database_url.startswith("sqlite")
@@ -78,6 +80,7 @@ _SQLITE_COLUMN_DDL = {
         "alerted": "ALTER TABLE payouts ADD COLUMN alerted BOOLEAN NOT NULL DEFAULT 0",
         "last_error": "ALTER TABLE payouts ADD COLUMN last_error VARCHAR(200)",
         "comment_override": "ALTER TABLE payouts ADD COLUMN comment_override VARCHAR(120)",
+        "claimed_at": "ALTER TABLE payouts ADD COLUMN claimed_at DATETIME",
     },
     "incomes": {
         "network": "ALTER TABLE incomes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
@@ -146,6 +149,7 @@ _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS alerted BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)",
     "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)",
+    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ",
     "ALTER TABLE incomes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
     "ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL",
     "ALTER TABLE payouts ALTER COLUMN round_id DROP NOT NULL",

@@ -303,9 +303,10 @@ async def _cleanup_watcher_state_job() -> None:
 
     Ключи вида micro_event:*, teaser:*, pecho:*, sniff:*, memquiz:* живут по
     одному на раунд и никогда не чистятся сами (append-only), как и устаревшие
-    img_stubs:* / day_projection:* / art_bible:* за прошлые дни. На больших
-    сезонах таблица растёт бесконечно — раз в неделю держим её в узде,
-    оставляя только живые настройки и потоковые якоря.
+    img_stubs:* / day_projection:* / art_bible:* за прошлые дни, и одноразовые
+    маркеры дедупа refund:* / ledger:* (после того как возврат/доход уже создан,
+    метка — мёртвый груз). На больших сезонах таблица растёт бесконечно — раз в
+    неделю держим её в узде, оставляя только живые настройки и потоковые якоря.
     """
     try:
         async with SessionLocal() as session:
@@ -318,6 +319,8 @@ async def _cleanup_watcher_state_job() -> None:
                 | (WatcherState.key.like("img_stubs:%"))
                 | (WatcherState.key.like("day_projection:%"))
                 | (WatcherState.key.like("art_bible:%"))
+                | (WatcherState.key.like("refund:%"))
+                | (WatcherState.key.like("ledger:%"))
             )
             rows = (await session.execute(stmt)).scalars().all()
             if not rows:
