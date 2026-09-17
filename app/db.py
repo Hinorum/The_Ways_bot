@@ -81,7 +81,15 @@ _SQLITE_COLUMN_DDL = {
 
 
 _SQLITE_COLUMN_DROP = {
-    "rounds": ("rule_commitment", "sealed"),
+    "rounds": ("rule_commitment", "sealed", "lore_summary", "cover_path", "season", "place"),
+    "cards": (
+        "food_cost",
+        "water_cost",
+        "health_risk",
+        "trust_change",
+        "emotional_consequence",
+        "npc_reactions_json",
+    ),
 }
 
 
@@ -104,6 +112,16 @@ def _ensure_sqlite_columns(sync_conn) -> None:
 _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE rounds DROP COLUMN IF EXISTS rule_commitment",
     "ALTER TABLE rounds DROP COLUMN IF EXISTS sealed",
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS lore_summary",
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS cover_path",
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS season",
+    "ALTER TABLE rounds DROP COLUMN IF EXISTS place",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS food_cost",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS water_cost",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS health_risk",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS trust_change",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS emotional_consequence",
+    "ALTER TABLE cards DROP COLUMN IF EXISTS npc_reactions_json",
     "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
