@@ -127,6 +127,11 @@ class Round(Base):
     tally_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     winner_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vote_counts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Суммы подтверждённых ставок (нанотоны Gram) по путям дня — решающий счёт,
+    # когда winner_by_stakes включён: исход определяется банками путей. Null —
+    # день закрыт по голосам (fallback/легаси). Не трогает vote_counts_json:
+    # тот хранит бесплатные голоса для лидерборда и отображения.
+    stake_counts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Человеческое объяснение ничьей: «жребий закона выбрал путь II из II и III».
     # Null — победа без равенства.
     tie_note: Mapped[str | None] = mapped_column(String(200), nullable=True)

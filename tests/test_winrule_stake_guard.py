@@ -1,8 +1,13 @@
-"""Приоритет ставящих при выборе пути (win_rule_prefers_staked).
+"""Приоритет ставящих при выборе пути (легаси: win_rule_prefers_staked).
 
+Этот файл проверяет ЛЕГАСИ-режим (winner_by_stakes=False) — прежний
+чисто-подсчётный исход голосов с опциональным приоритетом ставящих.
 Лечит MINORITY-патологию: когда побеждает наименьший счёт, путь, за которого
 НИКТО не держит подтверждённую ставку TON, не должен выигрывать, пока есть
-путь с реальными деньгами. По умолчанию выключен — исход строго по закону.
+путь с реальными деньгами.
+
+Новая механика (winner_by_stakes=True) живёт в test_winner_by_stakes.py:
+там исход определяется суммами подтверждённых ставок, а не голосами.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -15,6 +20,17 @@ from app.config import settings
 from app.models import Card, Player, Round, RoundStatus, Stake, Vote, WinRule
 from app.rounds import finish_tally, _prefer_staked, _staked_paths
 from app.ton_utils import to_nano
+
+
+@pytest.fixture(autouse=True)
+def _legacy_mode(monkeypatch: pytest.MonkeyPatch):
+    """Дни этого файла считаются по легаси-голосам (не по ставкам).
+
+    Новая механика winner_by_stakes решает исход суммами ставок и проверяется
+    в test_winner_by_stakes.py — здесь только прежний голосовой закон.
+    """
+    monkeypatch.setattr(settings, "winner_by_stakes", False)
+    yield
 
 
 async def tally_round(

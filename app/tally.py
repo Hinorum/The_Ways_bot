@@ -149,21 +149,42 @@ def format_results(
 
     raw = json.loads(round_row.vote_counts_json or "{}")
     counts = {int(key): int(value) for key, value in raw.items()}
+    stake_raw = json.loads(round_row.stake_counts_json or "{}")
+    stake_counts = {int(key): int(value) for key, value in stake_raw.items()} if stake_raw else None
     names = {card.position: _tg_escape(card.title) for card in round_row.cards}
     mark_key = str(getattr(round_row, "id", round_row.day_index))
     lines = [f"{result_mark(mark_key)} День {round_row.day_index} закрыт"]
-    # «Запись на волоске»: сколько голосов отделяло мир от другого исхода.
-    margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
-    if margin is not None:
-        k, alt = margin
-        alt_name = names.get(alt)
-        if alt_name:
-            word = _votes_word(k)
-            lines.append(
-                f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
-                "и тропа повела бы иначе."
-            )
+    if stake_counts:
+        # «Запись на волоске» по решающему счёту: исход решили ставки, мерим
+        # средство перемещения (Gram) с дискретностью 0.01.
+        margin = flip_margin(
+            {position: int(round(value / 1e7)) for position, value in stake_counts.items()},
+            getattr(round_row, "win_rule", None),
+            round_row.winner_card,
+        )
+        if margin is not None:
+            k, alt = margin
+            alt_name = names.get(alt)
+            if alt_name:
+                lines.append(
+                    f"🩸 на волоске: ещё {k / 100:.2f} Gram за «{alt_name}» — "
+                    "и деньги повели тропу иначе."
+                )
+    else:
+        # «Запись на волоске»: сколько голосов отделяло мир от другого исхода.
+        margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
+        if margin is not None:
+            k, alt = margin
+            alt_name = names.get(alt)
+            if alt_name:
+                word = _votes_word(k)
+                lines.append(
+                    f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
+                    "и тропа повела бы иначе."
+                )
     lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
+    if stake_counts:
+        lines.append("💰 Тропу выбрали ставки дня — голоса ведут лидерборд")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):

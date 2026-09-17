@@ -25,12 +25,15 @@ from .rendering import PREPARED_PAYLOAD_VERSION, _plan_and_render  # noqa: F401
 from .time import _ROMAN, _day_window, _next_hour_slot, _now, utc_aware  # noqa: F401
 from .voting import (  # noqa: F401
     _TIE_THEATER,
+    _decisive_counts,
     _pick_among,
     _prefer_staked,
     _staked_paths,
     _winner_and_tied,
+    count_stakes_for_tally,
     count_votes_for_tally,
     pick_winner,
+    plain_vote_counts,
     tie_seed,
     tied_positions,
 )
@@ -63,12 +66,15 @@ __all__ = [
     "_now",
     "utc_aware",
     "_TIE_THEATER",
+    "_decisive_counts",
     "_pick_among",
     "_prefer_staked",
     "_staked_paths",
     "_winner_and_tied",
+    "count_stakes_for_tally",
     "count_votes_for_tally",
     "pick_winner",
+    "plain_vote_counts",
     "tie_seed",
     "tied_positions",
 ]
