@@ -449,6 +449,69 @@ async def test_http_retry_backoff_respects_cap(monkeypatch) -> None:
     assert sleeps == [10.0, 25.0, 25.0, 25.0]
 
 
+class _ThrottledClient:
+    """Клиент, отвечающий 429 с заголовком Retry-After, потом 200."""
+
+    def __init__(self, throttled: int, retry_after: str = "7") -> None:
+        self._left = throttled
+        self.calls = 0
+        self.retry_after = retry_after
+
+    async def get(self, url: str, params=None, headers=None):
+        self.calls += 1
+        if self._left > 0:
+            self._left -= 1
+            import httpx
+
+            response = httpx.Response(429, headers={"Retry-After": self.retry_after}, request=None)
+            return response
+        return _FakeResp({"ok": True})
+
+
+async def test_http_retry_429_respects_retry_after(monkeypatch) -> None:
+    """Квота провайдера: респект Retry-After вместо тупого backoff.
+
+    Реальный сценарий free tier TonAPI (1 rps/ключ): долбить в 429 — ловить
+    бан ключа; провайдер прямо говорит «подожди N секунд».
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(secs: float) -> None:
+        sleeps.append(secs)
+
+    import app.http_utils as http_utils
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", fake_sleep)
+    client = _ThrottledClient(throttled=2, retry_after="7")
+
+    response = await http_get_with_retry(
+        client, "https://ton.example/v2/accounts/x/transactions", max_retries=3,
+        retry_delay=1.0, backoff_factor=2.0, max_delay=30.0,
+    )
+    assert response.status_code == 200
+    assert client.calls == 3
+    assert sleeps == [7.0, 7.0]
+
+
+async def test_http_retry_429_caps_retry_after(monkeypatch) -> None:
+    """Retry-After на час не замораживает минуточный цикл: потолок max_delay."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(secs: float) -> None:
+        sleeps.append(secs)
+
+    import app.http_utils as http_utils
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", fake_sleep)
+    client = _ThrottledClient(throttled=1, retry_after="3600")
+
+    await http_get_with_retry(
+        client, "https://ton.example/v2/ping", max_retries=2,
+        retry_delay=1.0, backoff_factor=2.0, max_delay=30.0,
+    )
+    assert sleeps == [30.0]
+
+
 # ---------- /blockchain: аудит-отчёт ----------
 
 
