@@ -26,9 +26,6 @@ from .time import _ROMAN, _day_window, _next_hour_slot, _now, utc_aware  # noqa:
 from .voting import (  # noqa: F401
     _TIE_THEATER,
     _decisive_counts,
-    _pick_among,
-    _prefer_staked,
-    _staked_paths,
     _winner_and_tied,
     count_stakes_for_tally,
     count_votes_for_tally,

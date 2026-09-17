@@ -6,7 +6,6 @@ import random
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models import Round, Stake, Vote, WinRule
 from app.stakes import current_network
 
@@ -38,25 +37,6 @@ async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[in
     counts = {0: 0, 1: 0, 2: 0}
     for position, total in result.all():
         counts[int(position)] = int(total)
-    bonus = getattr(settings, "stake_vote_bonus_weight", 0) or 0
-    if bonus > 0:
-        # «Кожа в игре»: путь, за который хотя бы один игрок держит
-        # подтверждённую ставку TON, получает плоский перевес. Ставка
-        # привязывается к пути через голос самого игрока (Stake не хранит
-        # позицию отдельно). Только confirmed — деньги реально заблокированы.
-        stake_rows = await session.execute(
-            select(Vote.card_position, func.count(distinct(Vote.player_id)))
-            .join(
-                Stake,
-                (Stake.round_id == Vote.round_id)
-                & (Stake.player_id == Vote.player_id),
-            )
-            .where(Vote.round_id == round_id, Stake.status == "confirmed")
-            .group_by(Vote.card_position)
-        )
-        for position, holders in stake_rows.all():
-            if holders > 0:
-                counts[int(position)] += bonus
     return counts
 
 
@@ -111,13 +91,12 @@ async def _decisive_counts(
 ) -> tuple[dict[int, int], bool]:
     """(решающий счёт, были ли это суммы ставок) для winner_by_stakes.
 
-    По умолчанию исход определяют суммы подтверждённых ставок; день, где
+    Исход определяют суммы подтверждённых ставок; день, где
     нет ни одного грамма, решается бесплатными голосами (fallback).
     """
-    if getattr(settings, "winner_by_stakes", False):
-        stakes = await count_stakes_for_tally(session, round_row.id)
-        if any(value > 0 for value in stakes.values()):
-            return stakes, True
+    stakes = await count_stakes_for_tally(session, round_row.id)
+    if any(value > 0 for value in stakes.values()):
+        return stakes, True
     return vote_counts, False
 
 
@@ -173,47 +152,6 @@ async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
     return {int(p) for p, holders in rows.all() if holders > 0}
 
 
-def _pick_among(
-    counts: dict[int, int], rule: WinRule, seed: str | None, paths: list[int]
-) -> tuple[int, list[int]]:
-    """(победитель, претенденты) по закону ДНЯ только внутри заданного набора
-    путей. В отличие от pick_winner, «не заявленные» пути не существуют —
-    отсутствующий путь не трактуется как 0 голосов и не лезет в MINORITY-минимум."""
-    items = [(counts.get(p, 0), p) for p in paths]
-    if not items:
-        return 0, []
-    if rule is WinRule.MAJORITY:
-        ref = max(c for c, _ in items)
-    elif rule is WinRule.MINORITY:
-        ref = min(c for c, _ in items)
-    else:  # MEDIAN
-        ordered = sorted(items, key=lambda t: (t[0], t[1]))
-        ref = ordered[len(ordered) // 2][0]
-    cands = sorted(p for c, p in items if c == ref)
-    if len(cands) > 1 and seed:
-        winner = random.Random(f"law:{seed}").choice(cands)
-    else:
-        winner = cands[0]
-    return winner, cands
-
-
-def _prefer_staked(
-    counts: dict[int, int], rule: WinRule, seed: str | None, staked: set[int]
-) -> tuple[int, list[int]]:
-    """(победитель, претенденты) с приоритетом ставящих.
-
-    Если хотя бы один путь реально заблокирован ставкой TON, путь, за который
-    НИКТО не держит деньги, не может победить: закон пересчитывается строго
-    по ставящим путям. Это лечит MINORITY-патологию — там побеждает наименьший
-    счёт, и голос против «пустого» пути мог бы случайно выиграть; отсекаем
-    безденежные кандидатов до выбора. При отсутствии ставящих — исход по
-    прежнему чисто-подсчётному закону целиком.
-    """
-    if not staked:
-        return pick_winner(counts, rule, seed=seed), tied_positions(counts, rule)
-    return _pick_among(counts, rule, seed, sorted(staked))
-
-
 async def _winner_and_tied(
     session: AsyncSession,
     round_row: Round,
@@ -222,18 +160,9 @@ async def _winner_and_tied(
 ) -> tuple[int, list[int]]:
     """Выбор победителя по закону дня.
 
-    winner_by_stakes: counts уже решающие (обычно суммы ставок) — закон дня
-    применяется к ним напрямую, легаси-флаги ставок не участвуют.
-    Иначе: чисто-подсчётный закон голосов с опциональным приоритетом
-    ставящих (win_rule_prefers_staked, защита от MINORITY-патологии).
+    counts уже решающие (суммы ставок или голоса) — закон дня
+    применяется к ним напрямую.
     """
-    if getattr(settings, "winner_by_stakes", False):
-        return pick_winner(counts, round_row.win_rule, seed=seed), tied_positions(
-            counts, round_row.win_rule
-        )
-    if getattr(settings, "win_rule_prefers_staked", False):
-        staked = await _staked_paths(session, round_row.id)
-        return _prefer_staked(counts, round_row.win_rule, seed=seed, staked=staked)
     return pick_winner(counts, round_row.win_rule, seed=seed), tied_positions(
         counts, round_row.win_rule
     )

@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import settings
 from app.models import (
     Card,
     Income,
@@ -36,7 +35,6 @@ from .voting import (
     _decisive_counts,
     _winner_and_tied,
     count_stakes_for_tally,
-    count_votes_for_tally,
     plain_vote_counts,
     tie_seed,
     tied_positions,
@@ -322,17 +320,14 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
 async def _tally_counts_for(session: AsyncSession, round_row: Round) -> dict[int, int]:
     """Решающий счёт дня без фиксации в объекте.
 
-    winner_by_stakes: суммы подтверждённых ставок (или голоса, если граммов
-    на день нет). Иначе: прежний счёт голосов с легаси-бонусом ставок.
-    Побочные части (голоса для хранения, флаг ставок) кладутся на round_row.
+    Суммы подтверждённых ставок (или голоса, если граммов на день нет).
+    Голоса для хранения и флаг ставок кладутся на round_row.
     """
-    if getattr(settings, "winner_by_stakes", False):
-        vote_counts = await plain_vote_counts(session, round_row.id)
-        counts, used_stakes = await _decisive_counts(session, round_row, vote_counts)
-        round_row._tally_votes = vote_counts
-        round_row._tally_used_stakes = used_stakes
-        return counts
-    return await count_votes_for_tally(session, round_row.id)
+    vote_counts = await plain_vote_counts(session, round_row.id)
+    counts, used_stakes = await _decisive_counts(session, round_row, vote_counts)
+    round_row._tally_votes = vote_counts
+    round_row._tally_used_stakes = used_stakes
+    return counts
 
 
 async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, bool]:
@@ -347,22 +342,18 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     counts = getattr(round_row, "_tally_counts", None)
     used_stakes = getattr(round_row, "_tally_used_stakes", None)
     staked_counts: dict[int, int] = {0: 0, 1: 0, 2: 0}
-    if getattr(settings, "winner_by_stakes", False):
-        # Голоса для хранения и отображения — всегда бесплатные, без бонуса.
-        vote_counts = getattr(round_row, "_tally_votes", None) or await plain_vote_counts(
-            session, round_row.id
-        )
-        counts = getattr(round_row, "_tally_counts", None)
-        if counts is None or used_stakes is None:
-            # Пересчёт (heal/другой процесс): выбор совпадает с close_voting.
-            decisive, used_stakes = await _decisive_counts(session, round_row, vote_counts)
-            counts = decisive
-        if used_stakes:
-            staked_counts = await count_stakes_for_tally(session, round_row.id)
-        display_counts = vote_counts
-    else:
-        display_counts = counts or await count_votes_for_tally(session, round_row.id)
-        counts = display_counts
+    # Голоса для хранения и отображения — всегда бесплатные, без бонуса.
+    vote_counts = getattr(round_row, "_tally_votes", None) or await plain_vote_counts(
+        session, round_row.id
+    )
+    counts = getattr(round_row, "_tally_counts", None)
+    if counts is None or used_stakes is None:
+        # Пересчёт (heal/другой процесс): выбор совпадает с close_voting.
+        decisive, used_stakes = await _decisive_counts(session, round_row, vote_counts)
+        counts = decisive
+    if used_stakes:
+        staked_counts = await count_stakes_for_tally(session, round_row.id)
+    display_counts = vote_counts
     seed = tie_seed(round_row)
     winner, tied = await _winner_and_tied(session, round_row, counts, seed)
     tie_note: str | None = None

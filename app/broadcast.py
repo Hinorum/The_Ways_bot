@@ -72,7 +72,6 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     if round_row.status.value == "open":
         stake_mode = (
             settings.ton_enabled
-            and getattr(settings, "winner_by_stakes", True)
             and getattr(round_row, "money_mode", True) is not False
         )
         if stake_mode:

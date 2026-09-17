@@ -404,7 +404,6 @@ async def _vote_reminder_job() -> None:
 
             stake_mode = (
                 settings.ton_enabled
-                and getattr(settings, "winner_by_stakes", True)
                 and getattr(current, "money_mode", True) is not False
             )
             from app.models import RULE_PHRASES, VOTE_RULE_PHRASES
