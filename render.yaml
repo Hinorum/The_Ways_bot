@@ -16,6 +16,11 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      # Supabase: сертификат pooler подписан внутренним CA Supabase (не входит
+      # в системное хранилище) — приложение верифицирует по этому файлу.
+      # Файл certs/supabase-root.pem лежит в репо и попадёт на Render с деплоем.
+      - key: DATABASE_CA
+        value: certs/supabase-root.pem
       - key: TIMEZONE
         value: Europe/Moscow
       - key: ROUND_SECONDS

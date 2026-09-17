@@ -1,3 +1,5 @@
+import ssl
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,7 +38,15 @@ def postgres_connect_args(url: str) -> dict:
     args: dict = {"server_settings": {"search_path": "public"}}
     host = urlparse(converted).hostname or ""
     if host not in {"localhost", "127.0.0.1"}:
-        args["ssl"] = True
+        # Кастомный корневой CA (например, Supabase: сертификаты пулера
+        # подписаны внутренним Root CA, не входящим в системное хранилище).
+        if settings.database_ca:
+            ca_path = Path(settings.database_ca)
+            ctx = ssl.create_default_context()
+            ctx.load_verify_locations(cafile=str(ca_path))
+            args["ssl"] = ctx
+        else:
+            args["ssl"] = True
     return args
 
 
@@ -52,6 +62,8 @@ class Settings(BaseSettings):
     # инлайн-генерация нового дня и пост).
     day_close_hour_utc: int = 11
     database_url: str = "sqlite+aiosqlite:///./data/the_way.db"
+    # Путь к PEM-файлу корневого CA для Postgres (Supabase пулер). Пусто — стандартные CA.
+    database_ca: str = ""
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"
     # Ключи подключения к внешним API. Настройки тонкой настройки генераций

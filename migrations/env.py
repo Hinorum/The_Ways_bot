@@ -26,7 +26,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from app.config import settings  # noqa: E402
+from app.config import postgres_connect_args, settings  # noqa: E402
 from app.models import Base  # noqa: E402
 
 target_metadata = Base.metadata
@@ -66,10 +66,17 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    url = settings.async_database_url
+    raw_url = settings.database_url
+    if url.startswith("sqlite"):
+        kwargs = {"connect_args": {"timeout": 30}}
+    else:
+        kwargs = {"connect_args": postgres_connect_args(raw_url)}
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **kwargs,
     )
 
     async with connectable.connect() as connection:
