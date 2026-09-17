@@ -40,8 +40,14 @@ def postgres_connect_args(url: str) -> dict:
     if host not in {"localhost", "127.0.0.1"}:
         # Кастомный корневой CA (например, Supabase: сертификаты пулера
         # подписаны внутренним Root CA, не входящим в системное хранилище).
-        if settings.database_ca:
-            ca_path = Path(settings.database_ca)
+        # Если DATABASE_CA не задан, но мы подключаемся к pooler.supabase.com —
+        # подхватываем сертификат из репозитория автоматически.
+        ca_path = settings.database_ca
+        if not ca_path and host.endswith(".pooler.supabase.com"):
+            default_ca = Path(__file__).resolve().parents[1] / "certs" / "supabase-root.pem"
+            if default_ca.exists():
+                ca_path = str(default_ca)
+        if ca_path:
             ctx = ssl.create_default_context()
             ctx.load_verify_locations(cafile=str(ca_path))
             args["ssl"] = ctx

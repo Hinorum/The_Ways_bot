@@ -1,9 +1,19 @@
+from ssl import SSLContext
+
 from app.config import postgres_connect_args, sqlalchemy_url
 
 
 def test_render_postgres_url() -> None:
     assert sqlalchemy_url("postgres://u:p@host/db").startswith("postgresql+asyncpg://")
     assert "postgresql+asyncpg://" in sqlalchemy_url("postgresql://u:p@host/db")
+
+
+def test_supabase_pooler_uses_repo_ca() -> None:
+    args = postgres_connect_args(
+        "postgresql://u:p@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+    )
+    assert isinstance(args["ssl"], SSLContext)
+    assert args["server_settings"] == {"search_path": "public"}
 
 
 def test_strips_libpq_sslmode_for_asyncpg() -> None:
