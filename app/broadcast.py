@@ -66,10 +66,25 @@ def _utc(value: datetime) -> datetime:
 
 
 async def status_text(round_row: Round, *, show_title: bool = True) -> str:
-    from app.models import RULE_PHRASES
+    from app.models import RULE_PHRASES, VOTE_RULE_PHRASES
 
     if round_row.status.value == "open":
-        phase = f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. Счёт скрыт до итогов."
+        stake_mode = (
+            settings.ton_enabled
+            and getattr(settings, "winner_by_stakes", True)
+            and getattr(round_row, "money_mode", True) is not False
+        )
+        if stake_mode:
+            phase = (
+                f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. "
+                "День решают ставки — банки путей скрыты до итогов. "
+                "Голос без ставки ведёт только лидерборд."
+            )
+        else:
+            phase = (
+                f"⚖️ Правило дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
+                "Счёт скрыт до итогов."
+            )
     elif round_row.status.value == "tallying":
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:

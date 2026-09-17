@@ -16,6 +16,7 @@ from app.models import (
     Vote,
     WeeklyPot,
     RULE_PHRASES,
+    VOTE_RULE_PHRASES,
 )
 from app.rounds import pick_winner
 from app.stakes import current_network
@@ -182,7 +183,8 @@ def format_results(
                     f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
                     "и тропа повела бы иначе."
                 )
-    lines.append(f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}")
+    day_phrases = RULE_PHRASES if stake_counts else VOTE_RULE_PHRASES
+    lines.append(f"⚖️ Правило дня: {day_phrases[round_row.win_rule]}")
     if stake_counts:
         lines.append("💰 Тропу выбрали ставки дня — голоса ведут лидерборд")
     lines.append("")
