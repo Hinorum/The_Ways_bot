@@ -238,6 +238,7 @@ async def day_economics(session: AsyncSession, round_row: Round) -> dict:
         "pot": round_row.pot_nanotons or 0,
         "multiplier": None,
         "week_today": round_row.weekly_nanotons or 0,
+        "referral_today": round_row.referral_nanotons or 0,
         "week_total": 0,
         "board_today": 0,
         "bank_total": 0,
@@ -326,4 +327,6 @@ def format_economics(stats: dict) -> str:
         lines.append("🎯 На верный путь не поставил никто — все ставки возвращены игрокам")
     if stats["fund_total"] > 0:
         lines.append(f"🐾 В Фонде Стаи: {ton(stats['fund_total']):.2f} Gram")
+    if stats.get("referral_today", 0) > 0:
+        lines.append(f"🎁 Реферальная награда пригласивших: {ton(stats['referral_today']):.2f} Gram")
     return "\n".join(lines)

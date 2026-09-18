@@ -58,6 +58,7 @@ _SQLITE_COLUMN_DDL = {
         "rule_entropy": "ALTER TABLE rounds ADD COLUMN rule_entropy VARCHAR(80)",
         "stake_counts_json": "ALTER TABLE rounds ADD COLUMN stake_counts_json TEXT",
         "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
+        "referral_nanotons": "ALTER TABLE rounds ADD COLUMN referral_nanotons BIGINT NOT NULL DEFAULT 0",
         "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
     },
     "cards": {
@@ -135,6 +136,7 @@ _PG_MIGRATIONS: list[str] = [
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rule_entropy VARCHAR(80)",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS stake_counts_json TEXT",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS referral_nanotons BIGINT NOT NULL DEFAULT 0",
     "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)",
     "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ",

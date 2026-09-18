@@ -183,6 +183,9 @@ class Round(Base):
     rake_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     # Доля дня, ушедшая в копилку недели (2% фонда) — для поста итогов.
     weekly_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Доля дня, ушедшая в реферальные копилки пригласивших (1% фонда) —
+    # для поста итогов. День без приведённых ставок или день возврата — 0.
+    referral_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
     payouts_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
     # Денежная версия дня (ставки TON + платная смена выбора): снимок режима
     # на момент открытия дня. Хранитель переключает «версию со ставками/без»

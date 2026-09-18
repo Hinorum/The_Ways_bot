@@ -457,6 +457,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                         referred_entries.append((referrer_id, stake.amount_nanotons))
             referral_bp = max(0, round(settings.referral_pct * 100))
             referral_cut = sum(amount * referral_bp // 10_000 for _rid, amount in referred_entries)
+            round_row.referral_nanotons = referral_cut
             prize_pool = pot - house_cut - board_cut - weekly_cut - fund_cut - referral_cut
 
             fee_nano = to_nano(settings.payout_fee_gram)
