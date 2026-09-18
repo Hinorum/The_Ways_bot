@@ -5,7 +5,9 @@
 нельзя без секрета. Первый валидный переход фиксируется в таблице Referral
 строго один раз на игрока; повторные /start с чужими ссылками игнорируются.
 Самоподписка заблокирована (referrer_id == referred_id) — позвать самого себя
-по своей же ссылке невозможно.
+по своей же ссылке невозможно, как и цепочку-цикл (A привёл B, B пытается
+привести A обратно): record_referral идёт вверх по цепочке приглашений и
+рвёт замыкание.
 
 Пригласивший получает награду referral_pct (по умолчанию 1%) с каждой
 подтверждённой ставки приведённого игрока: она копится в ReferralPot и
@@ -71,13 +73,34 @@ def parse_referral_arg(arg: str | None) -> int | None:
 
 async def record_referral(session, referrer_id: int, referred_id: int) -> bool:
     """Фиксирует приведение, если оно первое и честное. False — самоссылка,
-    каркас выключен, приглашающего нет в базе или переход уже записан."""
+    цикл в цепочке приглашений, каркас выключен, приглашающего нет в базе
+    или переход уже записан."""
     if referrer_id <= 0 or referred_id <= 0 or referrer_id == referred_id:
         return False
     if settings.referral_secret == "":
         return False
     if await session.get(Player, referrer_id) is None:
         return False
+    # Циклы: цепочка «кто кого привёл» не должна замыкаться. Если среди
+    # предков приглашающего уже есть тот, кого он пытается привести (A→B, B→A),
+    # отказ — иначе награды шли бы по кругу, а не «сверху вниз». Идём вверх
+    # по referrer-цепочке; каждый игрок приведён максимум один раз
+    # (referred_id unique), поэтому обход всегда конечен.
+    cursor = referrer_id
+    seen: set[int] = set()
+    while cursor > 0:
+        if cursor == referred_id:
+            return False
+        if cursor in seen:
+            # Некорректные данные (уже есть цикл) нас останавливают, не зацикливаемся.
+            return False
+        seen.add(cursor)
+        parent = await session.scalar(
+            select(Referral.referrer_id).where(Referral.referred_id == cursor)
+        )
+        if parent is None:
+            break
+        cursor = parent
     already = await session.scalar(
         select(Referral.referred_id).where(Referral.referred_id == referred_id)
     )

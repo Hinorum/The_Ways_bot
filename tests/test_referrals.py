@@ -141,6 +141,66 @@ async def test_record_referral_rejects_self_and_missing_referrer() -> None:
         assert await record_referral(session, ghost, next_uid()) is False  # нет приглашающего
 
 
+async def test_record_referral_rejects_two_link_cycle() -> None:
+    """A привёл B; B пытается привести A обратно — замыкание цепочки отклоняется."""
+    a, b = next_uid(), next_uid()
+    await _existing_player(a)
+    await _existing_player(b)
+    async with SessionLocal() as session:
+        assert await record_referral(session, a, b) is True
+        assert await record_referral(session, b, a) is False  # A уже «предок» B
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Referral).where(Referral.referred_id.in_([a, b]))
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].referrer_id == a and rows[0].referred_id == b
+
+
+async def test_record_referral_rejects_long_chain_cycle() -> None:
+    """A→B→C: C не может привести A (глубокий цикл), но C может привести D."""
+    a, b, c, d = next_uid(), next_uid(), next_uid(), next_uid()
+    for uid in (a, b, c, d):
+        await _existing_player(uid)
+    async with SessionLocal() as session:
+        assert await record_referral(session, a, b) is True
+        assert await record_referral(session, b, c) is True
+        assert await record_referral(session, c, a) is False  # A — «дедушка» C
+        assert await record_referral(session, c, d) is True  # вне цикла — легально
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Referral).where(Referral.referred_id.in_([b, c, a, d]))
+            )
+        ).scalars().all()
+        assert {row.referrer_id for row in rows} == {a, b, c}
+        assert {row.referred_id for row in rows} == {b, c, d}
+
+
+async def test_record_referral_middle_of_chain_cannot_pull_referrer() -> None:
+    """A→B→C: B не может привести своего пригласившего A (мини-цикл)."""
+    a, b, c = next_uid(), next_uid(), next_uid()
+    for uid in (a, b, c):
+        await _existing_player(uid)
+    async with SessionLocal() as session:
+        assert await record_referral(session, a, b) is True
+        assert await record_referral(session, b, c) is True
+        assert await record_referral(session, b, a) is False
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Referral).where(Referral.referred_id.in_([b, c, a]))
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert {row.referred_id for row in rows} == {b, c}
+
+
 async def test_record_referral_disabled_without_secret(monkeypatch) -> None:
     monkeypatch.setattr(settings, "referral_secret", "")
     a, b = next_uid(), next_uid()
