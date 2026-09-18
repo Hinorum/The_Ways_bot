@@ -128,6 +128,12 @@ def validate_config() -> list[str]:
             f" + referral {settings.referral_pct}%) — "
             "prize_pool станет отрицательным, и все ставки уйдут в копилку недели."
         )
+    if settings.health_require_token and not settings.health_token.strip():
+        problems.append(
+            "HEALTH_REQUIRE_TOKEN=true, но HEALTH_TOKEN пуст: "
+            "/health закрыт для всех (включая self-ping и чек живости Render). "
+            "Задай HEALTH_TOKEN либо выключи HEALTH_REQUIRE_TOKEN."
+        )
     if getattr(settings, "ton_enabled", False):
         if not settings.active_treasury_address:
             problems.append(

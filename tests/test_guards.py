@@ -160,3 +160,27 @@ def test_validate_config_flags_owner_same_as_treasury(monkeypatch: pytest.Monkey
     monkeypatch.setattr(settings, "owner_wallet_address", address)
     problems = main_module.validate_config()
     assert any("OWNER_WALLET_ADDRESS" in p and "казначе" in p for p in problems)
+
+
+def test_validate_config_flags_health_require_token_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HEALTH_REQUIRE_TOKEN=true при пустом HEALTH_TOKEN — конфиг-ошибка, бот не стартует."""
+    monkeypatch.setattr(settings, "bot_token", "123:token")
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    monkeypatch.setattr(settings, "health_require_token", True)
+    monkeypatch.setattr(settings, "health_token", "")
+    problems = main_module.validate_config()
+    assert any("HEALTH_REQUIRE_TOKEN" in p for p in problems)
+
+
+def test_validate_config_ok_with_health_token_and_require(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HEALTH_REQUIRE_TOKEN=true + заданный HEALTH_TOKEN — конфиг корректен."""
+    monkeypatch.setattr(settings, "bot_token", "123:token")
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    monkeypatch.setattr(settings, "health_require_token", True)
+    monkeypatch.setattr(settings, "health_token", "secret123")
+    problems = main_module.validate_config()
+    assert not any("HEALTH_REQUIRE_TOKEN" in p for p in problems)

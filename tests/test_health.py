@@ -72,3 +72,14 @@ async def test_health_accepts_query_token(monkeypatch) -> None:
     response = await main_module.health(_request(query={"token": "s3cret"}))
     assert response.status == 200
     assert b'"ok"' in response.body
+
+
+async def test_health_require_token_with_empty_token_locked(monkeypatch) -> None:
+    """Runtime-гард: health_require_token=true и пустой токен → 401 для всех.
+    Несогласованный конфиг ловится ещё fail-fast в validate_config, но эндпоинт
+    не должен молча открываться, если конфиг меняется на лету/в тестах."""
+    monkeypatch.setattr("app.config.settings.health_require_token", True)
+    monkeypatch.setattr("app.config.settings.health_token", "")
+    response = await main_module.health(_request())
+    assert response.status == 401
+    assert response.body == b"unauthorized"
