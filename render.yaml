@@ -23,10 +23,6 @@ services:
         value: certs/supabase-root.pem
       - key: TIMEZONE
         value: Europe/Moscow
-      - key: ROUND_SECONDS
-        value: "82800"
-      - key: TALLY_SECONDS
-        value: "3600"
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
