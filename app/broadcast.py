@@ -18,7 +18,6 @@ from app.db import SessionLocal
 from app.models import Chat, Round
 from app.style import day_mark
 from app.tally import format_results
-from app.rounds import rule_block_ref
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +76,13 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
         )
         if stake_mode:
             phase = (
-                f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}"
-                f"{rule_block_ref(round_row)}. "
+                f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. "
                 "День решают ставки — банки путей скрыты до итогов. "
                 "Голос без ставки ведёт только лидерборд."
             )
         else:
             phase = (
-                f"⚖️ Правило дня: {VOTE_RULE_PHRASES[round_row.win_rule]}"
-                f"{rule_block_ref(round_row)}. "
+                f"⚖️ Правило дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
                 "Счёт скрыт до итогов."
             )
     elif round_row.status.value == "tallying":
@@ -289,7 +286,7 @@ async def _deliver_day(
             results_text = await results_message(finished)
         # Итоги дня — только текстом. Фото победившей ветки не постим: это был
         # дубль обложки нового дня, а вечерний костёр уже дал отдельный кадр.
-        # HTML: строка правила дня несёт жирные блоки (rule_block_ref — текст).
+        # HTML: строка правила дня несёт жирные блоки.
         if results_text:
             await bot.send_message(chat_id, results_text, parse_mode=ParseMode.HTML)
     media = build_day_post(round_row)

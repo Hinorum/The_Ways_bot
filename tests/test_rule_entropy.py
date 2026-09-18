@@ -5,12 +5,12 @@
 
 Свойства:
 - _plan_and_render с энтропией даёт детерминированный закон, payload хранит
-  саму энтропию — игрок пересчитает закон по блоку в эксплорере;
+  саму энтропию — хранитель проверит закон по блоку в эксплорере;
 - create_next_round_detailed снимает энтропию и сохраняет её в день
   (rule_entropy), а not локальный secrets-жребий;
 - TON выключен / энтропия недоступна → локальный жребий, rule_entropy пустая;
-- блок закона упоминается в анонсе дня и в посте итогов без ссылки — Telegram
-  не вешает рамку превью на URL (проверяемость сохраняется по номеру блока).
+- в анонсе дня и посте итогов закон печатается без номера блока и без ссылки —
+  игрокам не нужны ни рамка превью, ни расшифровка.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from app.models import Card, Round, RoundStatus, WinRule
 from app.rounds import (
     _plan_and_render,
     create_next_round_detailed,
-    rule_block_ref,
 )
 
 NOW = datetime.now(timezone.utc)
@@ -122,25 +121,24 @@ async def test_create_next_round_falls_back_without_ton(
         await session.rollback()
 
 
-def test_rule_block_ref() -> None:
-    assert rule_block_ref(_round()) == ""
-    assert rule_block_ref(_round(rule_entropy="")) == ""
-    # Номер блока остаётся для проверяемости, ссылки нет — Telegram не
-    # показывает рамку превью на URL внутри анонса.
-    assert rule_block_ref(_round(rule_entropy="4711:abcd")) == " (блок TON №4711)"
+def test_rule_block_ref_removed() -> None:
+    from app.rounds import rendering
+
+    assert not hasattr(rendering, "rule_block_ref")
+    assert not hasattr(rendering, "TON_EXPLORER_BLOCK_URL")
 
 
-async def test_day_open_status_mentions_law_block_without_link() -> None:
-    """Анонс дня упоминает номер блока закона без гиперссылки."""
+async def test_day_open_post_has_no_block_mention() -> None:
+    """Анонс дня печатает закон без номера блока и без ссылок."""
     from app.broadcast import status_text
 
     text = await status_text(_round(rule_entropy="4711:abcd"), show_title=True)
-    assert "блок TON №4711" in text
+    assert "блок TON" not in text
     assert "href=" not in text and "http" not in text
 
 
-async def test_results_post_mentions_law_block_without_link() -> None:
-    """Итоги дня дублируют номер блока источника рядом с правилом, без ссылки."""
+async def test_results_post_has_no_block_mention() -> None:
+    """Итоги дня печатают правило без номера блока и без ссылок."""
     from app.tally import format_results
 
     round_row = _round(rule_entropy="4711:abcd")
@@ -149,5 +147,5 @@ async def test_results_post_mentions_law_block_without_link() -> None:
     round_row.vote_counts_json = '{"0": 2, "1": 1, "2": 2}'
     text = format_results(round_row)
     assert "Правило дня" in text
-    assert "блок TON №4711" in text
+    assert "блок TON" not in text
     assert "href=" not in text and "http" not in text

@@ -95,19 +95,3 @@ async def _plan_and_render(
         "chapter_text": chapter_text,
         "cards": cards_payload,
     }
-
-
-def rule_block_ref(round_row) -> str:
-    """« (блок TON №seqno)» рядом с законом дня для проверяемости.
-
-    Ссылку в эксплорер сознательно не ставим: Telegram показывает рамку
-    превью на URL, а текст дня остаётся чистым. Кто хочет проверить — откроет
-    страницу блока по номеру сам или спросит хранителя. Пусто — закон выпал
-    локальным жребием (TON выключен/падал при открытии дня), игроки видят
-    просто закон без блока.
-    """
-    entropy = getattr(round_row, "rule_entropy", None)
-    if entropy and ":" in entropy:
-        seqno = entropy.split(":", 1)[0]
-        return f" (блок TON №{seqno})"
-    return ""
