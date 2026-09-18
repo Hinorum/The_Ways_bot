@@ -1,4 +1,8 @@
+import asyncio
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from sqlalchemy import event, inspect, text
@@ -46,151 +50,18 @@ if settings.async_database_url.startswith("postgresql"):
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-_SQLITE_COLUMN_DDL = {
-    "rounds": {
-        "pot_nanotons": "ALTER TABLE rounds ADD COLUMN pot_nanotons BIGINT NOT NULL DEFAULT 0",
-        "rake_nanotons": "ALTER TABLE rounds ADD COLUMN rake_nanotons BIGINT NOT NULL DEFAULT 0",
-        "payouts_finalized": "ALTER TABLE rounds ADD COLUMN payouts_finalized BOOLEAN NOT NULL DEFAULT 0",
-        "epilogue_text": "ALTER TABLE rounds ADD COLUMN epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
-        "announced_at": "ALTER TABLE rounds ADD COLUMN announced_at DATETIME",
-        "tie_note": "ALTER TABLE rounds ADD COLUMN tie_note VARCHAR(200)",
-        "tie_entropy": "ALTER TABLE rounds ADD COLUMN tie_entropy VARCHAR(80)",
-        "rule_entropy": "ALTER TABLE rounds ADD COLUMN rule_entropy VARCHAR(80)",
-        "stake_counts_json": "ALTER TABLE rounds ADD COLUMN stake_counts_json TEXT",
-        "weekly_nanotons": "ALTER TABLE rounds ADD COLUMN weekly_nanotons BIGINT NOT NULL DEFAULT 0",
-        "referral_nanotons": "ALTER TABLE rounds ADD COLUMN referral_nanotons BIGINT NOT NULL DEFAULT 0",
-        "money_mode": "ALTER TABLE rounds ADD COLUMN money_mode BOOLEAN NOT NULL DEFAULT 1",
-    },
-    "cards": {
-        "tag": "ALTER TABLE cards ADD COLUMN tag VARCHAR(16) NOT NULL DEFAULT 'care'",
-    },
-    "players": {
-        "wallet_address": "ALTER TABLE players ADD COLUMN wallet_address VARCHAR(80)",
-        "wallet_linked_at": "ALTER TABLE players ADD COLUMN wallet_linked_at DATETIME",
-        "inspiration": "ALTER TABLE players ADD COLUMN inspiration INTEGER NOT NULL DEFAULT 0",
-        "wallet_verified": "ALTER TABLE players ADD COLUMN wallet_verified BOOLEAN NOT NULL DEFAULT 0",
-        "wallet_verify_code": "ALTER TABLE players ADD COLUMN wallet_verify_code VARCHAR(16)",
-        "wallet_verify_created": "ALTER TABLE players ADD COLUMN wallet_verify_created DATETIME",
-        "dm_subscribed": "ALTER TABLE players ADD COLUMN dm_subscribed BOOLEAN NOT NULL DEFAULT 1",
-    },
-    "stakes": {
-        "network": "ALTER TABLE stakes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-    },
-    "payouts": {
-        "network": "ALTER TABLE payouts ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-        "attempts": "ALTER TABLE payouts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
-        "alerted": "ALTER TABLE payouts ADD COLUMN alerted BOOLEAN NOT NULL DEFAULT 0",
-        "last_error": "ALTER TABLE payouts ADD COLUMN last_error VARCHAR(200)",
-        "comment_override": "ALTER TABLE payouts ADD COLUMN comment_override VARCHAR(120)",
-        "claimed_at": "ALTER TABLE payouts ADD COLUMN claimed_at DATETIME",
-    },
-    "incomes": {
-        "network": "ALTER TABLE incomes ADD COLUMN network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-    },
-}
-
-
-def _drop_orphan_not_null_columns(sync_conn) -> None:
-    """Дроп осиротевших NOT NULL-колонок удалённых механик.
-
-    Колонка есть в живой БД, но её больше нет в модели ORM → INSERT нового
-    дня не передаёт её значение и падает на NOT NULL (если нет default).
-    Универсально: сравниваем БД с model, дропаем только такой актуальный
-    «поломщик INSERT», nullable-сироты безвредны и остаются.
-    """
-    inspector = inspect(sync_conn)
-    meta = Base.metadata
-    for table_name in inspector.get_table_names():
-        if table_name not in meta.tables:
-            continue
-        model_columns = set(meta.tables[table_name].columns.keys())
-        for col in inspector.get_columns(table_name):
-            name = col["name"]
-            if name in model_columns:
-                continue
-            if col.get("nullable") is False and col.get("default") is None:
-                logger.info("DROP orphan NOT NULL column %s.%s", table_name, name)
-                sync_conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN {name}"))
-
-
-def _ensure_sqlite_columns(sync_conn) -> None:
-    inspector = inspect(sync_conn)
-    for table, statements in _SQLITE_COLUMN_DDL.items():
-        columns = {column["name"] for column in inspector.get_columns(table)}
-        for name, ddl in statements.items():
-            if name not in columns:
-                sync_conn.execute(text(ddl))
-    _drop_orphan_not_null_columns(sync_conn)
-
-
-_PG_MIGRATIONS: list[str] = [
-    "ALTER TABLE rounds ALTER COLUMN chapter_title TYPE VARCHAR(300)",
-    "ALTER TABLE cards ADD COLUMN IF NOT EXISTS tag VARCHAR(16) NOT NULL DEFAULT 'care'",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS pot_nanotons BIGINT NOT NULL DEFAULT 0",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rake_nanotons BIGINT NOT NULL DEFAULT 0",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS payouts_finalized BOOLEAN NOT NULL DEFAULT FALSE",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS epilogue_text VARCHAR(700) NOT NULL DEFAULT ''",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_note VARCHAR(200)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS tie_entropy VARCHAR(80)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS rule_entropy VARCHAR(80)",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS stake_counts_json TEXT",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS weekly_nanotons BIGINT NOT NULL DEFAULT 0",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS referral_nanotons BIGINT NOT NULL DEFAULT 0",
-    "ALTER TABLE rounds ADD COLUMN IF NOT EXISTS money_mode BOOLEAN NOT NULL DEFAULT TRUE",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(80)",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_linked_at TIMESTAMPTZ",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS inspiration INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verified BOOLEAN NOT NULL DEFAULT FALSE",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_code VARCHAR(16)",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS wallet_verify_created TIMESTAMPTZ",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS dm_subscribed BOOLEAN NOT NULL DEFAULT TRUE",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS current_streak INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE players ADD COLUMN IF NOT EXISTS best_streak INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE stakes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS alerted BOOLEAN NOT NULL DEFAULT FALSE",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS last_error VARCHAR(200)",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS comment_override VARCHAR(120)",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ",
-    "ALTER TABLE incomes ADD COLUMN IF NOT EXISTS network VARCHAR(16) NOT NULL DEFAULT 'mainnet'",
-    "ALTER TABLE payouts ALTER COLUMN player_id DROP NOT NULL",
-    "ALTER TABLE payouts ALTER COLUMN round_id DROP NOT NULL",
-    "UPDATE rounds SET status = lower(status) WHERE status = upper(status)",
-    "UPDATE rounds SET win_rule = lower(win_rule) WHERE win_rule = upper(win_rule)",
-    "ALTER TABLE story_beats ADD COLUMN IF NOT EXISTS hook_text VARCHAR(700)",
-]
-
-_WATCHER_TYPE_FIX = """
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'watcher_state'
-      AND column_name = 'value'
-      AND data_type <> 'text'
-  ) THEN
-    ALTER TABLE watcher_state ALTER COLUMN value TYPE TEXT;
-  END IF;
-  -- Клейм-маркеры refund:<tx_hash>/ledger:<tx_hash> длиннее старого PK
-  -- VARCHAR(64): 'refund:' + 64 hex = 71 символ ронял INSERT
-  -- (StringDataRightTruncationError), перевод навсегда зацикливался в stuck.
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'watcher_state'
-      AND column_name = 'key'
-      AND character_maximum_length IS NOT NULL
-      AND character_maximum_length < 80
-  ) THEN
-    ALTER TABLE watcher_state ALTER COLUMN key TYPE VARCHAR(80);
-  END IF;
-END $$;
-"""
+# Единственный источник правды о схеме — migrations/ (Alembic). Код запуска не
+# держит ни одной строки DDL руками:
+#   * свежая база собирается из моделей (Base.metadata.create_all) ровно под
+#     текущую версию и штампуется на head (последующий upgrade — честный no-op);
+#   * существующая база мигрирует `alembic upgrade head` по своему таймлайну;
+#   * базы create_all-эпохи БЕЗ alembic-истории конвергируются в таймлайн через
+#     идемпотентную ревизию legacy_convergence (см. _migrate).
+_LEGACY_RECONCILE_ANCHOR = "a7b8c9d0e1f2"
 
 
 def _alembic_head() -> str:
-    """Ревизия=head из alembic-скриптов без подключения к БД."""
+    """Ревизия head из alembic-скриптов без подключения к БД."""
     from alembic.config import Config as AlembicConfig
     from alembic.script import ScriptDirectory
 
@@ -198,12 +69,77 @@ def _alembic_head() -> str:
     return ScriptDirectory.from_config(cfg).get_current_head()
 
 
+def _run_alembic(*args: str) -> subprocess.CompletedProcess:
+    """Запуск alembic-команды в окружении приложения (subprocess).
+
+    migrations/env.py сам подхватывает настройки приложения (URL, CA),
+    поэтому аргументов достаточно. CWD — корень репозитория (alembic.ini
+    рядом). DATABASE_URL подставляется из окружения или settings.database_url.
+    """
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.setdefault("DATABASE_URL", settings.database_url)
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env=env,
+    )
+
+
+def _tables(sync_conn) -> set[str]:
+    return set(inspect(sync_conn).get_table_names())
+
+
+def _orphan_columns(sync_conn) -> dict[str, list[str]]:
+    """NOT NULL-колонки без DEFAULT, которых больше нет в моделях.
+
+    Такой столбец ловится моделью до её перестройки: INSERT нового дня не
+    передаёт значение дропнутой механики и падает на NOT NULL. Возвращает
+    словарь «таблица → колонки»; дроп делает _handle_orphan_columns.
+    """
+    meta = Base.metadata
+    orphans: dict[str, list[str]] = {}
+    for table_name in inspect(sync_conn).get_table_names():
+        if table_name not in meta.tables:
+            continue
+        model_columns = set(meta.tables[table_name].columns.keys())
+        for col in inspect(sync_conn).get_columns(table_name):
+            name = col["name"]
+            if name in model_columns:
+                continue
+            if col.get("nullable") is False and col.get("default") is None:
+                orphans.setdefault(table_name, []).append(name)
+    return orphans
+
+
+def _drop_orphan_columns(sync_conn) -> None:
+    for table_name, columns in _orphan_columns(sync_conn).items():
+        for name in columns:
+            logger.info("DROP orphan NOT NULL column %s.%s", table_name, name)
+            sync_conn.execute(text(f"ALTER TABLE {table_name} DROP COLUMN {name}"))
+
+
+async def _handle_orphan_columns() -> None:
+    """Осиротевшие NOT NULL-колонки без DEFAULT (дропнутые механики) ломают
+    INSERT новых дней. Диагностика и дроп происходят здесь (флаг безопасности
+    DROP_ORPHAN_COLUMNS появится вместе с гейтингом в след. изменении)."""
+    async with engine.connect() as conn:
+        found = await conn.run_sync(_orphan_columns)
+    if not found:
+        return
+    async with engine.begin() as conn:
+        await conn.run_sync(_drop_orphan_columns)
+    logger.warning("Осиротевшие NOT NULL-колонки удалены: %s", found)
+
+
 async def _stamp_alembic_head(conn) -> None:
     """Асимметрия create_all ↔ alembic: бутстрап через create_all создаёт
-    таблицы, но не alembic_version — ручной ``alembic upgrade head`` на
-    такой базе упёрся бы в «table already exists».  Ставим якорь на head:
-    повторный upgrade становится честным no-op.  БД, которая уже ведётся
-    alembic'ом (alembic_version непуста), не трогаем."""
+    таблицы, но не alembic_version — ручной `alembic upgrade head` на такой
+    базе упёрся бы в «table already exists». Ставим якорь на head: повторный
+    upgrade становится честным no-op. БД, которая уже ведётся alembic'ом
+    (alembic_version непуста), не трогаем."""
     try:
         head = _alembic_head()
     except Exception:
@@ -222,52 +158,68 @@ async def _stamp_alembic_head(conn) -> None:
     logger.info("alembic_version помечена на head=%s после create_all", head)
 
 
-async def _run_pg_migration_sql(sql: str) -> None:
-    """Execute one DDL statement in its own transaction.
+async def _migrate() -> None:
+    """Привести схему к текущим моделям ИСКЛЮЧИТЕЛЬНО через alembic.
 
-    If the statement fails the transaction is rolled back completely
-    (no poison leaks to other connections in the pool).
+    Обычный путь — `upgrade head` по таймлайну базы. Если он не проходит
+    (легаси-база create_all-эпохи вне таймлайна: история ревизий расходится
+    с фактической схемой), дотягиваем недостающие таблицы по моделям,
+    штампуемся на якорь и сходимся единственной идемпотентной ревизией
+    legacy_convergence — без прогона промежуточной геометрии, которая могла
+    бы упереться в уже существующие колонки.
     """
-    async with engine.begin() as conn:
-        await conn.execute(text(sql))
+    result = await asyncio.to_thread(_run_alembic, "upgrade", "head")
+    if result.returncode == 0:
+        logger.info("Схема приведена к head: alembic upgrade")
+        return
 
+    logger.warning(
+        "alembic upgrade head не прошёл на живой базе — реконсиляция легаси. "
+        "Хвост ошибки: %s",
+        result.stderr.strip()[-800:],
+    )
 
-async def init_db() -> None:
-    Path("data").mkdir(exist_ok=True)
-
-    # Phase 1: schema + create_all in one transaction (fast, must succeed).
     async with engine.begin() as conn:
         if conn.dialect.name == "postgresql":
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
             await conn.execute(text("SET search_path TO public"))
         await conn.run_sync(Base.metadata.create_all)
-        # Осиротевшие NOT NULL-колонки удалённых механик (rule_commitment,
-        # sealed, lore_summary, cover_path, card-поля AI-слоя и т.п.) на живой
-        # базе остаются из старой схемы и ломают INSERT нового дня. Дропаем
-        # универсально — по разнице БД и модели, без ручного списка.
-        await conn.run_sync(_drop_orphan_not_null_columns)
-        # Якорь alembic-версии после create_all: ручной `alembic upgrade head`
-        # на бутстрапнутой базе становится no-op, а не «table already exists».
-        await _stamp_alembic_head(conn)
 
-    if settings.async_database_url.startswith("postgresql"):
-        # Phase 2: each migration in its own transaction.
-        # If one fails the transaction is rolled back cleanly — no poison.
-        for sql in _PG_MIGRATIONS:
-            try:
-                await _run_pg_migration_sql(sql)
-            except Exception as exc:
-                logger.warning("PG migration failed (non-fatal): %s — %s", sql[:80], exc)
-        try:
-            await _run_pg_migration_sql(_WATCHER_TYPE_FIX)
-        except Exception as exc:
-            logger.warning("PG watcher_state TYPE fix failed: %s", exc)
+    stamped = await asyncio.to_thread(_run_alembic, "stamp", _LEGACY_RECONCILE_ANCHOR)
+    if stamped.returncode != 0:
+        raise RuntimeError(
+            "Реконсиляция: не удалось заштамповать легаси-базу на якорь. " + stamped.stderr.strip()[-500:]
+        )
+    converged = await asyncio.to_thread(_run_alembic, "upgrade", "head")
+    if converged.returncode != 0:
+        raise RuntimeError(
+            "Реконсиляция: ревизия legacy_convergence не сошлась. " + converged.stderr.strip()[-500:]
+        )
+    logger.warning("Легаси-база конвергирована в alembic-таймлайн: версия на head")
 
-        # Phase 3: nuke the entire connection pool after init_db.
-        # Any connections that may have been poisoned by failed migrations
-        # are destroyed. Subsequent sessions get fresh connections.
-        await engine.dispose()
-    elif settings.async_database_url.startswith("sqlite"):
+
+async def init_db() -> None:
+    Path("data").mkdir(exist_ok=True)
+
+    async with engine.connect() as conn:
+        has_tables = bool(await conn.run_sync(_tables))
+
+    if not has_tables:
+        # Свежая база: схему собираем из моделей напрямую (create_all) и
+        # штампуем alembic-версию на head — последующий `alembic upgrade head`
+        # становится честным no-op. Дальнейшая эволюция схемы — только alembic.
+        async with engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                await conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
+                await conn.execute(text("SET search_path TO public"))
+            await conn.run_sync(Base.metadata.create_all)
+            await _stamp_alembic_head(conn)
+        logger.info("Свежая база собрана из моделей: alembic-версия на head")
+    else:
+        await _migrate()
+
+    if settings.async_database_url.startswith("sqlite"):
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-            await conn.run_sync(_ensure_sqlite_columns)
+
+    await _handle_orphan_columns()
