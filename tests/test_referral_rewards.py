@@ -269,3 +269,106 @@ async def test_referral_without_verified_wallet_waits(session: AsyncSession) -> 
 
     assert await _referral_pot_total(session) == {referrer: to_nano(100) * 100 // 10_000}
     assert (await session.execute(select(Payout).where(Payout.kind == "referral"))).scalar_one_or_none() is None
+
+
+async def test_losing_referred_stake_still_pays_share(session: AsyncSession) -> None:
+    """Проигравший приведённый (день выиграл другой игрок) всё равно платит 1%."""
+    referrer, referred, winner = 8000, 8001, 8002
+    for pid in (referrer, referred, winner):
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
+    session.add(Referral(referrer_id=referrer, referred_id=referred))
+    round_row = await make_closed_round(session, winner_card=0)
+    session.add_all(
+        [
+            Vote(round_id=round_row.id, player_id=referred, card_position=1),  # НЕ верный путь
+            Vote(round_id=round_row.id, player_id=winner, card_position=0),
+            Stake(round_id=round_row.id, player_id=referred, amount_nanotons=to_nano(2), tx_hash="a", status="confirmed"),
+            Stake(round_id=round_row.id, player_id=winner, amount_nanotons=to_nano(2), tx_hash="b", status="confirmed"),
+        ]
+    )
+    await session.commit()
+
+    await stakes_mod.finalize_day_payouts(session, round_row)
+
+    # Доля снята со ставки проигравшего приведённого (winning_stakes = только winner).
+    assert await _referral_pot_total(session) == {referrer: to_nano(2) * 100 // 10_000}
+    prize_rows = (
+        await session.execute(select(Payout).where(Payout.kind == "prize"))
+    ).scalars().all()
+    assert [p.player_id for p in prize_rows] == [winner]
+
+
+async def test_gas_day_accrues_referral_despite_dust_pool(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Комиссии съели призовой пул целиком (пыль → копилка недели), но доля ДО
+    вычета газа всё равно начисляется: она снята с фонда раньше комиссий."""
+    monkeypatch.setattr(settings, "payout_fee_gram", 0.5)
+    referrer, referred, winner = 8100, 8101, 8102
+    for pid in (referrer, referred, winner):
+        session.add(Player(id=pid, wallet_address=f"wallet-{pid}", wallet_verified=True))
+    session.add(Referral(referrer_id=referrer, referred_id=referred))
+    round_row = await make_closed_round(session, winner_card=0)
+    stake_nano = to_nano(0.06)
+    session.add_all(
+        [
+            Vote(round_id=round_row.id, player_id=referred, card_position=1),  # проиграл
+            Vote(round_id=round_row.id, player_id=winner, card_position=0),
+            Stake(round_id=round_row.id, player_id=referred, amount_nanotons=stake_nano, tx_hash="a", status="confirmed"),
+            Stake(round_id=round_row.id, player_id=winner, amount_nanotons=stake_nano, tx_hash="b", status="confirmed"),
+        ]
+    )
+    await session.commit()
+
+    await stakes_mod.finalize_day_payouts(session, round_row)
+
+    pot = stake_nano * 2
+    cuts = sum(
+        pot * bp // 10_000
+        for bp in (round(settings.owner_rake_pct * 100), round(settings.leaderboard_rake_pct * 100),
+                   round(settings.weekly_pot_pct * 100), round(settings.pack_fund_pct * 100))
+    )
+    referral_cut = stake_nano * 100 // 10_000
+    prize_pool = pot - cuts - referral_cut
+    # Газ (0.5 Грама) больше пула → призов нет, весь пул ушёл в копилку недели…
+    assert (await session.execute(select(Payout).where(Payout.kind == "prize"))).scalars().all() == []
+    weekly_cut = pot * round(settings.weekly_pot_pct * 100) // 10_000
+    assert round_row.weekly_nanotons == weekly_cut + prize_pool
+    # …а реферальная доля начислена (снята с фонда ДО вычета газа).
+    assert round_row.referral_nanotons == referral_cut
+    assert await _referral_pot_total(session) == {referrer: referral_cut}
+
+
+async def test_settle_referral_pots_concurrency_guard(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Между чтением копилки и атомарным UPDATE её обнулила другая реплика —
+    повторная выплата не создаётся (ветка rowcount == 0)."""
+    from sqlalchemy import update
+
+    referrer, winner = 8200, 8201
+    session.add(Player(id=referrer, wallet_address="wallet-8200", wallet_verified=True))
+    session.add(Player(id=winner, wallet_address="wallet-8201"))
+    session.add(ReferralPot(referrer_id=referrer, nanotons=to_nano(1.0)))
+    await session.commit()
+
+    real_execute = session.execute
+    zeroed = {"seen": False}
+
+    async def spy(statement, *args, **kwargs):
+        # НАШ атомарный UPDATE по копилке — но «другой процесс» успел обнулить её первым.
+        if (
+            statement.__class__.__name__ == "Update"
+            and getattr(getattr(statement, "table", None), "name", None) == "referral_pots"
+        ):
+            await real_execute(
+                update(ReferralPot).where(ReferralPot.referrer_id == referrer).values(nanotons=0)
+            )
+            zeroed["seen"] = True
+        return await real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", spy)
+    created = await stakes_mod._settle_referral_pots(session)
+
+    assert zeroed["seen"] is True
+    assert created == 0
+    assert await _referral_pot_total(session) == {referrer: 0}
+    assert (await session.execute(select(Payout).where(Payout.kind == "referral"))).scalar_one_or_none() is None
