@@ -382,6 +382,11 @@ async def _vote_reminder_job() -> None:
 
             if not await claim_once(session, f"job:vote-reminder:{_now().strftime('%Y-%m-%d')}"):
                 return
+            # Закрепляем маркер даты отдельным COMMIT: рассылка — не то, что
+            # нужно откатывать вместе с транзакцией чтения. Без COMMIT сессия
+            # закроется откатом, маркер исчезнет, и «раз в день» превратится
+            # в «каждый тик в 10:00» после каждого рестарта.
+            await session.commit()
             # Получаем всех игроков, которые ещё не голосовали
             from sqlalchemy import select as _select
 
