@@ -123,11 +123,20 @@ def _drop_orphan_columns(sync_conn) -> None:
 
 async def _handle_orphan_columns() -> None:
     """Осиротевшие NOT NULL-колонки без DEFAULT (дропнутые механики) ломают
-    INSERT новых дней. Диагностика и дроп происходят здесь (флаг безопасности
-    DROP_ORPHAN_COLUMNS появится вместе с гейтингом в след. изменении)."""
+    INSERT новых дней. Диагностика всегда; дроп — только по флагу
+    DROP_ORPHAN_COLUMNS: раньше init_db сносил их на каждом старте без спроса,
+    и при откате/канарее старая версия могла удалить колонку, нужную новой."""
     async with engine.connect() as conn:
         found = await conn.run_sync(_orphan_columns)
     if not found:
+        return
+    if not settings.drop_orphan_columns:
+        logger.warning(
+            "Найдены осиротевшие NOT NULL-колонки — INSERT новых дней может "
+            "падать: %s. Если колонки больше не нужны, включи "
+            "DROP_ORPHAN_COLUMNS=true на один деплой и верни в false.",
+            found,
+        )
         return
     async with engine.begin() as conn:
         await conn.run_sync(_drop_orphan_columns)
