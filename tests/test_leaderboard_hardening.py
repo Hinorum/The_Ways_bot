@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.registry import (
     MARKER_KEY,
+    MONTH_CLAIM_WINDOW_KEY,
     MONTH_READY_KEY,
     WEEK_CLAIM_WINDOW_KEY,
     WEEK_READY_KEY,
@@ -348,7 +349,7 @@ async def test_month_all_dust_waits_and_grows(monkeypatch: pytest.MonkeyPatch) -
             marker = await session.get(WatcherState, MARKER_KEY)
             assert marker is None or marker.value == ""
         finally:
-            await session.execute(Payout.__table__.delete().where(Payout.kind == "monthly"))
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key.in_([MARKER_KEY, MONTH_READY_KEY])))
             await session.execute(LeaderboardPot.__table__.delete())
             for round_row in rounds:
@@ -391,7 +392,7 @@ async def test_month_dust_recarries_to_current_pot(monkeypatch: pytest.MonkeyPat
             marker = await session.get(WatcherState, MARKER_KEY)
             assert marker is not None and marker.value == prev_key
         finally:
-            await session.execute(Payout.__table__.delete().where(Payout.kind == "monthly"))
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
             await session.execute(WatcherState.__table__.delete().where(WatcherState.key.in_([MARKER_KEY, MONTH_READY_KEY])))
             await session.execute(LeaderboardPot.__table__.delete())
             for round_row in rounds:
@@ -399,6 +400,99 @@ async def test_month_dust_recarries_to_current_pot(monkeypatch: pytest.MonkeyPat
                 await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
                 await session.delete(round_row)
             for pid in (base, base + 1):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_month_boundary_tie_opens_claim_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Месяц: №top_k и №top_k+1 абсолютно равны (верность, вклад) — окно Claim открывается."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "monthly_prize_top_k", 3)
+    monkeypatch.setattr(settings, "monthly_prize_weights", "50,30,20")
+    base = 830_000
+    async with SessionLocal() as session:
+        rounds, prev_key = await _seed_month_scene(
+            session, base, {base: 3, base + 1: 2, base + 2: 1, base + 3: 1}, 10.0
+        )
+        try:
+            assert await settle_month_if_due(bot=None) is False
+            assert (
+                await session.execute(select(Payout).where(Payout.kind == "leaderboard"))
+            ).scalars().all() == []
+            window_row = await session.get(WatcherState, MONTH_CLAIM_WINDOW_KEY)
+            assert window_row is not None
+            window = json.loads(window_row.value)
+            assert window["period"] == prev_key
+            # Пограничная ничья №3/#4, а не претензии внутри топа.
+            assert set(window["players"]) == {base + 2, base + 3}
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key.in_([MARKER_KEY, MONTH_READY_KEY, MONTH_CLAIM_WINDOW_KEY])))
+            await session.execute(LeaderboardPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (base, base + 1, base + 2, base + 3):
+                player = await session.get(Player, pid)
+                if player is not None:
+                    await session.delete(player)
+            await session.commit()
+
+
+async def test_month_boundary_tied_fourth_promoted_by_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Месяц: заявившийся №top_k+1, абсолютно равный №top_k, занимает последнее призовое место."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "monthly_prize_top_k", 3)
+    monkeypatch.setattr(settings, "monthly_prize_weights", "50,30,20")
+    base = 840_000
+    prev_key = previous_month_key()
+    prev_start = datetime(*map(int, prev_key.split("-")), 1, tzinfo=timezone.utc)
+    async with SessionLocal() as session:
+        rounds, prev_key = await _seed_month_scene(
+            session, base, {base: 3, base + 1: 2, base + 2: 1, base + 3: 1}, 10.0
+        )
+        # №4 заявился раньше молчащего №3; дедлайн окна прошёл.
+        session.add(
+            LeaderboardClaim(
+                player_id=base + 3, kind="month", period=prev_key,
+                claimed_at=prev_start + timedelta(days=1),
+            )
+        )
+        opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+        session.add(
+            WatcherState(
+                key=MONTH_CLAIM_WINDOW_KEY,
+                value=json.dumps(
+                    {"period": prev_key, "players": [base + 2, base + 3], "opened_at": opened_at}
+                ),
+            )
+        )
+        await session.commit()
+        try:
+            assert await settle_month_if_due(bot=None) is True
+            by_pid = {
+                p.player_id: p.amount_nanotons
+                for p in (await session.execute(select(Payout).where(Payout.kind == "leaderboard"))).scalars()
+            }
+            # A(3), B(2) держат 50/30; третье место — заявившийся №4 (1 верный).
+            assert by_pid == {
+                base: to_nano(10) * 50 // 100,
+                base + 1: to_nano(10) * 30 // 100,
+                base + 3: to_nano(10) * 20 // 100,
+            }
+        finally:
+            await session.execute(Payout.__table__.delete().where(Payout.kind == "leaderboard"))
+            await session.execute(LeaderboardClaim.__table__.delete())
+            await session.execute(WatcherState.__table__.delete().where(WatcherState.key.in_([MARKER_KEY, MONTH_READY_KEY, MONTH_CLAIM_WINDOW_KEY])))
+            await session.execute(LeaderboardPot.__table__.delete())
+            for round_row in rounds:
+                await session.execute(Vote.__table__.delete().where(Vote.round_id == round_row.id))
+                await session.execute(Stake.__table__.delete().where(Stake.round_id == round_row.id))
+                await session.delete(round_row)
+            for pid in (base, base + 1, base + 2, base + 3):
                 player = await session.get(Player, pid)
                 if player is not None:
                     await session.delete(player)

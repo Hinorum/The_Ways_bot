@@ -63,6 +63,7 @@ def _economy_text() -> str:
         - settings.leaderboard_rake_pct
         - settings.weekly_pot_pct
         - settings.pack_fund_pct
+        - settings.referral_pct
     )
 
     return (
@@ -76,6 +77,8 @@ def _economy_text() -> str:
         f"• {_pct_text(settings.leaderboard_rake_pct)}% — копилка месяца: топ-3 лидеров /top делят её "
         f"({m_pcts}%), нужны кошелёк и ставка в месяце; ничья — вклад Gram, затем кто "
         f"раньше заявил о месте\n"
+        f"• {_pct_text(settings.referral_pct)}% — пригласившим: с подтверждённых ставок приведённых "
+        f"игроков, копится до порога (см. /invite и /referral)\n"
         f"• {_pct_text(settings.owner_rake_pct)}% — налог «Децентрализованному Богу»\n"
         "\nЕсли на верный путь не поставил никто — все ставки возвращаются целиком."
     )

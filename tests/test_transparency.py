@@ -49,7 +49,7 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     # Нарративный старт под бесшовные сутки: итоги придут сразу после.
     assert "придут сразу после" in text
     assert "час тайны урны" not in text
-    assert "96%" in text
+    assert "95%" in text
     assert "/top" in text
     assert "не отвечают за утраченные средства" in text
     assert "сам решаешь" in text
@@ -65,7 +65,7 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     )
     await h.cmd_start(message2)
     text2 = message2.answer.call_args_list[0].args[0]
-    assert "/top" not in text2 and "96%" not in text2
+    assert "/top" not in text2 and "95%" not in text2
     assert "не отвечают за утраченные средства" not in text2
 
 
@@ -99,7 +99,7 @@ async def test_wallet_view_shows_distribution_and_dyor(session, monkeypatch) -> 
 
     text = await _wallet_view_text(SimpleNamespace(id=555, username="w", first_name="W"))
     assert "Распределение фонда дня" in text
-    for marker in ("96%", "1%", "2%", "0,5%", "Фонд Стаи", "копилка месяца"):
+    for marker in ("95%", "1%", "2%", "0,5%", "Фонд Стаи", "копилка месяца", "пригласившим"):
         assert marker in text
     assert "возвращаются целиком" in text
     assert "DYOR" in text and "не отвечают" in text

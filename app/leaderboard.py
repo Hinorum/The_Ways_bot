@@ -643,8 +643,12 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
             # Сглаживание дисперсии: платим топ-K по верности с весами,
             # а не «забрал всё сильнейший». Веса из месячного весового списка;
             # ничьи решаются вкладом Gram, затем Claim.
+            # Усекать кандидатов до top_k нельзя: tied-игрок ПОД границей среза
+            # (№top_k+1, абсолютно равный №top_k) не попал бы в _resolve_claim_window
+            # и лишился бы окна Claim, как в неделе. Берём широкий ранг, а места
+            # для выплаты режем после разрешения ничьи временем Claim.
             ranked = await _rank_window(
-                session, period_start, month_start, by="tally_ends_at", limit=top_k
+                session, period_start, month_start, by="tally_ends_at", limit=50
             )
             staked = await _players_with_stake(
                 session, period_start, month_start, by="tally_ends_at"
@@ -696,8 +700,11 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
                 )
                 return False
             payments: list[tuple[int, str, int]] = []
-            top_amount = _weighted_amounts(total, placed, weights)
-            for (player_id, _score, _gram, wallet), amount in zip(placed, top_amount, strict=False):
+            # Места — первые top_k после разрешения ничьи (Claim, player_id):
+            # tied-претендент за границей среза в выплату не попадает.
+            winners = placed[:top_k]
+            top_amount = _weighted_amounts(total, winners, weights)
+            for (player_id, _score, _gram, wallet), amount in zip(winners, top_amount, strict=False):
                 payments.append((player_id, wallet, amount))
         else:
             # Прежнее поведение: победители, набравшие максимум, делят ровно.
