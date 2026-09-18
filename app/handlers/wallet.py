@@ -22,7 +22,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import LeaderboardPot, Player, Round, Stake, WatcherState
 from app.rounds import get_active_round
-from app.style import hint_mark, money_mark, ok_mark, warn_mark
+from app.style import hint_mark, money_mark, ok_mark, strip_html, warn_mark
 from app.ton_utils import (
     friendly_address,
     from_nano,
@@ -412,8 +412,10 @@ async def on_wallet_view(callback: CallbackQuery) -> None:
         await callback.message.answer(await _wallet_view_safe(callback.from_user), parse_mode=ParseMode.HTML)
         await callback.answer()
         return
+    # Окно колбэка не рендерит HTML: убираем <code>/<b> из вида, иначе в группе
+    # игрок увидел бы сырые теги вместо адреса и форматирования.
     text = await _wallet_view_safe(callback.from_user)
-    await callback.answer(text[:200], show_alert=True)
+    await callback.answer(strip_html(text)[:200], show_alert=True)
 
 
 _STAKE_HOWTO = (

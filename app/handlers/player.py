@@ -25,7 +25,15 @@ from app.db import SessionLocal
 from app.ton_utils import from_nano, to_nano
 from app.models import LeaderboardClaim, RoundStatus
 from app.rounds import get_active_round, get_latest_round
-from app.style import day_mark, hint_mark, ok_mark, path_mark, result_mark, warn_mark
+from app.style import (
+    day_mark,
+    hint_mark,
+    ok_mark,
+    path_mark,
+    result_mark,
+    strip_html,
+    warn_mark,
+)
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
 from .common import _DYOR_TEXT, _ensure_round, _personal_keyboard, router
@@ -36,7 +44,7 @@ logger = logging.getLogger(__name__)
 def _commands_help() -> list[str]:
     """Справочный блок команд — общий для /start и /help."""
     lines = [
-        "<b>Команды каравана</b>",
+        "<b>Команды Стаи</b>",
         "/today — карты дня",
         "/score — твои Следы · /rank — место среди стаи",
         "/invite — позвать в стаю по личной ссылке",
@@ -407,7 +415,7 @@ async def _score_text(user) -> str:
 async def cmd_score(message: Message) -> None:
     text = await _score_text(message.from_user)
     if message.chat.type == ChatType.PRIVATE:
-        await message.answer(text)
+        await message.answer(text, parse_mode=ParseMode.HTML)
         return
     # В группе личные цифры не показываем: только кнопка с приватным окном.
     await message.answer(
@@ -419,12 +427,15 @@ async def cmd_score(message: Message) -> None:
 @router.callback_query(F.data == "score:view")
 async def on_score_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
-        await callback.message.answer(await _score_text(callback.from_user))
+        await callback.message.answer(
+            await _score_text(callback.from_user), parse_mode=ParseMode.HTML
+        )
         await callback.answer()
         return
-    # Лимит окна — 200 символов, счёт компактный и помещается.
+    # Лимит окна — 200 символов, счёт компактный и помещается. Окно колбэка
+    # не рендерит HTML — теги титула убираем, иначе их было бы видно сырыми.
     text = await _score_text(callback.from_user)
-    await callback.answer(text[:200], show_alert=True)
+    await callback.answer(strip_html(text)[:200], show_alert=True)
 
 
 @router.message(Command("rank"))
@@ -446,7 +457,7 @@ async def cmd_rank(message: Message) -> None:
     )
 
     if message.chat.type == ChatType.PRIVATE:
-        await message.answer(text)
+        await message.answer(text, parse_mode=ParseMode.HTML)
     else:
         await message.answer(
             "Рейтинг — только в личке.",

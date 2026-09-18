@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from sqlalchemy import select
 
 from app.config import settings
@@ -479,11 +480,14 @@ async def _stash_refund(
 
 
 async def _dm_stake(bot: Bot | None, player_id: int, text: str) -> None:
-    """Личное сообщение о судьбе ставки; доставка не обязательна для учёта."""
+    """Личное сообщение о судьбе ставки; доставка не обязательна для учёта.
+
+    Тело несёт <code>bv:…</code> и прочие HTML-теги — шлём с разметкой.
+    """
     if bot is None or player_id <= 0:
         return
     try:
-        await bot.send_message(player_id, text)
+        await bot.send_message(player_id, text, parse_mode=ParseMode.HTML)
     except Exception as exc:
         logger.info("Сообщение игроку %s не доставлено: %s", player_id, exc)
 

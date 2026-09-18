@@ -67,6 +67,8 @@ async def test_score_button_alert_private_to_presser() -> None:
     # Лимит Telegram на окно колбэка — 200 символов.
     assert len(args[0]) <= 200
     assert "Следы" in args[0]
+    # Окно колбэка не рендерит HTML — сырых тегов в нём быть не должно.
+    assert "<" not in args[0]
     # Данные пересчитаны для нажавшего, а не для автора команды.
     assert callback.from_user.username in {f"u{callback.from_user.id}"}
 
@@ -78,6 +80,8 @@ async def test_wallet_view_alert() -> None:
     assert kwargs.get("show_alert") is True
     assert len(args[0]) <= 200
     assert "Кошелёк" in args[0]
+    # Окно колбэка не рендерит HTML — сырых тегов в нём быть не должно.
+    assert "<" not in args[0]
 
 
 async def test_wallet_bind_in_group_hides_details() -> None:

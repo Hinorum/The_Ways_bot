@@ -9,6 +9,19 @@
 from __future__ import annotations
 
 import hashlib
+import re
+
+# Разметка, которую Telegram окно колбэка (callback.answer) не рендерит:
+# она приходит клиенту как сырой текст. Такой текст чистим перед показом.
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def strip_html(text: str) -> str:
+    """Убирает HTML-теги из текста для окон без поддержки разметки.
+
+    Содержимое (bv:КОД, адреса, числа) сохраняется — теги только отдаются.
+    """
+    return _HTML_TAG_RE.sub("", text)
 
 # Обложка дня и заголовки канона.
 DAY_MARKS = [
