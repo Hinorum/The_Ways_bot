@@ -26,7 +26,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Player, Referral
+from app.models import Player, Referral, ReferralPot
 
 _BOT_USERNAME_CACHE: str | None = None
 
@@ -102,6 +102,15 @@ async def invited_count(player_id: int) -> int:
             .where(Referral.referrer_id == player_id)
         )
         return int(total or 0)
+
+
+async def referral_pot_balance(player_id: int) -> int:
+    """Накопленная реферальная награда игрока в нанотонах (0 — ещё не копилось)."""
+    async with SessionLocal() as session:
+        value = await session.scalar(
+            select(ReferralPot.nanotons).where(ReferralPot.referrer_id == player_id)
+        )
+        return int(value or 0)
 
 
 async def resolve_bot_username(bot) -> str | None:

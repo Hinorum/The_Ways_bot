@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from app.broadcast import POSITIONS, cards_keyboard, status_text
 from app.config import settings
 from app.db import SessionLocal
+from app.ton_utils import from_nano, to_nano
 from app.models import LeaderboardClaim, RoundStatus
 from app.rounds import get_active_round, get_latest_round
 from app.style import day_mark, hint_mark, ok_mark, path_mark, result_mark, warn_mark
@@ -39,6 +40,7 @@ def _commands_help() -> list[str]:
         "/today — карты дня",
         "/score — твои Следы · /rank — место среди стаи",
         "/invite — позвать в стаю по личной ссылке",
+        "/referral — твоя реферальная награда",
         "/help — эта памятка",
     ]
     if settings.revote_enabled:
@@ -56,10 +58,12 @@ def _commands_help() -> list[str]:
             - settings.leaderboard_rake_pct
             - settings.weekly_pot_pct
             - settings.pack_fund_pct
+            - settings.referral_pct
         )
         lines.append(
             f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный путь; остальное — "
-            "Фонд Стаи, копилки недели и месяца (/top) и хранителю. Подробности: /stake."
+            "Фонд Стаи, копилки недели и месяца (/top), хранителю и пригласившим "
+            f"({settings.referral_pct:.0f}%, см. /referral). Подробности: /stake."
         )
     return lines
 
@@ -91,7 +95,54 @@ async def cmd_invite(message: Message) -> None:
     await message.answer(
         f"🐾 Вот твоя ссылка приглашения:\n{link}\n\n"
         "Кто придёт по ней — тот вошёл в стаю твоим следом. "
-        f"Приведено всего: {count}. Награды за приглашения — позже."
+        f"Приведено всего: {count}.\n"
+        "🏅 С каждой подтверждённой ставки приведённых тебе копится награда — "
+        f"смотри баланс: /referral."
+    )
+
+
+@router.message(Command("referral"))
+async def cmd_referral(message: Message) -> None:
+    """Реферальная награда игрока: ссылка, приведённые и накопленный баланс."""
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    caller = message.from_user
+    if caller is None:
+        return
+    from app.referrals import (
+        invited_count,
+        referral_link,
+        referral_pot_balance,
+        resolve_bot_username,
+    )
+
+    username = await resolve_bot_username(getattr(message, "bot", None))
+    link = referral_link(caller.id, username)
+    if not link:
+        await message.answer("🧭 Приглашения в стаю пока не открыты — приходи чуть позже.")
+        return
+    count = await invited_count(caller.id)
+    balance = await referral_pot_balance(caller.id)
+    threshold_nano = to_nano(settings.referral_min_payout_gram)
+    if balance <= 0:
+        status = "Пока копилка пуста: награда капает с подтверждённых ставок приведённых."
+    elif balance >= threshold_nano:
+        status = (
+            "🎁 Порог выплаты пройден — придёт на подтверждённый кошелёк "
+            "автоматически в ближайшей финализации дня."
+        )
+    else:
+        need = from_nano(threshold_nano - balance)
+        status = f"🌸 До выплаты не хватает {need:g} Gram — копилка докапает с новых ставок."
+    earned = from_nano(balance)
+    await message.answer(
+        f"🏅 <b>Твоя реферальная награда</b>\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Приведено: {count}\n"
+        f"В копилке: {earned:g} Gram "
+        f"(автовыплата от {settings.referral_min_payout_gram:g} Gram)\n\n"
+        f"{status}",
+        parse_mode=ParseMode.HTML,
     )
 
 
