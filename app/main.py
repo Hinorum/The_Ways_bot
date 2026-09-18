@@ -40,6 +40,8 @@ async def health(request: web.Request) -> web.Response:
     эндпоинт — Render должен видеть процесс живым; но и «ok» без данных мы
     не притворяемся: честный статус degraded.
     """
+    if settings.health_require_token and not settings.health_token.strip():
+        return web.Response(status=401, text="unauthorized")
     if settings.health_token:
         expected = settings.health_token.strip()
         supplied = (
@@ -115,13 +117,15 @@ def validate_config() -> list[str]:
         + settings.leaderboard_rake_pct
         + settings.weekly_pot_pct
         + settings.pack_fund_pct
+        + settings.referral_pct
     )
     if rake > 100:
         problems.append(
             f"Суммарный рейк {rake:.2f}% превышает 100% (owner {settings.owner_rake_pct}%"
             f" + leaderboard {settings.leaderboard_rake_pct}%"
             f" + weekly {settings.weekly_pot_pct}%"
-            f" + fund {settings.pack_fund_pct}%) — "
+            f" + fund {settings.pack_fund_pct}%"
+            f" + referral {settings.referral_pct}%) — "
             "prize_pool станет отрицательным, и все ставки уйдут в копилку недели."
         )
     if getattr(settings, "ton_enabled", False):

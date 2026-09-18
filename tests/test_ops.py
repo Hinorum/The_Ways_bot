@@ -633,6 +633,9 @@ async def test_monthly_pot_pays_top_k_by_weights(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "monthly_prize_top_k", 2)
     monkeypatch.setattr(settings, "monthly_prize_weights", "60,30,10")
+    # Горш теста — символические 1000 нанотонов; тест проверяет РАСКЛАД ПО ВЕСАМ,
+    # а не реальные суммы. Порог снимаем, чтобы пыль не блокировала выплату.
+    monkeypatch.setattr(settings, "min_payout_gram", 0.0)
     pid_a = 960_000 + int.from_bytes(os.urandom(2), "big")
     pid_b = pid_a + 1
     wallet_a = "0:" + os.urandom(32).hex()

@@ -61,6 +61,7 @@ from app.core.registry import (
     WEEKLY_MARKER_KEY,
 )
 from app.stakes import split_equal
+from app.ton_utils import to_nano
 from app.weeks import iso_week_key, parse_prize_pcts, previous_week_key, week_bounds
 
 logger = logging.getLogger(__name__)
@@ -280,7 +281,20 @@ def _prize_tied_groups(
     if not candidates or top_k <= 0:
         return []
 
-    prize_slice = candidates[:top_k]
+    # Ничья, РЕЖУЩАЯ границу призового среза: кандидаты уже отсортированы, и
+    # полное равенство (верность, вклад Gram) последнего призёра и первого
+    # безпризёра — та же ничья, что и внутри призов. Без этого край среза
+    # решался бы меньшим player_id молча: игрок №4, абсолютно равный №3,
+    # не получал Claim-окна и не мог «перестоять» запретителя. Дотягиваем
+    # tied-хвост за границу среза.
+    prize_slice = list(candidates[:top_k])
+    if len(candidates) > top_k:
+        border = prize_slice[-1]
+        for extra in candidates[top_k:]:
+            if extra[1] == border[1] and extra[2] == border[2]:
+                prize_slice.append(extra)
+            else:
+                break
     groups: list[list[int]] = []
     i = 0
     while i < len(prize_slice):
@@ -727,6 +741,34 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
             )
             return False
 
+        # Доли ниже min_payout_gram не создают дохлые переводы (комиссия сети
+        # съела бы большую часть). Неоплаченная пыль возвращается в копилку
+        # ТЕКУЩЕГО месяца — старые горши ниже удаляются, деньги не теряются.
+        min_payout_nano = to_nano(settings.min_payout_gram)
+        payments = [
+            (player_id, wallet, amount)
+            for player_id, wallet, amount in payments
+            if amount >= min_payout_nano
+        ]
+        if not payments:
+            logger.warning(
+                "Копилка %d нанотонов ждёт: все доли ниже min_payout_gram — ждём роста горша",
+                total,
+            )
+            return False
+        recarry = total - sum(amount for _pid, _wallet, amount in payments)
+        if recarry > 0:
+            current_month = now.strftime("%Y-%m")
+            pot_row = (
+                await session.execute(
+                    select(LeaderboardPot).where(LeaderboardPot.month == current_month)
+                )
+            ).scalar_one_or_none()
+            if pot_row is None:
+                session.add(LeaderboardPot(month=current_month, nanotons=recarry))
+            else:
+                pot_row.nanotons += recarry
+
         network = "testnet" if settings.is_testnet else "mainnet"
         for player_id, wallet, amount in payments:
             session.add(
@@ -948,7 +990,10 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
             if player is None or not player.wallet_address:
                 continue
             candidates.append((pid, correct, gram, player.wallet_address))
-        places = _order_by_ties(candidates, claims)[:3]
+        # Полный порядок (с Claim-тайбрейком) нужен для поиска ничьей на
+        # ГРАНИЦЕ призового среза; места для выплаты — первые top-3 поверхности.
+        ordered = _order_by_ties(candidates, claims)
+        places = ordered[:3]
 
         if not places:
             # Достойных нет: метку НЕ двигаем, копилка ждёт следующей недели.
@@ -963,14 +1008,20 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
 
         # --- Ничья: блокировка выплаты до Claim или дедлайма ---
         if not await _resolve_claim_window(
-            session, bot, "week", prev_key, places, top_k=3, claims=claims, now=now
+            session, bot, "week", prev_key, ordered, top_k=3, claims=claims, now=now
         ):
             return False
 
         amounts, rolled = _week_prize_amounts(total, len(places))
+        min_payout_nano = to_nano(settings.min_payout_gram)
         network = _active_network()
         paid: list[tuple[str, str, int]] = []
         for place, ((pid, correct, _gram, wallet), amount) in enumerate(zip(places, amounts, strict=False), 1):
+            if amount < min_payout_nano:
+                # Дохлый перевод не создаём: комиссия сети съела бы большую
+                # часть доли. Переносится в копилку новой недели, как пустое место.
+                rolled += amount
+                continue
             session.add(
                 Payout(
                     round_id=None,

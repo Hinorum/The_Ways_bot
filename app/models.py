@@ -89,8 +89,8 @@ class Referral(Base):
     """Кто привёл кого по личной ссылке ?start=ref_<id>_<токен>.
 
     Строго одна запись на приведённого: первый валидный переход фиксируется
-    навсегда, повторные /start с чужой ссылкой игнорируются. Сейчас тут только
-    факт приведения — награды и анти-сибил-штрафы появятся позже.
+    навсегда, повторные /start с чужой ссылкой игнорируются. Награды копятся
+    в ReferralPot (см. там) и выплачиваются через обычную очередь Payout.
     """
 
     __tablename__ = "referrals"
@@ -99,6 +99,25 @@ class Referral(Base):
     referrer_id: Mapped[int] = mapped_column(BigInteger, index=True)
     referred_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReferralPot(Base):
+    """Накопленная реферальная награда пригласившего (доля referral_pct% от
+    подтверждённых ставок приведённых игроков).
+
+    Обязательство перед реферером: деньги остаются на кошельке казначея и
+    ждут, НЕ создавая микропереводов. Перевод создаётся обычной очередью
+    выплат (kind="referral") только когда накопление >= referral_min_payout_gram
+    (пыль копится дальше — газ сети стоит дороже). К рефералу привязывается
+    кошелёк игрока; без подтверждённого кошелька накопление просто ждёт.
+    """
+
+    __tablename__ = "referral_pots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    referrer_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Chat(Base):

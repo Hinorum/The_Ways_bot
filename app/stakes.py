@@ -13,6 +13,15 @@
 - 0,5% — в копилку месяца: в конце месяца её забирает игрок (игроки)
   с максимумом верных ответов (/top).
 
+Реферальные награды: доля referral_pct (по умолчанию 1%) с каждой
+ПОДТВЕРЖДЁННОЙ ставки игрока, пришедшего по личной ссылке, не попадает в
+пул победителей, а копится в копилку пригласившего (см. ReferralPot) и
+выплачивается обычной очередью при достижении referral_min_payout_gram.
+При всех приведённых ставках фонд делится как 95% победителям + 1%
+реферальной награде; день без приведённых ставок — как раньше (96%).
+Самоначисление невозможно (самоссылка блокируется в record_referral), а
+награда всегда меньше самой ставки — ферма «приглашения» убыточна.
+
 Доли меньше min_payout_gram не превращаются в дохлые переводы: они капают
 в копилку недели и видны в строке недели поста итогов. Если комиссии съели
 призовой пул целиком (экзотика: много микоставок), весь пул уходит туда же.
@@ -43,6 +52,8 @@ from app.models import (
     PackFundLedger,
     Payout,
     Player,
+    Referral,
+    ReferralPot,
     Round,
     RoundStatus,
     Stake,
@@ -215,6 +226,88 @@ async def confirm_stake(session: AsyncSession, tx_hash: str) -> bool:
     return True
 
 
+async def _credit_referral(session: AsyncSession, referrer_id: int, amount: int) -> None:
+    """Каплет долю подтверждённой ставки приведённого игрока в накопитель."""
+    if amount <= 0:
+        return
+    row = (
+        await session.execute(select(ReferralPot).where(ReferralPot.referrer_id == referrer_id))
+    ).scalar_one_or_none()
+    if row is None:
+        session.add(ReferralPot(referrer_id=referrer_id, nanotons=amount))
+    else:
+        row.nanotons += amount
+
+
+async def _settle_referral_pots(session: AsyncSession) -> int:
+    """Дозрелые реферальные накопления превращаются в выплаты (kind="referral").
+
+    Платим только >= referral_min_payout_gram: микропереводы не плодим, газ
+    (~payout_fee_gram) стоит заметную долю микро-«поощрения». Атомарно:
+    UPDATE ... WHERE nanotons == прочитанному замеру — при параллельных
+    вызовах (несколько реплик) строку заберёт ровно один процесс. Реферер
+    без ПОДТВЕРЖДЁННОГО кошелька не платится: накопление ждёт привязку.
+    """
+    min_nano = to_nano(settings.referral_min_payout_gram)
+    rows = (
+        (
+            await session.execute(
+                select(ReferralPot)
+                .where(ReferralPot.nanotons >= min_nano)
+                .order_by(ReferralPot.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return 0
+    referrer_ids = {pot.referrer_id for pot in rows}
+    wallets = dict(
+        (
+            await session.execute(
+                select(Player.id, Player.wallet_address).where(
+                    Player.id.in_(referrer_ids),
+                    Player.wallet_verified.is_(True),
+                )
+            )
+        ).all()
+    )
+    network = current_network()
+    created = 0
+    for pot in rows:
+        wallet = wallets.get(pot.referrer_id)
+        if not wallet:
+            continue  # нет подтверждённого кошелька — накопление ждёт привязку
+        # Забираем замер ДО UPDATE: SQLAlchemy синхронизирует объект identity-map
+        # после execute (synchronize_session), и pot.nanotons стал бы 0.
+        amount = pot.nanotons
+        claimed = await session.execute(
+            update(ReferralPot)
+            .where(ReferralPot.id == pot.id, ReferralPot.nanotons == amount)
+            .values(nanotons=0)
+        )
+        if claimed.rowcount == 0:
+            continue  # другой процесс уже забрал — следующий цикл догонит
+        session.add(
+            Payout(
+                round_id=None,
+                player_id=pot.referrer_id,
+                kind="referral",
+                amount_nanotons=amount,
+                dest_address=wallet,
+                network=network,
+            )
+        )
+        created += 1
+    if created:
+        logger.info(
+            "Создано реферальных выплат: %d (порог %.4g Gram)",
+            created, settings.referral_min_payout_gram,
+        )
+    return created
+
+
 async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
     """После finish_tally: создаёт выплаты призов/возвратов. Отправка — в ton_pay.
 
@@ -328,7 +421,31 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             board_cut = pot * board_bp // 10_000
             weekly_cut = pot * weekly_bp // 10_000
             fund_cut = pot * fund_bp // 10_000
-            prize_pool = pot - house_cut - board_cut - weekly_cut - fund_cut
+
+            # Реферальная награда: доля referral_pct от подтверждённых ставок
+            # приведённых игроков уходит пригласившим, а НЕ в пул победителей.
+            # День без приведённых ставок делится как раньше (96%), при всех
+            # приведённых — как 95% победителям + 1% реферальной награде.
+            referred_entries: list[tuple[int, int]] = []
+            if settings.referral_pct > 0 and confirmed:
+                ref_rows = (
+                    (
+                        await session.execute(
+                            select(Referral.referrer_id, Referral.referred_id).where(
+                                Referral.referred_id.in_([s.player_id for s in confirmed])
+                            )
+                        )
+                    )
+                    .all()
+                )
+                referred_by = {referred: referrer for referrer, referred in ref_rows}
+                for stake in confirmed:
+                    referrer_id = referred_by.get(stake.player_id)
+                    if referrer_id is not None:
+                        referred_entries.append((referrer_id, stake.amount_nanotons))
+            referral_bp = max(0, round(settings.referral_pct * 100))
+            referral_cut = sum(amount * referral_bp // 10_000 for _rid, amount in referred_entries)
+            prize_pool = pot - house_cut - board_cut - weekly_cut - fund_cut - referral_cut
 
             fee_nano = to_nano(settings.payout_fee_gram)
             min_payout_nano = to_nano(settings.min_payout_gram)
@@ -359,6 +476,9 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                         dust_to_week += share
                         continue
                     created += add_payout(stake, "prize", share)
+            if referral_cut > 0:
+                for referrer_id, share in split_pot(referral_cut, referred_entries):
+                    await _credit_referral(session, referrer_id, share)
             if house_cut > 0:
                 created += add_treasury_payout("rake", house_cut)
             if board_cut > 0:
@@ -414,6 +534,10 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             # осталась бы pending/rejected: панель вечно показывала «переводов
             # не обработано», а часовой алерт звонил по одному и тому же хвосту.
             stake.status = "refunded"
+
+    # Дозрелые реферальные накопления -> выплаты (идёт в том же коммите дня,
+    # чтобы копилка не висела годами: финализация дня — ежедневный крюк).
+    await _settle_referral_pots(session)
 
     logger.info("finalize_day_payouts: round %s создано выплат: %d (pot=%d нанотонов)", round_row.id, created, pot)
     await session.commit()
