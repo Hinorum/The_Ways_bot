@@ -375,6 +375,7 @@ async def cmd_today(message: Message) -> None:
     round_row = await _ensure_round()
     await message.answer(
         await status_text(round_row, show_title=True),
+        parse_mode=ParseMode.HTML,
         reply_markup=cards_keyboard(round_row.id, remember=False, day_index=round_row.day_index),
     )
 

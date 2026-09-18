@@ -141,9 +141,10 @@ async def cmd_advance(message: Message) -> None:
         await message.answer(f"День {nxt.day_index} объявлен в {len(delivered)} чат(ах).")
     else:
         # Ни одного подписанного чата — покажем всё прямо здесь.
-        await message.answer(await results_message(round_row))
+        await message.answer(await results_message(round_row), parse_mode=ParseMode.HTML)
         await message.answer(
             await status_text(nxt, show_title=True),
+            parse_mode=ParseMode.HTML,
             reply_markup=cards_keyboard(nxt.id, remember=False, day_index=nxt.day_index),
         )
 

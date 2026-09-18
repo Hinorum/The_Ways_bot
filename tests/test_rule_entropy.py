@@ -20,7 +20,12 @@ import pytest
 
 from app.config import settings
 from app.models import Card, Round, RoundStatus, WinRule
-from app.rounds import _plan_and_render, create_next_round_detailed, rule_block_ref
+from app.rounds import (
+    _plan_and_render,
+    create_next_round_detailed,
+    rule_block_ref,
+    TON_EXPLORER_BLOCK_URL,
+)
 
 NOW = datetime.now(timezone.utc)
 
@@ -121,17 +126,19 @@ def test_rule_block_ref() -> None:
     assert rule_block_ref(_round()) == ""
     assert rule_block_ref(_round(rule_entropy="")) == ""
     assert rule_block_ref(_round(rule_entropy="4711:abcd")) == (
-        " (блок TON №4711, проверяемо в эксплорере)"
+        f' (блок TON №4711 — <a href="{TON_EXPLORER_BLOCK_URL.format("4711")}">'
+        "проверить в эксплорере</a>)"
     )
 
 
 async def test_day_open_status_shows_law_block() -> None:
-    """Анонс дня публикует номер блока закона — игрок перепроверит в эксплорере."""
+    """Анонс дня публикует кликабельную ссылку на блок закона."""
     from app.broadcast import status_text
 
     text = await status_text(_round(rule_entropy="4711:abcd"), show_title=True)
     assert "блок TON №4711" in text
-    assert "проверяемо в эксплорере" in text
+    assert TON_EXPLORER_BLOCK_URL.format("4711") in text
+    assert 'href="' in text  # читается Telegram-клиентом как ссылка (HTML)
 
 
 async def test_results_post_shows_law_block() -> None:
@@ -145,3 +152,4 @@ async def test_results_post_shows_law_block() -> None:
     text = format_results(round_row)
     assert "Правило дня" in text
     assert "блок TON №4711" in text
+    assert TON_EXPLORER_BLOCK_URL.format("4711") in text

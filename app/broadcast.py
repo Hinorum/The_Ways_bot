@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
@@ -288,8 +289,9 @@ async def _deliver_day(
             results_text = await results_message(finished)
         # Итоги дня — только текстом. Фото победившей ветки не постим: это был
         # дубль обложки нового дня, а вечерний костёр уже дал отдельный кадр.
+        # HTML: строка правила дня несёт ссылку на блок закона (rule_block_ref).
         if results_text:
-            await bot.send_message(chat_id, results_text)
+            await bot.send_message(chat_id, results_text, parse_mode=ParseMode.HTML)
     media = build_day_post(round_row)
     if len(media) >= 2:
         await bot.send_media_group(chat_id, media=media)
@@ -301,6 +303,7 @@ async def _deliver_day(
     await bot.send_message(
         chat_id,
         await status_text(round_row, show_title=True),
+        parse_mode=ParseMode.HTML,
         reply_markup=cards_keyboard(round_row.id, remember=remember, day_index=round_row.day_index),
     )
 
@@ -390,10 +393,13 @@ async def announce_new_day(
     return delivered
 
 
-async def _broadcast_text(bot: Bot, text: str) -> int:
+async def _broadcast_text(
+    bot: Bot, text: str, parse_mode: ParseMode | None = None
+) -> int:
     """Одно текстовое сообщение во все живые чаты с одним ретраем и флуд-контролем.
 
     Плюс — личные дубликаты подписчикам (итоги, эпилог, анонсы пауз/церемоний).
+    parse_mode — формат разметки: итоги дня несут HTML-ссылку на блок закона.
     Возвращает число доставленных чатов; провалы не критичны.
     """
     if not text.strip():
@@ -407,13 +413,13 @@ async def _broadcast_text(bot: Bot, text: str) -> int:
         async def worker(chat_id: int) -> int | None:
             async with semaphore:
                 try:
-                    await bot.send_message(chat_id, text)
+                    await bot.send_message(chat_id, text, parse_mode=parse_mode)
                     return chat_id
                 except TelegramRetryAfter as exc:
                     logger.warning("Флуд-контроль в чате %s: пауза %d с", chat_id, exc.retry_after)
                     await asyncio.sleep(exc.retry_after + 1)
                     try:
-                        await bot.send_message(chat_id, text)
+                        await bot.send_message(chat_id, text, parse_mode=parse_mode)
                         return chat_id
                     except Exception:
                         return None
@@ -432,7 +438,9 @@ async def _broadcast_text(bot: Bot, text: str) -> int:
         delivered = 0
     # Личные дубликаты подписчикам — даже если живых чатов нет.
     delivered_dm = await _dm_send_all(
-        bot, lambda pid: bot.send_message(pid, text), "Личный текст"
+        bot,
+        lambda pid: bot.send_message(pid, text, parse_mode=parse_mode),
+        "Личный текст",
     )
     return delivered + delivered_dm
 
@@ -453,7 +461,7 @@ async def announce_results(bot: Bot | None, finished: Round) -> int:
         text = ""
     if not text:
         return 0
-    delivered = await _broadcast_text(bot, text)
+    delivered = await _broadcast_text(bot, text, parse_mode=ParseMode.HTML)
     logger.info("Итоги дня %s разосланы: доставлено %d чатов", getattr(finished, "day_index", "?"), delivered)
     return delivered
 
