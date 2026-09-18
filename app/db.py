@@ -189,6 +189,39 @@ END $$;
 """
 
 
+def _alembic_head() -> str:
+    """Ревизия=head из alembic-скриптов без подключения к БД."""
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+
+    cfg = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+async def _stamp_alembic_head(conn) -> None:
+    """Асимметрия create_all ↔ alembic: бутстрап через create_all создаёт
+    таблицы, но не alembic_version — ручной ``alembic upgrade head`` на
+    такой базе упёрся бы в «table already exists».  Ставим якорь на head:
+    повторный upgrade становится честным no-op.  БД, которая уже ведётся
+    alembic'ом (alembic_version непуста), не трогаем."""
+    try:
+        head = _alembic_head()
+    except Exception:
+        logger.warning("alembic head не читается — stamp пропущен")
+        return
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS alembic_version "
+            "(version_num VARCHAR(32) NOT NULL, PRIMARY KEY (version_num))"
+        )
+    )
+    current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalars().first()
+    if current is not None:
+        return
+    await conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:head)").bindparams(head=head))
+    logger.info("alembic_version помечена на head=%s после create_all", head)
+
+
 async def _run_pg_migration_sql(sql: str) -> None:
     """Execute one DDL statement in its own transaction.
 
@@ -213,6 +246,9 @@ async def init_db() -> None:
         # базе остаются из старой схемы и ломают INSERT нового дня. Дропаем
         # универсально — по разнице БД и модели, без ручного списка.
         await conn.run_sync(_drop_orphan_not_null_columns)
+        # Якорь alembic-версии после create_all: ручной `alembic upgrade head`
+        # на бутстрапнутой базе становится no-op, а не «table already exists».
+        await _stamp_alembic_head(conn)
 
     if settings.async_database_url.startswith("postgresql"):
         # Phase 2: each migration in its own transaction.
