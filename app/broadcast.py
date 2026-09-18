@@ -289,7 +289,7 @@ async def _deliver_day(
             results_text = await results_message(finished)
         # Итоги дня — только текстом. Фото победившей ветки не постим: это был
         # дубль обложки нового дня, а вечерний костёр уже дал отдельный кадр.
-        # HTML: строка правила дня несёт ссылку на блок закона (rule_block_ref).
+        # HTML: строка правила дня несёт жирные блоки (rule_block_ref — текст).
         if results_text:
             await bot.send_message(chat_id, results_text, parse_mode=ParseMode.HTML)
     media = build_day_post(round_row)

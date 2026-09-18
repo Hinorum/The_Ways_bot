@@ -9,7 +9,8 @@
 - create_next_round_detailed снимает энтропию и сохраняет её в день
   (rule_entropy), а not локальный secrets-жребий;
 - TON выключен / энтропия недоступна → локальный жребий, rule_entropy пустая;
-- блок закона публикуется в анонсе дня и в посте итогов (проверяемость).
+- блок закона упоминается в анонсе дня и в посте итогов без ссылки — Telegram
+  не вешает рамку превью на URL (проверяемость сохраняется по номеру блока).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from app.rounds import (
     _plan_and_render,
     create_next_round_detailed,
     rule_block_ref,
-    TON_EXPLORER_BLOCK_URL,
 )
 
 NOW = datetime.now(timezone.utc)
@@ -125,24 +125,22 @@ async def test_create_next_round_falls_back_without_ton(
 def test_rule_block_ref() -> None:
     assert rule_block_ref(_round()) == ""
     assert rule_block_ref(_round(rule_entropy="")) == ""
-    assert rule_block_ref(_round(rule_entropy="4711:abcd")) == (
-        f' (блок TON №4711 — <a href="{TON_EXPLORER_BLOCK_URL.format("4711")}">'
-        "проверить в эксплорере</a>)"
-    )
+    # Номер блока остаётся для проверяемости, ссылки нет — Telegram не
+    # показывает рамку превью на URL внутри анонса.
+    assert rule_block_ref(_round(rule_entropy="4711:abcd")) == " (блок TON №4711)"
 
 
-async def test_day_open_status_shows_law_block() -> None:
-    """Анонс дня публикует кликабельную ссылку на блок закона."""
+async def test_day_open_status_mentions_law_block_without_link() -> None:
+    """Анонс дня упоминает номер блока закона без гиперссылки."""
     from app.broadcast import status_text
 
     text = await status_text(_round(rule_entropy="4711:abcd"), show_title=True)
     assert "блок TON №4711" in text
-    assert TON_EXPLORER_BLOCK_URL.format("4711") in text
-    assert 'href="' in text  # читается Telegram-клиентом как ссылка (HTML)
+    assert "href=" not in text and "http" not in text
 
 
-async def test_results_post_shows_law_block() -> None:
-    """Итоги дня дублируют источник закона рядом с правилом."""
+async def test_results_post_mentions_law_block_without_link() -> None:
+    """Итоги дня дублируют номер блока источника рядом с правилом, без ссылки."""
     from app.tally import format_results
 
     round_row = _round(rule_entropy="4711:abcd")
@@ -152,4 +150,4 @@ async def test_results_post_shows_law_block() -> None:
     text = format_results(round_row)
     assert "Правило дня" in text
     assert "блок TON №4711" in text
-    assert TON_EXPLORER_BLOCK_URL.format("4711") in text
+    assert "href=" not in text and "http" not in text

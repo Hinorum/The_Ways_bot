@@ -23,7 +23,6 @@ from .pot import round_pot  # noqa: F401
 from .queries import get_active_round, get_latest_round, get_round  # noqa: F401
 from .rendering import (  # noqa: F401
     PREPARED_PAYLOAD_VERSION,
-    TON_EXPLORER_BLOCK_URL,
     _plan_and_render,
     rule_block_ref,
 )
@@ -61,7 +60,6 @@ __all__ = [
     "get_latest_round",
     "get_round",
     "PREPARED_PAYLOAD_VERSION",
-    "TON_EXPLORER_BLOCK_URL",
     "_plan_and_render",
     "rule_block_ref",
     "_ROMAN",
