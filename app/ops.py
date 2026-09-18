@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -25,11 +26,13 @@ from app.core.registry import (
     ALERT_QUEUE_KEY,
     ALERT_REFUND_KEY,
     ALERT_STAKE_KEY,
+    ALERT_STUCK_KEY,
     ALERT_TICK_KEY,
     ALERT_WATCHER_KEY,
     MONEY_MODE_KEY,
     PAUSE_KEY,
     PAUSE_REASON_KEY,
+    STUCK_TX_KEY,
     TICK_KEY,
 )
 from app.db import SessionLocal
@@ -102,7 +105,17 @@ async def claim_once(session, key: str) -> bool:
     Семантика at-most-once для рассылок/выплат через общий примитив,
     переживающий рестарты и несколько реплик. SQLite и Postgres понимают
     ON CONFLICT DO NOTHING одинаково (см. comment в leaderboard).
+
+    Fail-fast на длину ключа: SQLite НЕ проверяет длину VARCHAR, Postgres
+    кидает StringDataRightTruncationError. Инцидент 2026-09-17 — маркер
+    refund:<tx_hash> (71 символ) упал в колонку VARCHAR(64) и зациклил
+    обработку навсегда, а локальные тесты на SQLite его пропускали. Здесь
+    оба движка проверяют одно и то же ограничение из схемы модели, чтобы
+    расхождение оставалось тестовой ошибкой, а не прод-инцидентом.
     """
+    limit = WatcherState.key.type.length
+    if len(key) > limit:
+        raise ValueError(f"claim-ключ {key!r} длиннее колонки key ({limit}) — см. registry/add_marker")
     result = await session.execute(
         text(
             "INSERT INTO watcher_state (key, value) VALUES (:k, '') "
@@ -236,6 +249,22 @@ async def _throttled(session, key: str) -> bool:
             pass
     await _set_state(session, key, _now().isoformat())
     return True
+
+
+def _load_only_stuck(raw: str | None) -> dict:
+    """Разбор JSON stuck-списка watcher'а без импорта ton_watch (loop-безопасно).
+
+    Пустой/битый JSON — пустой словарь: отсутствие записей не тревога.
+    """
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            return value
+    except (ValueError, TypeError):
+        pass
+    return {}
 
 
 async def check_anomalies(bot: Bot | None) -> list[str]:
@@ -381,6 +410,27 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
                             f"{pending_stakes_count} висят без подтверждения дольше "
                             "положенного. /stakes",
                         )
+        # 3d. Stuck-список watcher'а непуст — сбойные переводы зависли в казне.
+        #     Авто-лечение точит их само, но пока запись живёт, админ должен
+        #     видеть, что деньги не затерялись молча (инцидент Kote: 1 G казны
+        #     висел из-за схема-бага, а сообщения не приходило).
+        if settings.ton_enabled:
+            stuck_row = await session.get(WatcherState, STUCK_TX_KEY)
+            stuck = _load_only_stuck(stuck_row.value if stuck_row is not None else None)
+            if stuck:
+                stuck_count = len(stuck)
+                problems.append(
+                    f"сбойных переводов в stuck: {stuck_count} (в т.ч. брошенных: "
+                    f"{sum(1 for r in stuck.values() if isinstance(r, dict) and r.get('reported'))})"
+                )
+                if await _throttled(session, ALERT_STUCK_KEY):
+                    await notify_admins(
+                        bot,
+                        "⚠️ Сбойные переводы не обработаны: "
+                        f"{stuck_count} в stuck-списке (watcher_state[{STUCK_TX_KEY}]). "
+                        "Авто-лечение запущено, но записи дольше часа требуют "
+                        "взгляда: /blockchain",
+                    )
         # 4. Сверка баланса казначея с учётом БД. Две беды разного рода:
         #    дефицит под очередь (пополни — и всё уйдёт само) и расхождение
         #    с ожиданиями (ручной вывод, потерянные средства, чужой доступ).

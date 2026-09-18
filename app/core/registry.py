@@ -20,6 +20,7 @@ ALERT_TICK_KEY = "alert_tick_ts"
 ALERT_BALANCE_KEY = "alert_balance_ts"
 ALERT_REFUND_KEY = "alert_refund_ts"
 ALERT_STAKE_KEY = "alert_stake_ts"
+ALERT_STUCK_KEY = "alert_stuck_ts"
 
 # Пауза игры (стоп-кран) и режим «со ставками» / «без ставок».
 PAUSE_KEY = "game_paused_iso"

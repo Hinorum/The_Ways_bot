@@ -1288,6 +1288,90 @@ async def _migrate_wallet_formats(session) -> None:
         logger.info("Нормализовано адресов кошельков: %d, пропущено дублей: %d", changed, skipped)
 
 
+# Брошенные транзакции (курсор прошёл мимо после _STUCK_MAX_FAILS) лечатся не
+# только вручную: снимок перевода в stuck-записи позволяет переобработать его
+# заново — деплой мог починить баг версии, а сеть — ожить.
+_STUCK_HEAL_MAX_REFUND_FAILS = 3
+
+
+async def _heal_stuck_transfers(bot: Bot | None = None) -> int:
+    """Авто-лечение брошенных сбойных переводов (reported, cursor за ними).
+
+    Каждые stuck_heal_recheck_seconds по каждой записанной с ошибкой
+    транзакции (снимок в stuck-записи) заново запускается process_transfer:
+    обработалась правильно — уходит из списка, снова упала — остаётся для
+    следующего цикла лечения. Классификация идемпотентна (claim-маркеры
+    refund:/ledger:, unique tx участника), повтор не задваивает выплату.
+
+    Если после _STUCK_HEAL_MAX_REFUND_FAILS циклов лечение не возобновляется,
+    а перевод так и не разобран — деньги возвращаются отправителю авто-возвратом
+    (stash_refund с принудительным возвратом даже «пыли»: брошенная сумма не
+    должна зависать в казне до ручного разбора, как было в инциденте Kote).
+
+    Возвращает число исцелённых записей (для лога). Молча пропускает старые
+    записи без снимка (до миграции формата) — они остаются на ручной разбор.
+    """
+    healed = 0
+    now = time.time()
+    async with SessionLocal() as session:
+        stuck = await _read_stuck(session)
+        touched = False
+        for tx_hash, record in list(stuck.items()):
+            if not isinstance(record, dict) or not record.get("reported"):
+                continue
+            if not record.get("source"):
+                continue  # старый формат без снимка — только ручной разбор
+            if now - float(record.get("heal_at") or 0) < settings.stuck_heal_recheck_seconds:
+                continue
+            record["heal_at"] = now
+            touched = True
+            transfer = Transfer(
+                tx_hash=tx_hash,
+                source=str(record["source"]),
+                value_nanotons=int(record["value_nanotons"]),
+                comment=str(record.get("comment") or ""),
+                utime=int(record["utime"]),
+            )
+            try:
+                status = await process_transfer(transfer, bot=bot)
+                logger.info(
+                    "Stuck-транзакция %s исцелена повторной обработкой: %s",
+                    tx_hash[:16], status,
+                )
+                del stuck[tx_hash]
+                healed += 1
+            except Exception as exc:
+                record["heal_fails"] = int(record.get("heal_fails", 0)) + 1
+                logger.warning(
+                    "Stuck-транзакция %s всё ещё не обрабатывается (попытка %d): %s",
+                    tx_hash[:16], record["heal_fails"], exc,
+                )
+                if record["heal_fails"] >= _STUCK_HEAL_MAX_REFUND_FAILS:
+                    try:
+                        refund = await _stash_refund(
+                            session,
+                            transfer,
+                            None,
+                            ledger_result="stuck:abandoned",
+                            ledger_player_id=None,
+                            force=True,
+                        )
+                        logger.info(
+                            "Stuck-транзакция %s: авто-возврат отправителю (%s)",
+                            tx_hash[:16], refund,
+                        )
+                        del stuck[tx_hash]
+                        healed += 1
+                    except Exception as exc2:
+                        logger.error(
+                            "Stuck-транзакция %s: авто-возврат не удался: %s",
+                            tx_hash[:16], exc2,
+                        )
+        if healed or touched:
+            await _write_stuck(session, stuck)
+    return healed
+
+
 async def watch_once(bot: Bot | None = None) -> None:
     async with SessionLocal() as session:
         await _migrate_wallet_formats(session)
@@ -1317,7 +1401,20 @@ async def watch_once(bot: Bot | None = None) -> None:
             logger.warning("Перевод %s не обработан: %s (продолжаем остаток пачки)", transfer.tx_hash[:16], exc)
             entry = stuck.get(transfer.tx_hash)
             if entry is None:
-                stuck[transfer.tx_hash] = {"utime": transfer.utime, "fails": 1}
+                entry = {
+                    "utime": transfer.utime,
+                    "fails": 1,
+                    # Снимок перевода: после исчерпания лимита курсор проходит
+                    # мимо, и авто-лечение больше не может перечитать переводы
+                    # из API (окно ушло вперёд). Храним достаточно данных,
+                    # чтобы достроить Transfer и переобработать/вернуть деньги
+                    # даже за прошедшим окном. Без снимка старый формат записи
+                    # лечится только вручную.
+                    "source": transfer.source,
+                    "value_nanotons": transfer.value_nanotons,
+                    "comment": transfer.comment,
+                }
+                stuck[transfer.tx_hash] = entry
             else:
                 entry["fails"] += 1
             continue
@@ -1376,6 +1473,15 @@ async def watch_once(bot: Bot | None = None) -> None:
             # переводов: тишина в цепочке это здоровье, а не простой.
             await _write_beat(session)
             await _write_source(session, source)
+    try:
+        # Авто-лечение брошенных сбойных переводов: не даём деньгам зависать
+        # в казне до ручного разбора (инцидент Kote). Идемпотентно и не мешает
+        # циклу, если лечение временно падает.
+        healed = await _heal_stuck_transfers(bot)
+        if healed:
+            logger.info("Авто-лечение stuck-транзакций: исцелено %d", healed)
+    except Exception:
+        logger.exception("Авто-лечение stuck-транзакций упало (не мешает циклу)")
     if transfers:
         logger.info(
             "Цикл watcher: найдено %d переводов, курсор %d → %d, проход %s (источник %s), stuck %d",
