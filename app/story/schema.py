@@ -1,0 +1,252 @@
+"""Контракт и валидация сюжетной кассеты.
+
+Стандарт кассеты — docs/story_cassette_design.md, §4. Ядро (bay.py) ничего
+не генерирует: единственный источник сюжета дня — валидный файл кассеты.
+
+Кассета описывает ровно один календарный месяц (поле `month`: «YYYY-MM»),
+а дней в файле — сколько в этом месяце по календарю (28–31): день месяца
+= day_index кассеты. Поля и лимиты зеркалят то, что ест движок
+(app/rounds/rendering.py::_plan_and_render + _materialize_round + модели).
+
+Проверка делится на жёсткую (кассета отвергнута) и мягкую (warning):
+жёстко — структура, длины, позиции карт и стоп-слова; мягко — бюджет
+режиссуры rule_hint (≈ N/3 дней на каждый закон).
+"""
+
+from __future__ import annotations
+
+import calendar
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+# Лимиты из движка (см. docs/story_world_manifest.md, раздел «Формат полей»).
+FIELD_LIMITS = {
+    "chapter_title": 300,
+    "card_title": 120,
+    "hook_text": 700,
+    "tie_note": 200,
+}
+
+RULE_HINT_VALUES = ("any", "majority", "minority", "median")
+
+# Толеранс бюджета режиссуры rule_hint (warning, не ошибка): для каждого из
+# трёх законов ожидается ≈ N/3 дней месяца, отклонение в пределах toleration
+# допустимо.
+RULE_HINT_TOLERANCE = 2
+
+# Стоп-слова: реальные бренды/криптобиржи/обещания дохода + канон
+# «Lost Dogs: The Way», который мы не наследуем дословно. Эвристика — подстрока
+# в нижнем регистре; совпадение = кассета отвергнута.
+TABOO_WORDS = (
+    "догтаун",
+    "dogtown",
+    "woof",
+    "notcoin",
+    "$not",
+    "$bones",
+    "binance",
+    "bybit",
+    "okx",
+    "airdrop",
+    "токен",
+    "инвестици",
+    "доход",
+    "заработ",
+    "прибыль",
+    "памп",
+    "скам",
+    "криптобирж",
+    "сиквел",
+    "официальн",
+)
+
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def days_in_month(month: str) -> int:
+    """Число дней календарного месяца «YYYY-MM»: 28..31 (февраль — по годам)."""
+    year, month_number = (int(part) for part in month.split("-"))
+    return calendar.monthrange(year, month_number)[1]
+
+
+class CardModel(BaseModel):
+    """Одна карта пути (Position 0, 1 или 2) внутри дня."""
+
+    position: int
+    title: str = Field(min_length=1, max_length=FIELD_LIMITS["card_title"])
+    description: str = Field(min_length=1)
+    consequence: str = Field(min_length=1)
+    tag: str = "care"
+    image_path: str = ""
+
+    @field_validator("position")
+    @classmethod
+    def _position_in_range(cls, value: int) -> int:
+        if not 0 <= value <= 2:
+            raise ValueError("position должен быть 0, 1 или 2")
+        return value
+
+
+class DayModel(BaseModel):
+    """Один день пути: станция, глава и ровно три карты голосования."""
+
+    day_index: int = Field(ge=1)
+    station: str = Field(min_length=1)
+    chapter_title: str = Field(min_length=1, max_length=FIELD_LIMITS["chapter_title"])
+    chapter_text: str = Field(min_length=1)
+    hook_text: str | None = Field(default=None, max_length=FIELD_LIMITS["hook_text"])
+    rule_hint: str = "any"
+    cards: list[CardModel] = Field(min_length=3, max_length=3)
+    tie_note: str | None = Field(default=None, max_length=FIELD_LIMITS["tie_note"])
+
+    @field_validator("rule_hint")
+    @classmethod
+    def _rule_hint_known(cls, value: str) -> str:
+        if value not in RULE_HINT_VALUES:
+            raise ValueError(f"rule_hint должен быть одним из: {', '.join(RULE_HINT_VALUES)}")
+        return value
+
+    @model_validator(mode="after")
+    def _cards_positions_complete(self) -> DayModel:
+        positions = sorted(card.position for card in self.cards)
+        if positions != [0, 1, 2]:
+            raise ValueError("три карты дня должны занимать позиции 0, 1, 2 без дублей")
+        return self
+
+
+class Cassette(BaseModel):
+    """Валидированная кассета месяца: месяц «YYYY-MM» + ровно N дней месяца."""
+
+    cassette_id: str = Field(min_length=1)
+    month: str
+    title: str = Field(min_length=1)
+    logline: str | None = None
+    days: list[DayModel]
+
+    @field_validator("month")
+    @classmethod
+    def _month_is_calendar(cls, value: str) -> str:
+        if not MONTH_RE.fullmatch(value):
+            raise ValueError("month: ожидается «YYYY-MM»")
+        year, month_number = int(value[:4]), int(value[5:7])
+        try:
+            datetime(year, month_number, 1)
+        except ValueError:
+            raise ValueError(f"несуществующий месяц: {value}") from None
+        return value
+
+    @model_validator(mode="after")
+    def _days_match_month(self) -> Cassette:
+        expected = days_in_month(self.month)
+        indices = [day.day_index for day in self.days]
+        if len(indices) != expected:
+            raise ValueError(
+                f"дней в кассете {len(indices)}, а в месяце {self.month} по календарю"
+                f" {expected} (28..31)"
+            )
+        if indices != list(range(1, expected + 1)):
+            raise ValueError("day_index должны идти подряд 1..N без пропусков и дублей")
+        return self
+
+    def active_day(self, today: date) -> DayModel | None:
+        """День кассеты для даты, или None, если кассета сегодня не играется.
+
+        Кассета активна, только когда месяц (YYYY-MM) кассеты == месяцу даты:
+        день = день календарного месяца. За пределами своих N дней (в том
+        числе на стыке месяцев) кассета молчит — движок играет шаблон.
+        """
+        if today.strftime("%Y-%m") != self.month:
+            return None
+        if not 1 <= today.day <= len(self.days):
+            return None
+        return self.days[today.day - 1]
+
+    def rule_hint_budget_warnings(self) -> list[str]:
+        """Отклонения бюджета режиссуры: ≈N/3 на каждый закон, ±толеранс."""
+        counts = {value: 0 for value in RULE_HINT_VALUES}
+        for day in self.days:
+            counts[day.rule_hint] += 1
+        expected = len(self.days) / 3
+        warnings: list[str] = []
+        for law in ("majority", "minority", "median"):
+            if abs(counts[law] - expected) > RULE_HINT_TOLERANCE:
+                warnings.append(
+                    f"{law}: {counts[law]} дней вместо ≈{len(self.days) // 3} "
+                    f"(±{RULE_HINT_TOLERANCE})"
+                )
+        return warnings
+
+
+@dataclass
+class ValidationResult:
+    """Итог проверки кассеты: валидна ли, жёсткие ошибки и мягкие замечания."""
+
+    cassette: Cassette | None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.cassette is not None
+
+
+def _taboo_hits(cassette: Cassette) -> list[str]:
+    found: set[str] = set()
+    for day in cassette.days:
+        parts = [day.chapter_title, day.chapter_text, day.station]
+        if day.hook_text:
+            parts.append(day.hook_text)
+        if day.tie_note:
+            parts.append(day.tie_note)
+        for card in day.cards:
+            parts.extend((card.title, card.description, card.consequence))
+        haystack = " ".join(parts).lower()
+        for word in TABOO_WORDS:
+            if word.lower() in haystack:
+                found.add(word)
+    return sorted(found)
+
+
+def validate_payload(payload: dict) -> ValidationResult:
+    """Проверяет словарь кассеты (из JSON) против контракта.
+
+    Успех → cassette заполнен; иначе ошибки в errors. Мягкие замечания
+    (бюджет rule_hint) всегда в warnings.
+    """
+    warnings: list[str] = []
+    try:
+        cassette = Cassette.model_validate(payload)
+    except ValidationError as exc:
+        rows: list[str] = []
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            rows.append(f"{location}: {error['msg']}")
+        return ValidationResult(cassette=None, errors=rows)
+    taboo = _taboo_hits(cassette)
+    if taboo:
+        return ValidationResult(
+            cassette=None,
+            errors=[f"стоп-слова: {', '.join(taboo)}"],
+        )
+    warnings.extend(cassette.rule_hint_budget_warnings())
+    return ValidationResult(cassette=cassette, errors=[], warnings=warnings)
+
+
+def validate_file(path: str | Path) -> ValidationResult:
+    """Читает и валидирует файл кассеты (*.json, UTF-8, допускается BOM)."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        return ValidationResult(cassette=None, errors=[f"не прочитать файл: {exc}"])
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return ValidationResult(cassette=None, errors=[f"не JSON: {exc}"])
+    if not isinstance(payload, dict):
+        return ValidationResult(cassette=None, errors=["корень кассеты — объект JSON"])
+    return validate_payload(payload)

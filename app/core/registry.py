@@ -36,9 +36,14 @@ WEEK_READY_KEY = "week_leaderboard_ready"
 WEEK_CLAIM_WINDOW_KEY = "claim_window:week"
 MONTH_CLAIM_WINDOW_KEY = "claim_window:month"
 
-# --- Сезон / сюжет (app/season.py) ---
+# --- Сезон / сюжет (app/season.py, app/story/bay.py) ---
 
 RUN_START_KEY = "run_season_anchor"
+# «Следующая» кассета из библиотеки app/story/cassettes/, назначенная в /panel:
+# имя файла *.json. Проигрыватель зачитывает её при планировании дня; значение
+# лишь разрешает конфликт нескольких кассет одного месяца, активация всегда
+# по календарному месяцу кассеты.
+STORY_CASSETTE_NEXT_KEY = "story_cassette_next"
 
 # --- TON-watcher (app/ton_watch.py) ---
 

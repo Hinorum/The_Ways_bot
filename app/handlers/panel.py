@@ -36,6 +36,7 @@ from .payout import (
     _revenue_text,
     _stakes_panel_text,
 )
+from app.story.bay import get_next_cassette, list_cassettes, set_next_cassette
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ _PANEL_FOOTER = (
     "/pause … /resume — стоп-кран игры (техработы) ⏸\n"
     "/revenue — касса (Stars/Gram)\n"
     "/resetgame confirm [keepstory] — полный сброс ⚠️\n"
+    "/cassette — кассеты: библиотека и назначение «следующей» 📼\n"
 )
 
 
@@ -294,6 +296,7 @@ async def _panel_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="⚖️ Сверка казны", callback_data="panel:adjust"),
                 pause_button,
+                InlineKeyboardButton(text="📼 Кассеты", callback_data="panel:cassettes"),
             ],
             [
                 version_button,
@@ -464,6 +467,14 @@ async def on_panel_action(callback: CallbackQuery) -> None:
             await callback.message.answer(await _revenue_text())
             await callback.answer()
             return
+        if action == "cassettes":
+            async with SessionLocal() as session:
+                text = await _cassette_menu_text(session)
+            await callback.message.answer(
+                text, parse_mode=ParseMode.HTML, reply_markup=await _cassette_keyboard()
+            )
+            await callback.answer()
+            return
         if action in {"advance", "advance:go"}:
             if action != "advance:go":
                 # Досрочное закрытие — действие с последствиями. Кнопка всегда
@@ -514,4 +525,117 @@ async def on_panel_action(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестное действие.", show_alert=True)
     except Exception as exc:
         logger.exception("Действие пульта %s не удалось", action)
+        await callback.answer(f"Не получилось: {exc}", show_alert=True)
+
+
+async def _cassette_menu_text(session) -> str:
+    """Список библиотеки кассет: валидные файлы, назначение, замечания."""
+    today = datetime.now(timezone.utc).date()
+    next_name = await get_next_cassette(session)
+    lines = ["📼 <b>КАССЕТЫ</b>"]
+    lines.append(f"Следующая: <b>{next_name}</b>" if next_name else "Следующая: —")
+    entries = list_cassettes()
+    if not entries:
+        lines.append("Библиотека пуста: валидных кассет в каталоге нет.")
+        return "\n".join(lines)
+    month_now = today.strftime("%Y-%m")
+    for entry in entries:
+        if entry.cassette is None:
+            lines.append(
+                f"❌ <b>{entry.file_name}</b> — невалидна: {'; '.join(entry.errors)}"
+            )
+            continue
+        cassette = entry.cassette
+        marks = []
+        if entry.file_name == next_name:
+            marks.append("🟢 назначена")
+        elif cassette.month == month_now:
+            marks.append("▶ играется")
+        flags = " · " + " · ".join(marks) if marks else ""
+        lines.append(
+            f"📖 {entry.file_name} · {cassette.title} · {cassette.month} "
+            f"({len(cassette.days)} дней){flags}"
+        )
+        if entry.warnings:
+            lines.append(f"   ⚠️ {'; '.join(entry.warnings)}")
+    lines.append(
+        "\nКассета активна, когда её месяц совпал с текущим; до этого движок "
+        "играет шаблон «Путь I/II/III» (стоп на стыке месяцев)."
+    )
+    return "\n".join(lines)
+
+
+async def _cassette_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки назначения «следующей» кассеты (по одной на валидный файл)."""
+    async with SessionLocal() as session:
+        next_name = await get_next_cassette(session)
+    rows = []
+    for entry in list_cassettes():
+        if entry.cassette is None:
+            continue
+        mark = "🟢 " if entry.file_name == next_name else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{entry.cassette.title}",
+                    callback_data=f"cassette:set:{entry.file_name}",
+                )
+            ]
+        )
+    if next_name:
+        rows.append(
+            [InlineKeyboardButton(text="❌ Снять выбор", callback_data="cassette:clear")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("cassette"))
+async def cmd_cassette(message: Message) -> None:
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Пульт только для хранителя игры.")
+        return
+    async with SessionLocal() as session:
+        text = await _cassette_menu_text(session)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=await _cassette_keyboard())
+
+
+@router.callback_query(F.data.startswith("cassette:"))
+async def on_cassette_action(callback: CallbackQuery) -> None:
+    """Назначение «следующей» кассеты кнопкой списка; снять выбор — отдельной."""
+    if callback.from_user.id not in settings.admin_id_set:
+        await callback.answer("Пульт только для хранителя.", show_alert=True)
+        return
+    _, _, rest = callback.data.partition(":")
+    op, _, value = rest.partition(":")
+    try:
+        if op == "set":
+            valid_names = {
+                entry.file_name for entry in list_cassettes() if entry.cassette is not None
+            }
+            if value not in valid_names:
+                await callback.answer("Такой кассеты нет в библиотеке.", show_alert=True)
+                return
+            async with SessionLocal() as session:
+                await set_next_cassette(session, value)
+        elif op == "clear":
+            async with SessionLocal() as session:
+                await set_next_cassette(session, None)
+        else:
+            await callback.answer("Неизвестное действие.", show_alert=True)
+            return
+        if callback.message is not None:
+            async with SessionLocal() as session:
+                text = await _cassette_menu_text(session)
+            try:
+                await callback.message.edit_text(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=await _cassette_keyboard(),
+                )
+            except TelegramBadRequest as exc:
+                if "message is not modified" not in str(exc).lower():
+                    raise
+        await callback.answer("Готово.")
+    except Exception as exc:
+        logger.exception("Действие кассеты %s не удалось", callback.data)
         await callback.answer(f"Не получилось: {exc}", show_alert=True)

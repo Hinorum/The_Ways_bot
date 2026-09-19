@@ -164,6 +164,14 @@ async def boot_game(bot) -> None:
     бэкапа или профиля не смеет оставлять игру без тиков навсегда (раньше
     исключение до start_scheduler означало молчаливо мёртвое расписание)."""
     set_bot(bot)
+    # Сюжетный слой (необязателен): проигрыватель кассет включает себя, только
+    # если есть каталог библиотеки; сбой установки не смеет ронять игру.
+    try:
+        from app.story.bay import install_bay
+
+        install_bay()
+    except Exception:
+        log.exception("Проигрыватель кассет не поднялся — движок играет шаблон")
     try:
         await tick(bot)
     except Exception:

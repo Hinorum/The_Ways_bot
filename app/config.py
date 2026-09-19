@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     # не трогая код: получится другой мир с той же механикой.
     world_name: str = "Эхо Стаи"
 
+    # Каталог библиотеки сюжетных кассет (*.json, стандарт
+    # docs/story_cassette_design.md). Пусто — библиотека в app/story/cassettes/.
+    story_cassettes_dir: str = ""
+
     revote_enabled: bool = True
     revote_stars: int = 25
     revote_ton: float = 0.1
