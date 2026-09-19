@@ -184,6 +184,22 @@ async def test_status_carries_paths_and_media_is_empty(tmp_path) -> None:
     assert len(status) <= 4096
 
 
+async def test_status_carries_story_between_title_and_paths(tmp_path) -> None:
+    """Глава кассеты видна живым текстом: заголовок → проза → тропы."""
+    from app.broadcast import status_text
+
+    round_row = _round(9302, tmp_path)
+    for card in round_row.cards:
+        card.image_path = ""
+    status = await status_text(round_row)
+    assert "День проверки рассылки" in status
+    assert "Текст." in status
+    title_at = status.index("День проверки рассылки")
+    story_at = status.index("Текст.")
+    paths_at = status.index("I. Путь 0")
+    assert title_at < story_at < paths_at
+
+
 def _finished(day_index: int, media_dir) -> Round:
     finished = _round(day_index, media_dir)
     finished.status = RoundStatus.CLOSED
