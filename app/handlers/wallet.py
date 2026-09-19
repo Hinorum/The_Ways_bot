@@ -375,13 +375,7 @@ async def _cmd_wallet_impl(message: Message) -> None:
             if not player.wallet_address:
                 logger.info("/wallet uid=%s: кошелёк не привязан — открываю диалог привязки", message.from_user.id)
                 await _dialog_start(message.from_user.id)
-                await message.answer(
-                    f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего Gram-кошелька (бывший TON) — привяжу автоматически.\n"
-                    "Он начинается с UQ или EQ и выглядит примерно так:\n"
-                    "<code>UQD5…длинный набор букв и цифр</code>\n\n"
-                    "Отменить: напиши <b>отмена</b>.",
-                    parse_mode=ParseMode.HTML,
-                )
+                await message.answer(_wallet_bind_prompt(), parse_mode=ParseMode.HTML)
                 return
             logger.info(
                 "/wallet uid=%s: кошелёк привязан (%s…) — показываю вид",
@@ -403,6 +397,17 @@ async def _cmd_wallet_impl(message: Message) -> None:
         "чтобы не показать всем. Напиши мне в личные сообщения «/wallet» — "
         "дальше подскажу, а адрес пришлёшь там же.\n\n"
         "Подсказка: просто открой чат с ботом через профиль и нажми «Start»."
+    )
+
+
+def _wallet_bind_prompt() -> str:
+    """Приглашение к диалогу привязки кошелька (команда и кнопка меню)."""
+    return (
+        f"{hint_mark('wallet-dialog')} Пришли следующим сообщением адрес своего "
+        "Gram-кошелька (бывший TON) — привяжу автоматически.\n"
+        "Он начинается с UQ или EQ и выглядит примерно так:\n"
+        "<code>UQD5…длинный набор букв и цифр</code>\n\n"
+        "Отменить: напиши <b>отмена</b>."
     )
 
 
@@ -634,9 +639,8 @@ def _format_top(
     return "\n".join(lines)
 
 
-@router.message(Command("fund"))
-async def cmd_fund(message: Message) -> None:
-    """Прозрачность Фонда Стаи: баланс и последние движения журнала."""
+async def _fund_text() -> str:
+    """Прозрачность Фонда Стаи: баланс и последние движения журнала (текст)."""
     from app.models import PackFund as _Fund
     from app.models import PackFundLedger as _Ledger
 
@@ -673,11 +677,17 @@ async def cmd_fund(message: Message) -> None:
         f"{_pct_text(settings.pack_fund_pct)}% банка дня копится сюда и не раздаётся сам. "
         "Хранитель распоряжается вручную — каждая раздача видна в этом журнале."
     )
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+    return "\n".join(lines)
 
 
-@router.message(Command("top"))
-async def cmd_top(message: Message) -> None:
+@router.message(Command("fund"))
+async def cmd_fund(message: Message) -> None:
+    """Прозрачность Фонда Стаи: баланс и последние движения журнала."""
+    await message.answer(await _fund_text(), parse_mode=ParseMode.HTML)
+
+
+async def _top_text() -> str:
+    """Копилки недели и месяца с лидерами (текст; публичный, можно в группе)."""
     from app.leaderboard import _players_with_stake, _rank_window
     from app.models import WeeklyPot
     from app.weeks import iso_week_key, week_bounds
@@ -765,4 +775,9 @@ async def cmd_top(message: Message) -> None:
         ).scalar_one_or_none()
     month_pot_ton = from_nano(pot_row.nanotons) if pot_row is not None else 0.0
     week_pot_ton = from_nano(week_pot_row.nanotons) if week_pot_row is not None else 0.0
-    await message.answer(_format_top(week_rows, week_pot_ton, month_rows, month_pot_ton))
+    return _format_top(week_rows, week_pot_ton, month_rows, month_pot_ton)
+
+
+@router.message(Command("top"))
+async def cmd_top(message: Message) -> None:
+    await message.answer(await _top_text())

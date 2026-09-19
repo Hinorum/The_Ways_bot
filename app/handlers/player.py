@@ -23,7 +23,7 @@ from app.broadcast import POSITIONS, cards_keyboard, status_text
 from app.config import settings
 from app.db import SessionLocal
 from app.ton_utils import from_nano, to_nano
-from app.models import LeaderboardClaim, RoundStatus
+from app.models import LeaderboardClaim, Player, RoundStatus
 from app.rounds import get_active_round, get_latest_round
 from app.style import (
     day_mark,
@@ -45,7 +45,8 @@ def _commands_help() -> list[str]:
     """Справочный блок команд — общий для /start и /help."""
     lines = [
         "<b>Команды Стаи</b>",
-        "/start — как играть: вход в стаю",
+        "/start — как играть: вход в стаю и пульт",
+        "/menu — пульт LOST HOWL: всё по кнопкам",
         "/today — карты и тропы дня",
         "/score — твои Следы · /rank — место среди стаи",
     ]
@@ -82,10 +83,37 @@ def _commands_help() -> list[str]:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    """Памятка команд без стартового вступления."""
+    """Памятка команд с пультом вместо слепого меню."""
     lines = [f"{day_mark(str(message.from_user.id))} <b>{settings.world_name}</b>", ""]
     lines.extend(_commands_help())
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+    label = (
+        await _dm_toggle_label(message.from_user.id)
+        if message.from_user is not None
+        else "🔔 Итоги в личку: ВКЛ"
+    )
+    await message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_menu_keyboard(label),
+    )
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message) -> None:
+    """Пульт LOST HOWL: все действия дня по кнопкам."""
+    uid = str(message.from_user.id) if message.from_user else "0"
+    label = (
+        await _dm_toggle_label(message.from_user.id)
+        if message.from_user is not None
+        else "🔔 Итоги в личку: ВКЛ"
+    )
+    await message.answer(
+        f"{day_mark(uid)} <b>Пульт {settings.world_name}</b>\n\n"
+        "Кнопки вместо команд: день, счёт, кошелёк и стая — одним нажатием. "
+        "Путь голосования — всегда кнопкой под картой дня.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_menu_keyboard(label),
+    )
 
 
 @router.message(Command("invite"))
@@ -231,8 +259,48 @@ async def _record_start_referral(session, message: Message) -> None:
         logging.getLogger(__name__).exception("Реферальный переход не записан")
 
 
+def _menu_keyboard(toggle_label: str) -> InlineKeyboardMarkup:
+    """Пульт LOST HOWL: кнопки-действия вместо вызова команд слепым меню.
+
+    Сами действия — уже существующие колбэки, где их хватает (счёт, место,
+    ставка — с приватным окном в группе), или короткие menu:* сценарии.
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text="▶️ Сегодня", callback_data="menu:today"),
+            InlineKeyboardButton(text="⭐ Счёт", callback_data="score:view"),
+            InlineKeyboardButton(text="🐺 Место", callback_data="rank:view"),
+        ],
+        [
+            InlineKeyboardButton(text="💰 Кошелёк", callback_data="menu:wallet"),
+            InlineKeyboardButton(text="💸 Ставка", callback_data="stake:view"),
+        ],
+        [
+            InlineKeyboardButton(text="🏆 Копилки", callback_data="menu:top"),
+            InlineKeyboardButton(text="🐾 Фонд", callback_data="menu:fund"),
+        ],
+        [
+            InlineKeyboardButton(text=toggle_label, callback_data="dm:toggle"),
+            InlineKeyboardButton(text="❓ Помощь", callback_data="menu:help"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _dm_toggle_label(uid: int) -> str:
+    """Подпись кнопки личных рассылок по состоянию игрока."""
+    async with SessionLocal() as session:
+        player = await session.get(Player, uid)
+    subscribed = bool(getattr(player, "dm_subscribed", True))
+    return (
+        "🔔 Итоги в личку: ВКЛ"
+        if subscribed
+        else "🔕 Итоги в личку: ВЫКЛ"
+    )
+
+
 async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
-    """Личное меню /start: кнопка подписки на личку + претензии на места.
+    """Личное меню /start: пульт + претензии на места лидерборда.
 
     Кнопки Claim появляются только у игроков, попавших в ничью за призовые
     места закрытого периода, пока окно заявок открыто (приз ещё не роздан).
@@ -240,13 +308,11 @@ async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
     """
     subscribed = bool(getattr(player, "dm_subscribed", True))
     label = (
-        "🔔 Итоги и анонсы в личку: ВКЛ"
+        "🔔 Итоги в личку: ВКЛ"
         if subscribed
-        else "🔕 Итоги и анонсы в личку: ВЫКЛ"
+        else "🔕 Итоги в личку: ВЫКЛ"
     )
-    rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=label, callback_data="dm:toggle")]
-    ]
+    markup = _menu_keyboard(label)
     buttons: list[InlineKeyboardButton] = []
     if settings.leaderboard_claim_enabled:
         from app.leaderboard import _claim_window_players
@@ -259,8 +325,8 @@ async def _start_keyboard(session, player) -> InlineKeyboardMarkup:
             if player.id in tied_players:
                 buttons.append(InlineKeyboardButton(text=text, callback_data=data))
         if buttons:
-            rows.append(buttons)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+            markup.inline_keyboard.append(buttons)
+    return markup
 
 
 @router.callback_query(F.data == "dm:toggle")
@@ -493,6 +559,110 @@ async def on_rank_view(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "noop")
 async def on_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("menu:"))
+async def on_menu(callback: CallbackQuery) -> None:
+    """Пульт LOST HOWL: сценарии кнопок, не покрытые готовыми колбэками."""
+    action = callback.data.split(":", 1)[1] if ":" in callback.data else ""
+    handler = {
+        "today": _menu_today,
+        "wallet": _menu_wallet,
+        "top": _menu_top,
+        "fund": _menu_fund,
+        "help": _menu_help,
+    }.get(action)
+    if handler is None:
+        await callback.answer()
+        return
+    try:
+        await handler(callback)
+    except Exception:
+        logger.exception("Кнопка меню %s упала", action)
+        await callback.answer("Что-то щёлкнуло — попробуй ещё раз.", show_alert=True)
+
+
+async def _menu_today(callback: CallbackQuery) -> None:
+    """▶️ Сегодня — повтор дневного поста с кнопками голосования (где угодно)."""
+    if callback.message is None:
+        await callback.answer()
+        return
+    round_row = await _ensure_round()
+    await callback.message.answer(
+        await status_text(round_row, show_title=True),
+        parse_mode=ParseMode.HTML,
+        reply_markup=cards_keyboard(
+            round_row.id, remember=False, day_index=round_row.day_index
+        ),
+    )
+    await callback.answer()
+
+
+async def _menu_wallet(callback: CallbackQuery) -> None:
+    """💰 Кошелёк: в личке открывает диалог привязки, в группе — направляет."""
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
+        return
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Кошелёк — личное: открой профиль бота, нажми Start — там кнопка в пульте.",
+            show_alert=True,
+        )
+        return
+    from app.handlers.wallet import _wallet_bind_prompt, _wallet_view_safe
+    from .common import _dialog_start
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, callback.from_user)
+        if not player.wallet_address:
+            await _dialog_start(callback.from_user.id)
+            await callback.message.answer(
+                _wallet_bind_prompt(), parse_mode=ParseMode.HTML
+            )
+            await callback.answer()
+            return
+    await callback.message.answer(
+        await _wallet_view_safe(callback.from_user), parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+
+async def _menu_top(callback: CallbackQuery) -> None:
+    """🏆 Копилки недели и месяца — публичный пост."""
+    if callback.message is None:
+        await callback.answer()
+        return
+    from app.handlers.wallet import _top_text
+
+    await callback.message.answer(await _top_text())
+    await callback.answer()
+
+
+async def _menu_fund(callback: CallbackQuery) -> None:
+    """🐾 Фонд Стаи — публичный пост с журналом."""
+    if callback.message is None:
+        await callback.answer()
+        return
+    from app.handlers.wallet import _fund_text
+
+    await callback.message.answer(await _fund_text(), parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+async def _menu_help(callback: CallbackQuery) -> None:
+    """❓ Помощь — памятка с пультом."""
+    if callback.message is None or callback.from_user is None:
+        await callback.answer()
+        return
+    lines = [f"{day_mark(str(callback.from_user.id))} <b>{settings.world_name}</b>", ""]
+    lines.extend(_commands_help())
+    label = await _dm_toggle_label(callback.from_user.id)
+    await callback.message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_menu_keyboard(label),
+    )
     await callback.answer()
 
 
