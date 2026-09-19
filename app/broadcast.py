@@ -77,7 +77,7 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
         if stake_mode:
             phase = (
                 f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. "
-                "День решают ставки — банки путей скрыты до итогов. "
+                "День решают ставки — банки троп скрыты до итогов. "
                 "Голос без ставки ведёт только лидерборд."
             )
         else:

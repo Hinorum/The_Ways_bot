@@ -20,28 +20,27 @@ from app.config import settings
 
 # «О боте» в профиле — не больше 120 символов.
 BOT_ABOUT = (
-    "The Way's — своя версия Пути: три тропы, один канон. "
-    "Голосуй — а в последний день месяца лабиринт взвесит суд."
+    "Вокзал, где ушли поезда и остались собаки. Месяц — один Состав: "
+    "выбирай тропу — закон дня решит голос стаи."
 )
 
 # Приветственный экран пустого чата («Что умеет этот бот?»), лимит 512.
 def _bot_description() -> str:
     base = (
-        "Ты — голос стаи в лабиринте.\n"
-        "С тобой Баркод, Стежка, Вектор, Пиксель и Безымянная.\n"
-        "Дневник шепчет три тропы и объявляет правило дня.\n"
-        "Победивший путь впечатается в мир.\n"
-        "Крыса — память кругов. Анубис — судья месяца.\n"
+        "Город вокруг Вокзала: поезда ушли, а собаки остались разумными.\n"
+        "Месяц — один Состав, день — его станция. Стая бросает в котёл\n"
+        "грамм и выбирает тропу; закон дня выпадает честной энтропией.\n"
+        "С тобой стая Вокзала — Кай, Лампа, Винтик, Скрип и Мгла.\n"
     )
     hints = []
     if settings.revote_enabled:
-        hints.append("Передумал — смени путь (/change).")
+        hints.append("Передумал — смени тропу (/change).")
     if settings.ton_enabled:
-        hints.append("Веришь в расклад — ставь Gram (/wallet).")
+        hints.append("Веришь в расклад — бросай грамм в котёл (/stake).")
     tail = " ".join(hints)
     if tail:
         base += tail + "\n"
-    base += "Нажми START: Первый Лай уже ждёт."
+    base += "Нажми START: стая уже у котла."
     return base
 
 
@@ -49,26 +48,42 @@ BOT_DESCRIPTION = _bot_description()
 
 
 def _build_commands() -> tuple[list[BotCommand], list[BotCommand]]:
-    """Меню отражает включённые механики: без ставок — без кошелька и /top."""
+    """Меню отражает включённые механики: без ставок — без кошелька и /top.
+
+    Порядок логичный: онбординг, ежедневная игра, счёт, экономика, стая,
+    справка. В группе день живёт через /today; полная памятка — в /help.
+    """
     private = [
-        BotCommand(command="start", description="Открыть Эхо Стаи"),
+        BotCommand(command="start", description="Как играть: вход в стаю"),
         BotCommand(command="today", description="Карты дня"),
-        BotCommand(command="score", description="Твои Следы"),
+        BotCommand(command="score", description="Следы и рейтинг"),
     ]
     if settings.revote_enabled:
-        private.append(BotCommand(command="change", description="Сменить путь (⭐ или Gram)"))
+        private.append(
+            BotCommand(
+                command="change",
+                description=(
+                    "Сменить тропу (⭐ или Gram)"
+                    if settings.ton_enabled
+                    else f"Сменить тропу (⭐ {settings.revote_stars})"
+                ),
+            )
+        )
     if settings.ton_enabled:
         private += [
-            BotCommand(command="stake", description="Как поставить Gram на путь"),
             BotCommand(command="wallet", description="Привязать кошелёк Gram"),
+            BotCommand(command="stake", description="Как поставить Gram"),
             BotCommand(command="top", description="Копилки и лидеры"),
             BotCommand(command="fund", description="Фонд Стаи: баланс и журнал"),
         ]
+    private += [
+        BotCommand(command="invite", description="Позвать в стаю"),
+        BotCommand(command="help", description="Памятка команд"),
+    ]
     group = [
         BotCommand(command="today", description="Карты дня"),
+        BotCommand(command="help", description="Памятка команд"),
     ]
-    if settings.ton_enabled:
-        group.append(BotCommand(command="stake", description="Как поставить Gram"))
     return private, group
 
 

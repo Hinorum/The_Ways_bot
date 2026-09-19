@@ -68,7 +68,7 @@ async def _revote_status(user) -> tuple[str, int | None]:
         if vote is None:
             return f"{hint_mark('revote-free')} Ты ещё не выбрал путь сегодня — первый выбор бесплатный.", None
         return (
-            f"{path_mark('care', str(player.id))} Сегодня твой путь: {POSITIONS[vote.card_position]}. "
+            f"{path_mark('care', str(player.id))} Сегодня твоя тропа: {POSITIONS[vote.card_position]}. "
             "Оплати смену и нажми другую карту. Грант действует до закрытия дня.",
             round_row.id,
         )

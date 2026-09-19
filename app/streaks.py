@@ -86,7 +86,7 @@ def streak_text(player: Player) -> str:
     elif current >= TITLES[-1].correct_needed:
         lines.append("🏆 Ты достиг вершины. Стая идёт за тобой.")
     if current >= 10:
-        lines.append("🧠 Ты помнишь дольше остальных — память лабиринта держится на тебе.")
+        lines.append("🧠 Ты помнишь дольше остальных — память пути держится на тебе.")
 
     return "\n".join(lines)
 
