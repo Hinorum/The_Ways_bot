@@ -83,9 +83,9 @@ async def _plan_and_render(
         rule = rng.choice(rules)
     cards_payload = [dict(card) for card in _TEMPLATE_CARDS]
     chapter_text = (
-        f"День {day_index}. Состав стоит на станции — стая собирается у котла "
-        "выбрать тропу. Какая из трёх троп останется в следе, решит голос тех, "
-        "кто не промолчал."
+        f"День {day_index}. ПЛЕЙ — плёнка шелестит: стая сбивается в кадр "
+        "выбрать тропу. Из трёх черновиков кадра уцелеет один — его решит "
+        "голос тех, кто не промолчал."
     )
     return {
         "v": PREPARED_PAYLOAD_VERSION,

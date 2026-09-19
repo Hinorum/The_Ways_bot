@@ -236,7 +236,7 @@ class Settings(BaseSettings):
 
     # Мир игры. Название попадает в тексты бота. Можно поменять из Environment,
     # не трогая код: получится другой мир с той же механикой.
-    world_name: str = "Эхо Стаи"
+    world_name: str = "LOST HOWL"
 
     # Каталог библиотеки сюжетных кассет (*.json, стандарт
     # docs/story_cassette_design.md). Пусто — библиотека в app/story/cassettes/.
