@@ -17,13 +17,17 @@
 кассеты нового месяца. Выбор «следующей» кассеты из библиотеки делает храните
 в /panel (ключ STORY_CASSETTE_NEXT_KEY) — он разрешает лишь конфликт, когда в
 библиотеке несколько кассет одного месяца.
+
+Перемотки внутри месяца (switch кассеты) включаются по честному победителю
+движка: winner_card дня за день до развилки берётся из базы по дате opens_at.
+Кассета дорогу не выдумывает, ядро всё знает заранее.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, time, timezone
 from pathlib import Path
 
 from app.config import settings
@@ -155,6 +159,54 @@ async def get_next_cassette(session) -> str | None:
     return row.value if row is not None else None
 
 
+async def _decision_day_winner(session, decision: date) -> int | None:
+    """Честный победитель движка за календарный день, или None.
+
+    Перемотка решается только закрытым кадром: winner_card дня (at_day - 1)
+    из базы движка. Кассета ничего не выдумывает, а ищет раунд, открытый в
+    этот день (opens_at попадает в сутки). Победителя ещё нет / раунда нет —
+    перемотка не срабатывает (fail-open).
+    """
+    from sqlalchemy import select
+
+    from app.models import Round
+
+    start = datetime.combine(decision, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    row = await session.scalar(
+        select(Round)
+        .where(
+            Round.opens_at >= start,
+            Round.opens_at < end,
+            Round.winner_card.is_not(None),
+        )
+        .order_by(Round.id.desc())
+    )
+    return int(row.winner_card) if row is not None else None
+
+
+async def _resolution(
+    session, cassette: Cassette, today: date
+) -> tuple[str, list[date]]:
+    """Дорога дня и календарные даты решений, по которым она считается.
+
+    Отдельный шаг с чистыми аргументами, чтобы тест мог проверить выбор
+    дороги без базы: winners кассета получает от движка, а не сама.
+    """
+    decision_days = {
+        fork.at_day - 1 for fork in cassette.switch if fork.at_day <= today.day
+    }
+    winners: dict[int, int] = {}
+    decision_dates: list[date] = []
+    for n in sorted(decision_days):
+        decision_date = date(today.year, today.month, n)
+        winner = await _decision_day_winner(session, decision_date)
+        if winner is not None:
+            winners[n] = winner
+            decision_dates.append(decision_date)
+    return cassette.road(today.day, winners), decision_dates
+
+
 async def set_next_cassette(session, file_name: str | None) -> None:
     """Назначает/снимает «следующую» кассету (file_name=None — снять выбор)."""
     from app.models import WatcherState
@@ -180,7 +232,9 @@ async def _plan_and_render(
     Закон дня (rule/rule_entropy) приходит от оригинала — кассета его не
     трогает. Подставляются только глава и три пути; hook_text кассеты не
     персистится движком (StoryBeat сам пишет «сухой крючок» из chapter_text),
-    поэтому авторы кладут крючок в первую фразу главы.
+    поэтому авторы кладут крючок в первую фразу главы. Перемотки (switch)
+    кассеты включаются победителем движка за день до развилки; сбой расчёта
+    дороги не роняет кадр — играем главную дорогу (fail-open).
     """
     payload = await _original_rendering(
         session, day_index, opens_hint=opens_hint, entropy=entropy
@@ -193,15 +247,30 @@ async def _plan_and_render(
     cassette = active_cassette(
         today, selected=selected, directory=_library_dir
     )
-    day = cassette.active_day(today) if cassette is not None else None
+    if cassette is None:
+        return payload
+    try:
+        road, decision_dates = await _resolution(session, cassette, today)
+        day = cassette.day_for(today.day, road)
+    except Exception:
+        logger.warning(
+            "Дорога кассеты %s не рассчитана — играем главную",
+            cassette.cassette_id,
+            exc_info=True,
+        )
+        road = "main"
+        decision_dates = []
+        day = cassette.day_for(today.day, "main")
     if day is None:
         return payload
     logger.info(
-        "День %s (%s) взят из кассеты %s (%s)",
+        "День %s (%s) из кассеты %s (%s), дорога %s, решено днями: %s",
         today,
         day_index,
         cassette.cassette_id,
         cassette.month,
+        road,
+        ", ".join(item.isoformat() for item in decision_dates) or "—",
     )
     payload["chapter_title"] = day.chapter_title
     payload["chapter_text"] = day.chapter_text

@@ -8,6 +8,10 @@
 = day_index кассеты. Поля и лимиты зеркалят то, что ест движок
 (app/rounds/rendering.py::_plan_and_render + _materialize_round + модели).
 
+Помимо главной дороги (`days`) кассета может нести перемотки (`switch`):
+ветки месяца, включаемые честным победителем движка за день до развилки.
+Решение принимает не кассета, а ядро — кассета только объявляет условия.
+
 Проверка делится на жёсткую (кассета отвергнута) и мягкую (warning):
 жёстко — структура, длины, позиции карт и стоп-слова; мягко — бюджет
 режиссуры rule_hint (≈ N/3 дней на каждый закон).
@@ -30,7 +34,13 @@ FIELD_LIMITS = {
     "card_title": 120,
     "hook_text": 700,
     "tie_note": 200,
+    "attribution": 200,
+    "track_name": 32,
 }
+
+# Максимум перемоток (развилок) в одной кассете: ветвление месяца держим
+# строго «домашним» — 2–4 вилки на месяц, чтобы сюжет оставался обозримым.
+MAX_FORKS = 4
 
 RULE_HINT_VALUES = ("any", "majority", "minority", "median")
 
@@ -119,13 +129,45 @@ class DayModel(BaseModel):
         return self
 
 
+class SwitchModel(BaseModel):
+    """Перемотка месяца: развилка на альтернативную дорогу.
+
+    Решение кассета НЕ принимает сама: она спрашивает честного победителя
+    движка. Если в день `at_day - 1` стая пошла картой `winner` (позиция
+    0..2), то с дня `at_day` и до конца месяца играется дорога `to` —
+    список дней этого ответвления (day_index ровно at_day..N). Перемотка
+    возможна только по уже закрытому кадру: ветка не может появиться
+    раньше, чем движок объявил победителя предыдущего дня.
+    """
+
+    to: str = Field(min_length=1, max_length=FIELD_LIMITS["track_name"])
+    at_day: int = Field(ge=2)
+    winner: int
+    days: list[DayModel]
+
+    @field_validator("winner")
+    @classmethod
+    def _winner_in_range(cls, value: int) -> int:
+        if not 0 <= value <= 2:
+            raise ValueError("winner должен быть 0, 1 или 2")
+        return value
+
+
 class Cassette(BaseModel):
-    """Валидированная кассета месяца: месяц «YYYY-MM» + ровно N дней месяца."""
+    """Валидированная кассета месяца: месяц «YYYY-MM» + ровно N дней месяца.
+
+    `days` — главная дорога (main) на весь месяц. `switch` — перемотки:
+    альтернативные дороги, которые включаются, только если по итогам дня
+    до развилки движок отдал нужную карту. `attribution` — клеймо плёнки
+    (фанатский фанфик, не канон).
+    """
 
     cassette_id: str = Field(min_length=1)
     month: str
     title: str = Field(min_length=1)
     logline: str | None = None
+    attribution: str | None = Field(default=None, max_length=FIELD_LIMITS["attribution"])
+    switch: list[SwitchModel] = Field(default_factory=list)
     days: list[DayModel]
 
     @field_validator("month")
@@ -151,10 +193,30 @@ class Cassette(BaseModel):
             )
         if indices != list(range(1, expected + 1)):
             raise ValueError("day_index должны идти подряд 1..N без пропусков и дублей")
+        if len(self.switch) > MAX_FORKS:
+            raise ValueError(
+                f"перемоток {len(self.switch)}, а положено не больше {MAX_FORKS}"
+            )
+        roads: set[str] = {fork.to for fork in self.switch}
+        if len(roads) != len(self.switch):
+            raise ValueError("дороги перемоток не должны дублироваться")
+        for fork in self.switch:
+            if fork.at_day > expected:
+                raise ValueError(
+                    f"перемотка «{fork.to}»: at_day {fork.at_day} за пределами месяца "
+                    f"({expected} дней)"
+                )
+            want = list(range(fork.at_day, expected + 1))
+            got = [day.day_index for day in fork.days]
+            if got != want:
+                raise ValueError(
+                    f"перемотка «{fork.to}»: дни дороги должны идти {want[0]}..{want[-1]} "
+                    "без пропусков и дублей"
+                )
         return self
 
     def active_day(self, today: date) -> DayModel | None:
-        """День кассеты для даты, или None, если кассета сегодня не играется.
+        """День главной дороги для даты, или None, если кассета молчит.
 
         Кассета активна, только когда месяц (YYYY-MM) кассеты == месяцу даты:
         день = день календарного месяца. За пределами своих N дней (в том
@@ -162,9 +224,39 @@ class Cassette(BaseModel):
         """
         if today.strftime("%Y-%m") != self.month:
             return None
-        if not 1 <= today.day <= len(self.days):
+        return self.day_for(today.day, "main")
+
+    def road(self, today_day: int, winners: dict[int, int]) -> str:
+        """Активная дорога на календарный день месяца.
+
+        По умолчанию «main». Перемотка включается, если день до её черелка
+        (at_day - 1) выигран картой `winner` — тогда с at_day дорога меняется
+        на `to`. Перемотки независимы и смотрят только на честного победителя
+        движка; несколько сработавших каскадятся по датам — учитывается
+        последняя на этот день.
+        """
+        current = "main"
+        for fork in sorted(self.switch, key=lambda item: item.at_day):
+            if fork.at_day > today_day:
+                continue
+            if winners.get(fork.at_day - 1) == fork.winner:
+                current = fork.to
+        return current
+
+    def day_for(self, today_day: int, road: str) -> DayModel | None:
+        """День месяца на конкретной дороге, None — такой дороги/кадра нет."""
+        if road == "main":
+            if 1 <= today_day <= len(self.days):
+                return self.days[today_day - 1]
             return None
-        return self.days[today.day - 1]
+        for fork in self.switch:
+            if fork.to != road:
+                continue
+            offset = today_day - fork.at_day
+            if 0 <= offset < len(fork.days):
+                return fork.days[offset]
+            return None
+        return None
 
     def rule_hint_budget_warnings(self) -> list[str]:
         """Отклонения бюджета режиссуры: ≈N/3 на каждый закон, ±толеранс."""
@@ -197,7 +289,10 @@ class ValidationResult:
 
 def _taboo_hits(cassette: Cassette) -> list[str]:
     found: set[str] = set()
-    for day in cassette.days:
+    all_days = list(cassette.days)
+    for fork in cassette.switch:
+        all_days.extend(fork.days)
+    for day in all_days:
         parts = [day.chapter_title, day.chapter_text, day.station]
         if day.hook_text:
             parts.append(day.hook_text)
