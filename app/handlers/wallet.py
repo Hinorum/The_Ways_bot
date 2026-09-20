@@ -157,6 +157,7 @@ def _win_calc_text() -> str:
         - settings.leaderboard_rake_pct
         - settings.weekly_pot_pct
         - settings.pack_fund_pct
+        - settings.referral_pct
     )
     fee = settings.payout_fee_gram
     # Пример 1: банк 10 G, на верный путь 6 G двумя игроками (4 G и 2 G).
