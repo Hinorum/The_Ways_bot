@@ -414,15 +414,13 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     round_row.stake_counts_json = stake_counts_json
     round_row.tie_note = tie_note
     round_row.status = RoundStatus.CLOSED
-    # Сухой hook: последняя фраза главы-шаблона (макс. 120 символов).
-    chapter_text = round_row.chapter_text or ""
-    hook = chapter_text[:120] if chapter_text else None
+    # Канон дня — только победивший кадр. Крючка для следующей кассеты больше
+    # нет: каждая кассета — самостоятельная история, месяц не обязан ничем.
     session.add(
         StoryBeat(
             day_index=round_row.day_index,
             winning_title=winning_card.title,
             winning_text=winning_card.consequence,
-            hook_text=hook,
             win_rule=round_row.win_rule.value,
             vote_counts=counts_json,
         )

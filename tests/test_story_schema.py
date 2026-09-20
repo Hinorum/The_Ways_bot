@@ -176,13 +176,12 @@ def test_active_day_matches_calendar_day() -> None:
     assert result.cassette.active_day(date(2026, 9, 15)) is None
 
 
-def test_active_day_uses_first_phrase_as_hook_source() -> None:
+def test_active_day_keeps_full_scene_text() -> None:
+    """Глава кассеты — текст сцены (не крючок): сохраняется как есть, целиком."""
     result = validate_payload(_payload("2026-10", 31))
     day = result.cassette.active_day(date(2026, 10, 1))
     assert day is not None
-    # hook_text кассеты движок не персистит: StoryBeat пишет свой «сухой крючок»
-    # из первых 120 символов chapter_text — авторы кладут крючок в первую фразу.
-    assert day.chapter_text.startswith(day.chapter_text[:120])
+    assert day.chapter_text == _day(1)["chapter_text"]
 
 
 def test_validate_file_reads_and_validates(tmp_path) -> None:
