@@ -115,7 +115,7 @@ async def _today_stake_line(session, player_id: int) -> str | None:
 
 
 _WALLET_FALLBACK_TEXT = (
-    f"{warn_mark('wallet-view')} Раздел кошелька временно не отвечает.\n"
+    f"{warn_mark('wallet-view')} Раздел кошелька временно недоступен.\n"
     "Привязать или сменить адрес можно прямо сейчас: отправь одной строкой\n"
     "<code>/wallet UQ…</code> (или EQ…).\n"
     "Привязанный раньше кошелёк никуда не делся — переводы с него засчитываются."
