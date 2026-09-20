@@ -370,13 +370,13 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             block_ref = f" Жребий брошен блоком TON №{seqno}."
         if used_stakes:
             intro = (
-                f"Ставки путей разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
-                f"жребий закона выбрал путь {_ROMAN[winner]}."
+                f"Счёт Gram на сценах разделился ({' и '.join(_ROMAN[p] for p in tied)}) — "
+                f"жребий закона выбрал сцену {_ROMAN[winner]}."
             )
         else:
             intro = (
                 f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
-                f"жребий закона выбрал путь {_ROMAN[winner]}."
+                f"жребий закона выбрал сцену {_ROMAN[winner]}."
             )
         tie_note = f"{intro} {theater}{block_ref}"[:200]
     if not round_row.cards:
@@ -385,8 +385,8 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             round_row = loaded
     cards = {card.position: card for card in round_row.cards}
     winning_card = cards.get(winner) or SimpleNamespace(
-        title=f"Путь {_ROMAN[winner]}",
-        consequence="Тропа растворилась в тумане, не оставив следа.",
+        title=f"Сцена {_ROMAN[winner]}",
+        consequence="Сцена растворилась в тумане, не оставив следа.",
     )
     counts_json = json.dumps({str(key): value for key, value in display_counts.items()})
     stake_counts_json = (
