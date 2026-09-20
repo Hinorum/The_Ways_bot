@@ -418,7 +418,7 @@ async def _vote_reminder_job() -> None:
             ]
             text = (
                 f"🐺 Голосование закрывается через час.\n"
-                f"⚖️ Закон дня: {rule_phrase}."
+                f"🎬 Сцена дня: {rule_phrase}."
             )
 
             from app.broadcast import _dm_send_all

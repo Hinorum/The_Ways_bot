@@ -367,7 +367,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         block_ref = ""
         if round_row.tie_entropy:
             seqno = round_row.tie_entropy.split(":", 1)[0]
-            block_ref = f" Жребий брошен блоком TON №{seqno}, проверяемо в эксплорере."
+            block_ref = f" Жребий брошен блоком TON №{seqno}."
         if used_stakes:
             intro = (
                 f"Ставки путей разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "

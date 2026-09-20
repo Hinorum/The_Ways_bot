@@ -29,9 +29,9 @@ _FORGET_MARKS = ("forbidden", "not found", "kicked", "deactivated", "migrated")
 def cards_keyboard(round_id: int, remember: bool = False, day_index: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(text="Путь I", callback_data=f"vote:{round_id}:0"),
-            InlineKeyboardButton(text="Путь II", callback_data=f"vote:{round_id}:1"),
-            InlineKeyboardButton(text="Путь III", callback_data=f"vote:{round_id}:2"),
+            InlineKeyboardButton(text="Сцена I", callback_data=f"vote:{round_id}:0"),
+            InlineKeyboardButton(text="Сцена II", callback_data=f"vote:{round_id}:1"),
+            InlineKeyboardButton(text="Сцена III", callback_data=f"vote:{round_id}:2"),
         ],
     ]
     if remember:
@@ -76,14 +76,14 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
         )
         if stake_mode:
             phase = (
-                f"⚖️ Правило дня: {RULE_PHRASES[round_row.win_rule]}. "
-                "День решают ставки — банки троп скрыты до итогов. "
+                f"🎬 Сцена дня: {RULE_PHRASES[round_row.win_rule]}. "
+                "Кадр дня решает счёт Gram — банки троп скрыты до конца сцены. "
                 "Голос без ставки ведёт только лидерборд."
             )
         else:
             phase = (
-                f"⚖️ Правило дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
-                "Счёт скрыт до итогов."
+                f"🎬 Сцена дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
+                "Счёт троп скрыт до конца сцены."
             )
     elif round_row.status.value == "tallying":
         phase = "⏳ Подсчёт: итоги через мгновение."

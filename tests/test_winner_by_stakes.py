@@ -241,9 +241,9 @@ async def test_vote_counts_tally_is_separate(session: AsyncSession) -> None:
     assert closed.winner_card == 1
 
 
-async def test_results_post_measures_margin_in_gram(session: AsyncSession) -> None:
-    # Финальный пост итогов: исход решили ставки — «на волоске» считается в Gram
-    # (дискретность 0.01), а не в голосах, и явно сказано, что тропу выбрали ставки.
+async def test_results_post_stake_decided_text(session: AsyncSession) -> None:
+    # Финальный пост итогов: исход решили ставки — кадр уцелел по счёту Gram,
+    # а строки «на волоске» для ставок больше нет (она осталась голосам).
     rnd = Round(
         day_index=5,
         win_rule=WinRule.MAJORITY,
@@ -262,7 +262,6 @@ async def test_results_post_measures_margin_in_gram(session: AsyncSession) -> No
         path_stakes={0: 1_000_000_000, 1: 3_000_000_000, 2: 3_010_000_000},
         multiplier=None,
     )
-    # Путь 2 (3.01 Gram) едва обошёл путь 1 (3.00 Gram): хватило 0.01 Gram.
-    assert "0.01 Gram" in text
     assert "Тропа B" in text
-    assert "Тропу выбрали ставки дня" in text
+    assert "Кадр дня уцелел по счёту Gram" in text
+    assert "на волоске" not in text

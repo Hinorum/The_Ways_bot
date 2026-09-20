@@ -146,32 +146,14 @@ def format_results(
     multiplier: float | None = None,
 ) -> str:
     import json
-    from app.style import result_mark
 
     raw = json.loads(round_row.vote_counts_json or "{}")
     counts = {int(key): int(value) for key, value in raw.items()}
     stake_raw = json.loads(round_row.stake_counts_json or "{}")
     stake_counts = {int(key): int(value) for key, value in stake_raw.items()} if stake_raw else None
     names = {card.position: _tg_escape(card.title) for card in round_row.cards}
-    mark_key = str(getattr(round_row, "id", round_row.day_index))
-    lines = [f"{result_mark(mark_key)} День {round_row.day_index} закрыт"]
-    if stake_counts:
-        # «Запись на волоске» по решающему счёту: исход решили ставки, мерим
-        # средство перемещения (Gram) с дискретностью 0.01.
-        margin = flip_margin(
-            {position: int(round(value / 1e7)) for position, value in stake_counts.items()},
-            getattr(round_row, "win_rule", None),
-            round_row.winner_card,
-        )
-        if margin is not None:
-            k, alt = margin
-            alt_name = names.get(alt)
-            if alt_name:
-                lines.append(
-                    f"🩸 на волоске: ещё {k / 100:.2f} Gram за «{alt_name}» — "
-                    "и деньги повели тропу иначе."
-                )
-    else:
+    lines = [f"📼 День {round_row.day_index} — кадр записан"]
+    if not stake_counts:
         # «Запись на волоске»: сколько голосов отделяло мир от другого исхода.
         margin = flip_margin(counts, getattr(round_row, "win_rule", None), round_row.winner_card)
         if margin is not None:
@@ -184,9 +166,9 @@ def format_results(
                     "и тропа повела бы иначе."
                 )
     day_phrases = RULE_PHRASES if stake_counts else VOTE_RULE_PHRASES
-    lines.append(f"⚖️ Правило дня: {day_phrases[round_row.win_rule]}")
+    lines.append(f"🎬 Сцена дня: {day_phrases[round_row.win_rule]}")
     if stake_counts:
-        lines.append("💰 Тропу выбрали ставки дня — голоса ведут лидерборд")
+        lines.append("💰 Кадр дня уцелел по счёту Gram — голоса ведут лидерборд")
     lines.append("")
     stakes = path_stakes or {}
     for position in range(3):

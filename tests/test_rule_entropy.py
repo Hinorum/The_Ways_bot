@@ -146,6 +146,6 @@ async def test_results_post_has_no_block_mention() -> None:
     round_row.winner_card = 0
     round_row.vote_counts_json = '{"0": 2, "1": 1, "2": 2}'
     text = format_results(round_row)
-    assert "Правило дня" in text
+    assert "Сцена дня" in text
     assert "блок TON" not in text
     assert "href=" not in text and "http" not in text
