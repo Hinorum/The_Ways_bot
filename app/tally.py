@@ -163,7 +163,7 @@ def format_results(
                 word = _votes_word(k)
                 lines.append(
                     f"🩸 на волоске: ещё {k} {word} за «{alt_name}» — "
-                    "и тропа повела бы иначе."
+                    "и сцена повела бы иначе."
                 )
     day_phrases = RULE_PHRASES if stake_counts else VOTE_RULE_PHRASES
     lines.append(f"🎬 Сцена дня: {day_phrases[round_row.win_rule]}")

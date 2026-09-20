@@ -77,13 +77,13 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
         if stake_mode:
             phase = (
                 f"🎬 Сцена дня: {RULE_PHRASES[round_row.win_rule]}. "
-                "Кадр дня решает счёт Gram — банки троп скрыты до конца сцены. "
+                "Кадр дня решает счёт Gram — банки сцен скрыты до конца сцены. "
                 "Голос без ставки ведёт только лидерборд."
             )
         else:
             phase = (
                 f"🎬 Сцена дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
-                "Счёт троп скрыт до конца сцены."
+                "Счёт сцен скрыт до конца сцены."
             )
     elif round_row.status.value == "tallying":
         phase = "⏳ Подсчёт: итоги через мгновение."

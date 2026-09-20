@@ -522,7 +522,7 @@ async def cmd_rank(message: Message) -> None:
         f"🐺 Ты среди стаи: #{rank['overall_rank']} из {rank['overall_total']}\n"
         f"📅 Неделя на плёнке: #{rank['week_rank']} ({rank['week_votes']} голосов)\n"
         f"🗓 В месяце: {rank['month_votes']} голосов\n\n"
-        f"🔥 Серия верных путей: {player.current_streak} · Лучшая: {player.best_streak}"
+        f"🔥 Серия верных сцен: {player.current_streak} · Лучшая: {player.best_streak}"
     )
 
     if message.chat.type == ChatType.PRIVATE:

@@ -80,7 +80,7 @@ def test_streak_text_with_active_series():
     player = Player(current_streak=4, best_streak=6)
     text = streak_text(player)
     assert "Следопыт" in text
-    assert "Серия верных путей: 4" in text
+    assert "Серия верных сцен: 4" in text
     assert "Лучшая: 6" in text
     assert "Разведчик" in text
 
