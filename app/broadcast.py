@@ -121,7 +121,7 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     if show_title:
         head += f"{day_mark(str(round_row.id))} {round_row.chapter_title}\n\n"
     # Глава кассеты живым текстом между заголовком и развилкой: сначала стая
-    # слышит день, потом видит три тропы. Обрезка по словам страхует короткий
+    # слышит день, потом видит три сцены. Обрезка по словам страхует короткий
     # лимит (3900) — механика поста не вытеснится прозой.
     story = (
         f"{_clamp(round_row.chapter_text, 1500)}\n\n"

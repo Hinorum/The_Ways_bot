@@ -176,7 +176,7 @@ async def _gram_contributions(
 ) -> dict[int, int]:
     """Проверенные суммы ставок игроков за период [period_start, period_end).
 
-    Тайбрейк при равенстве верных путей: выше тот, кто поставил больше (в
+    Тайбрейк при равенстве верных сцен: выше тот, кто поставил больше (в
     нанотонах). Считаем только confirmed — ставки, вернённые вручную (refunded)
     исключены: денежные средства были не в риске, и такие игроки не имеют
     права претендовать на лидербордные копилки. Ставка другого контура
@@ -1045,7 +1045,7 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
                 or (name_row.first_name if name_row else None)
                 or f"игрок {pid}"
             )
-            paid.append((_MEDALS[place - 1], f"{name} — {correct} верных путей", amount))
+            paid.append((_MEDALS[place - 1], f"{name} — {correct} верных сцен", amount))
 
         # Места без достойного игрока переносятся в копилку новой недели.
         if rolled > 0:
@@ -1076,7 +1076,7 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
     for medal, name, amount in paid:
         lines.append(f"{medal} {name} — {amount / 1e9:.2f} Gram")
     lines.append(
-        "При равенстве верных путей Стая смотрит на вклад Gram, а затем — "
+        "При равенстве верных сцен Стая смотрит на вклад Gram, а затем — "
         "кто раньше всех заявил о месте."
     )
     if nomination:
