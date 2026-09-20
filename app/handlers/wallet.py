@@ -189,7 +189,7 @@ async def _wallet_view_text(user) -> str:
                 f"{money_mark(str(user.id))} Привязанный кошелёк:\n<code>{shown}</code>\n"
                 "Переводы считаются твоими, если отправлены именно с этого кошелька.\n"
                 "Чтобы перепривязать: пришли одной строкой <code>/wallet</code> и адрес.\n"
-                "Как поставить на путь: /stake"
+                "Как поставить Gram на сцену дня: /stake"
             )
             if player.wallet_verified:
                 body += "\n\nКошелёк подтверждён. Начисленные призы обрабатываются очередью выплат."
@@ -206,8 +206,8 @@ async def _wallet_view_text(user) -> str:
             body = (
                 f"{money_mark('none')} Кошелёк не привязан.\n"
                 "Напиши /wallet — бот сам попросит адрес следующим сообщением.\n"
-                "Он нужен для ставок на путь и призовых выплат (включая топ недели).\n"
-                "Как поставить на путь: /stake"
+                "Он нужен для ставок на сцены дня и призовых выплат (включая топ недели).\n"
+                "Как поставить Gram на сцену дня: /stake"
             )
         if stake_line:
             body += f"\n\n💸 {stake_line}"
@@ -449,16 +449,16 @@ _STAKE_HOWTO = (
 
 async def _stake_view_text(user) -> str:
     if not settings.ton_enabled:
-        return "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+        return "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай сцену кнопкой."
     # Версия без ставок (день в снимке режима): приём ставок закрыт для игроков.
     if await _active_round_money_mode() is False:
-        return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
+        return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай сцену кнопкой."
     if await _active_round_money_mode() is None:
         from app.ops import money_mode_enabled as _pending_mode
 
         async with SessionLocal() as session:
             if not await _pending_mode(session):
-                return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
+                return "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай сцену кнопкой."
     head = _STAKE_HOWTO.format(
         mark=money_mark(str(user.id)),
         min=settings.stake_min_ton,
@@ -544,7 +544,7 @@ async def on_stake_copy(callback: CallbackQuery) -> None:
 async def cmd_stake(message: Message) -> None:
     if message.chat.type != ChatType.PRIVATE:
         await message.answer(
-            "Как поставить Gram на путь — нажми кнопку.",
+            "Как поставить Gram на сцену дня — нажми кнопку.",
             reply_markup=_personal_keyboard("stake:view", "Как поставить"),
         )
         return
@@ -567,18 +567,18 @@ async def on_stake_view(callback: CallbackQuery) -> None:
         return
     # Попап кнопки виден только нажавшему — личные цифры можно показывать
     # прямо в группе, как у /score: сумма ставки и её статус.
-    hint = f"Ставка: переведи от {settings.stake_min_ton:g} Gram казначею со своего привязанного кошелька (/wallet), потом жми карту. Подробности: /stake в личке."
+    hint = f"Ставка: переведи от {settings.stake_min_ton:g} Gram казначею со своего привязанного кошелька (/wallet), потом жми сцену дня. Подробности: /stake в личке."
     try:
         async with SessionLocal() as session:
             player = await upsert_player(session, callback.from_user)
             if not settings.ton_enabled:
-                hint = "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай путь кнопкой."
+                hint = "Приём ставок сейчас выключен. Игра бесплатна: просто выбирай сцену кнопкой."
             elif await _active_round_money_mode() is False:
-                hint = "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай путь кнопкой."
+                hint = "Игра идёт в версии без ставок: приём ставок выключен. Просто выбирай сцену кнопкой."
             elif not player.wallet_address:
                 hint = (
                     f"Кошелёк не привязан: /wallet в личке. Потом переведи от "
-                    f"{settings.stake_min_ton:g} Gram казначею и жми карту пути."
+                    f"{settings.stake_min_ton:g} Gram казначею и жми сцену дня."
                 )
             else:
                 line = await _today_stake_line(session, player.id)
