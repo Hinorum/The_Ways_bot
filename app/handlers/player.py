@@ -47,17 +47,17 @@ def _commands_help() -> list[str]:
         "<b>Команды Стаи</b>",
         "/start — как играть: вход в стаю и пульт",
         "/menu — пульт LOST HOWL: всё по кнопкам",
-        "/today — карты и тропы дня",
+        "/today — кадр и сцены дня",
         "/score — твои Следы · /rank — место среди стаи",
     ]
     if settings.revote_enabled:
         lines.append(
-            "/change — сменить тропу (⭐ или Gram)"
+            "/change — перемотать кадр (⭐ или Gram)"
             if settings.ton_enabled
-            else f"/change — сменить тропу (⭐ {settings.revote_stars})"
+            else f"/change — перемотать кадр (⭐ {settings.revote_stars})"
         )
     if settings.ton_enabled:
-        lines.append("/wallet — кошелёк · /stake — как поставить Gram")
+        lines.append("/wallet — кошелёк · /stake — поставить Gram на кадр")
         lines.append("/top — копилки и лидеры")
         lines.append("/fund — Фонд Стаи: баланс и журнал")
         pool_pct = int(
@@ -69,13 +69,13 @@ def _commands_help() -> list[str]:
             - settings.referral_pct
         )
         lines.append(
-            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верную тропу; остальное — "
+            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный кадр; остальное — "
             "Фонд Стаи, копилки недели и месяца (/top), хранителю и пригласившим "
             f"({settings.referral_pct:.0f}%, см. /referral). Подробности: /stake."
         )
     lines += [
         "/invite — позвать в стаю по личной ссылке",
-        "/referral — твоя реферальная награда",
+        "/referral — твоя награда за приведённых",
         "/help — эта памятка",
     ]
     return lines
@@ -109,8 +109,8 @@ async def cmd_menu(message: Message) -> None:
     )
     await message.answer(
         f"{day_mark(uid)} <b>Пульт {settings.world_name}</b>\n\n"
-        "Кнопки вместо команд: день, счёт, кошелёк и стая — одним нажатием. "
-        "Путь голосования — всегда кнопкой под картой дня.",
+        "Всё по кнопкам: кадр дня, твой счёт, кошелёк и стая — одним нажатием. "
+        "Сцену голосования выбираешь кнопкой под кадром дня.",
         parse_mode=ParseMode.HTML,
         reply_markup=_menu_keyboard(label),
     )
