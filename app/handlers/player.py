@@ -463,11 +463,11 @@ async def _score_text(user) -> str:
         round_row = await get_active_round(session) or await get_latest_round(session)
         vote = await get_vote(session, round_row.id, player.id) if round_row else None
     if vote is None:
-        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не выбрал тропу."
+        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не отметил сцену дня."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
-        choice = f"{path_mark('care', str(user.id))} Твоя тропа сегодня: {POSITIONS[vote.card_position]}."
+        choice = f"{path_mark('care', str(user.id))} Твоя сцена дня: {POSITIONS[vote.card_position]}."
     else:
-        choice = f"Вчера ты шёл тропой {POSITIONS[vote.card_position]}."
+        choice = f"Вчера ты держал сцену {POSITIONS[vote.card_position]}."
 
     from app.streaks import streak_text
 
@@ -520,8 +520,8 @@ async def cmd_rank(message: Message) -> None:
     text = (
         f"{title.emoji} <b>{title.name}</b>\n\n"
         f"🐺 Ты среди стаи: #{rank['overall_rank']} из {rank['overall_total']}\n"
-        f"📅 На этой неделе: #{rank['week_rank']} ({rank['week_votes']} голосов)\n"
-        f"🗓 В этом месяце: {rank['month_votes']} голосов\n\n"
+        f"📅 Неделя на плёнке: #{rank['week_rank']} ({rank['week_votes']} голосов)\n"
+        f"🗓 В месяце: {rank['month_votes']} голосов\n\n"
         f"🔥 Серия верных путей: {player.current_streak} · Лучшая: {player.best_streak}"
     )
 
