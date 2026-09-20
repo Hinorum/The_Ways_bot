@@ -700,21 +700,22 @@ async def on_vote(callback: CallbackQuery) -> None:
     if result == "already":
         if outcome == "ok":
             await callback.answer(
-                f"Грант списан. Тропа изменена на {POSITIONS[position]}.", show_alert=True
+                f"Грант списан. Сцена дня изменена на {POSITIONS[position]}.",
+                show_alert=True,
             )
             return
         if outcome == "no_grant":
             hint = (
-                f"Путь уже выбран. Сменить его можно за ⭐{settings.revote_stars} — команда /change."
+                f"Сцена дня уже записана. Перемотать кадр — ⭐{settings.revote_stars}, команда /change."
             )
             if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
-                hint = "Путь уже выбран. Смена — платно, через личку бота: /change."
+                hint = "Сцена дня уже записана. Перемотка кадра платная — через личку бота: /change."
             await callback.answer(hint[:200], show_alert=True)
             return
     texts = {
-        "ok": f"{ok_mark(str(round_id))} Тропа {POSITIONS[position]} принята. Итоги скрыты до закрытия дня.",
+        "ok": f"{ok_mark(str(round_id))} Сцена {POSITIONS[position]} принята. Итоги скрыты до конца дня.",
         "already": f"{hint_mark('already')} Ты уже оставил свой след сегодня.",
-        "closed": f"{warn_mark('closed')} День закрыт — итоги скоро.",
-        "invalid": f"{warn_mark('invalid')} Этой тропы нет на карте.",
+        "closed": f"{warn_mark('closed')} День закрыт — кадр фиксируется, итоги скоро.",
+        "invalid": f"{warn_mark('invalid')} Такой сцены нет в кадре дня.",
     }
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)
