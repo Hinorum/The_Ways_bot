@@ -715,15 +715,15 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                         bot,
                         player.id,
                         f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                        "за смену пути платить нечего — ты ещё не выбрал путь в этот день. "
-                        "Первый выбор бесплатный: жми карту дня, без оплаты.",
+                        "за перемотку кадра платить нечего — ты ещё не отметил сцену дня. "
+                        "Первая запись бесплатная: жми сцену дня, без оплаты.",
                     )
                 elif status == "revote_too_large":
                     await _dm_stake(
                         bot,
                         player.id,
                         f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                        "сумма с rv:-мемо превышает минимум ставки — это ставка, а не смена пути. "
+                        "сумма с rv:-мемо превышает минимум ставки — это ставка, а не перемотка кадра. "
                         "Отправь без rv:-мемо, чтобы поставить.",
                     )
                 elif status == "revote_money_off":
@@ -731,7 +731,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                         bot,
                         player.id,
                         f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                        "сегодня бесплатный день — смена пути ничего не стоит, деньги не сгорят.",
+                        "сегодня бесплатный день — перемотка кадра ничего не стоит, деньги не сгорят.",
                     )
                 else:
                     await _dm_stake(
@@ -751,8 +751,8 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 await _dm_stake(
                     bot,
                     player.id,
-                    f"💎 Смена пути оплачена ({from_nano(transfer.value_nanotons):g} Gram, "
-                    "без мемо — зачтено по сумме). Нажми другую карту, чтобы сменить выбор.",
+                    f"💎 Перемотка кадра оплачена ({from_nano(transfer.value_nanotons):g} Gram, "
+                    "без мемо — зачтено по сумме). Нажми другую сцену — кадр перемотан.",
                 )
                 return "revote_ok"
             if auto_status == "no_vote":
@@ -769,8 +769,8 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     bot,
                     player.id,
                     f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                    "он меньше минимума ставки, а за смену пути платить нечего — "
-                    "ты ещё не выбрал путь сегодня. Первый выбор бесплатный: жми карту "
+                    "он меньше минимума ставки, а за перемотку кадра платить нечего — "
+                    "ты ещё не отметил сцену дня. Первая запись бесплатная: жми сцену "
                     "дня, без оплаты.",
                 )
                 return "revote_auto_no_vote"
@@ -793,7 +793,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     bot,
                     player.id,
                     f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                    "сегодня бесплатный день — смена пути бесплатна, платить не нужно.",
+                    "сегодня бесплатный день — перемотка кадра бесплатна, платить не нужно.",
                 )
                 return "revote_auto_money_off"
         round_result = await session.execute(

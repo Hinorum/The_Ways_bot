@@ -64,9 +64,9 @@ def _build_commands() -> tuple[list[BotCommand], list[BotCommand]]:
             BotCommand(
                 command="change",
                 description=(
-                    "Сменить тропу (⭐ или Gram)"
+                    "Перемотать кадр (⭐ или Gram)"
                     if settings.ton_enabled
-                    else f"Сменить тропу (⭐ {settings.revote_stars})"
+                    else f"Перемотать кадр (⭐ {settings.revote_stars})"
                 ),
             )
         )
