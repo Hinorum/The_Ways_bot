@@ -56,7 +56,7 @@ async def test_score_in_private_is_direct() -> None:
     await cmd_score(message)
     text = message.answer.call_args.args[0]
     assert "Следы" in text
-    assert "Верных путей" in text
+    assert "Верных сцен" in text
 
 
 async def test_score_button_alert_private_to_presser() -> None:

@@ -67,14 +67,13 @@ async def update_streak(session: AsyncSession, player: Player, was_correct: bool
         player.current_streak = 0
 
 
-def streak_text(player: Player) -> str:
-    """Форматирует текст стрика для /score."""
+def streak_lines(player: Player) -> list[str]:
+    """Строки серии без заголовка титула: серия, цель и память кадра."""
     current = player.current_streak
     best = player.best_streak
-    title = title_for_streak(current)
     nxt = next_title(current)
 
-    lines = [f"{title.emoji} <b>{title.name}</b>"]
+    lines: list[str] = []
     if current > 0:
         lines.append(f"🔥 Серия верных сцен: {current} · Лучшая: {best}")
     else:
@@ -82,22 +81,31 @@ def streak_text(player: Player) -> str:
 
     if nxt:
         remaining = nxt.correct_needed - current
-        lines.append(f"📈 До следующего титула: {nxt.emoji} {nxt.name} — ещё {remaining} {remaining_word(remaining)}")
+        lines.append(
+            f"📈 До следующего титула: {nxt.emoji} {nxt.name} — "
+            f"ещё {remaining} {remaining_word(remaining)}"
+        )
     elif current >= TITLES[-1].correct_needed:
         lines.append("🏆 Ты достиг вершины. Стая идёт за тобой.")
     if current >= 10:
-        lines.append("🧠 Ты помнишь дольше остальных — память пути держится на тебе.")
+        lines.append("🧠 Ты помнишь дольше остальных — память кадра держится на тебе.")
 
-    return "\n".join(lines)
+    return lines
+
+
+def streak_text(player: Player) -> str:
+    """Форматирует текст стрика для /score."""
+    title = title_for_streak(player.current_streak)
+    return "\n".join([f"{title.emoji} <b>{title.name}</b>", *streak_lines(player)])
 
 
 def remaining_word(n: int) -> str:
-    """Склонение слова «путь/пути/путей» для числа."""
+    """Склонение слова «сцена/сцены/сцен» для числа."""
     if n % 10 == 1 and n % 100 != 11:
-        return "путь"
+        return "сцена"
     if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
-        return "пути"
-    return "путей"
+        return "сцены"
+    return "сцен"
 
 
 async def calc_rank(session: AsyncSession, player_id: int) -> dict:

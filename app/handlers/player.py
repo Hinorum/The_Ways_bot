@@ -31,7 +31,6 @@ from app.style import (
     ok_mark,
     path_mark,
     result_mark,
-    strip_html,
     warn_mark,
 )
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
@@ -48,7 +47,7 @@ def _commands_help() -> list[str]:
         "/start — как играть: вход в стаю и пульт",
         "/menu — пульт LOST HOWL: всё по кнопкам",
         "/today — кадр и сцены дня",
-        "/score — твои Следы · /rank — место среди стаи",
+        "/score — карточка Стаи: Следы, серия и место среди стаи",
     ]
     if settings.revote_enabled:
         lines.append(
@@ -458,10 +457,25 @@ async def cmd_today(message: Message) -> None:
 
 
 async def _score_text(user) -> str:
+    """Единый экран Стаи: кадр, Следы, серия, место и личный блок.
+
+    Одна карточка для /score и /rank: сцена дня, прогресс и место среди
+    стаи, затем личные данные (кошелёк, ставка дня, приведённые в стаю).
+    В группе сюда не показываем — только приватный поп-ап _score_short.
+    """
+    from app.handlers.wallet import _today_stake_line
+    from app.referrals import invited_count
+    from app.streaks import calc_rank, streak_lines, title_for_streak
+
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
         round_row = await get_active_round(session) or await get_latest_round(session)
         vote = await get_vote(session, round_row.id, player.id) if round_row else None
+        rank = await calc_rank(session, player.id)
+        stake_line = await _today_stake_line(session, player.id)
+
+    invited = await invited_count(user.id)
+
     if vote is None:
         choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не отметил сцену дня."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
@@ -469,27 +483,84 @@ async def _score_text(user) -> str:
     else:
         choice = f"Вчера ты держал сцену {POSITIONS[vote.card_position]}."
 
-    from app.streaks import streak_text
+    personal: list[str] = []
+    if settings.ton_enabled:
+        if player.wallet_address:
+            state = "подтверждён" if player.wallet_verified else "ждёт подтверждения"
+            personal.append(f"💰 Кошелёк: привязан ({state})")
+        else:
+            personal.append("💰 Кошелёк: не привязан — /wallet в личке")
+        if stake_line:
+            personal.append(f"💸 {stake_line}")
+    if invited:
+        personal.append(f"🐾 Приведено в стаю: {invited}")
 
-    streak_info = streak_text(player)
-    text = (
-        f"{choice}\n{result_mark(f'score:{user.id}')} "
-        f"Следы: {player.score} · Верных путей: {player.correct_picks}\n\n"
-        f"{streak_info}"
+    title = title_for_streak(player.current_streak)
+    lines = [
+        f"{title.emoji} <b>{title.name}</b> — карточка Стаи",
+        choice,
+        "",
+        f"{result_mark(f'score:{user.id}')} Следы: {player.score} · Верных сцен: {player.correct_picks}",
+        *streak_lines(player),
+        "",
+        f"🐺 Место в стае: #{rank['overall_rank']} из {rank['overall_total']}",
+        f"📅 Неделя на плёнке: #{rank['week_rank']} из {rank['week_total']} ({rank['week_votes']} голосов)",
+        f"🗓 В месяце: {rank['month_votes']} голосов",
+    ]
+    if personal:
+        lines.append("")
+        lines.extend(personal)
+    return "\n".join(lines)
+
+
+async def _score_short(user) -> str:
+    """Компактная карточка для окна колбэка: лимит Telegram — 200 символов."""
+    from app.streaks import calc_rank, title_for_streak
+
+    async with SessionLocal() as session:
+        player = await upsert_player(session, user)
+        rank = await calc_rank(session, player.id)
+
+    title = title_for_streak(player.current_streak)
+    return (
+        f"{title.emoji} {title.name}\n"
+        f"{result_mark(f'score:{user.id}')} Следы: {player.score} · "
+        f"Верных сцен: {player.correct_picks}\n"
+        f"🔥 Серия: {player.current_streak} · Лучшая: {player.best_streak}\n"
+        f"🐺 #{rank['overall_rank']}/{rank['overall_total']} · "
+        f"📅 #{rank['week_rank']} ({rank['week_votes']})"
     )
-    return text
+
+
+def _score_keyboard() -> InlineKeyboardMarkup:
+    """Быстрые действия с карточки Стаи: кошелёк, ставка, копилки и фонд."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💰 Кошелёк", callback_data="menu:wallet"),
+                InlineKeyboardButton(text="💸 Ставка", callback_data="stake:view"),
+            ],
+            [
+                InlineKeyboardButton(text="🏆 Копилки", callback_data="menu:top"),
+                InlineKeyboardButton(text="🐾 Фонд", callback_data="menu:fund"),
+            ],
+        ]
+    )
 
 
 @router.message(Command("score"))
 async def cmd_score(message: Message) -> None:
-    text = await _score_text(message.from_user)
-    if message.chat.type == ChatType.PRIVATE:
-        await message.answer(text, parse_mode=ParseMode.HTML)
+    if message.chat.type != ChatType.PRIVATE:
+        # В группе личные цифры не показываем: только кнопка с приватным окном.
+        await message.answer(
+            "Твой счёт увидишь только ты — нажми кнопку.",
+            reply_markup=_personal_keyboard("score:view", "Мой счёт"),
+        )
         return
-    # В группе личные цифры не показываем: только кнопка с приватным окном.
     await message.answer(
-        "Твой счёт увидишь только ты — нажми кнопку.",
-        reply_markup=_personal_keyboard("score:view", "Мой счёт"),
+        await _score_text(message.from_user),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_score_keyboard(),
     )
 
 
@@ -497,36 +568,26 @@ async def cmd_score(message: Message) -> None:
 async def on_score_view(callback: CallbackQuery) -> None:
     if callback.message is not None and callback.message.chat.type == ChatType.PRIVATE:
         await callback.message.answer(
-            await _score_text(callback.from_user), parse_mode=ParseMode.HTML
+            await _score_text(callback.from_user),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_score_keyboard(),
         )
         await callback.answer()
         return
-    # Лимит окна — 200 символов, счёт компактный и помещается. Окно колбэка
-    # не рендерит HTML — теги титула убираем, иначе их было бы видно сырыми.
-    text = await _score_text(callback.from_user)
-    await callback.answer(strip_html(text)[:200], show_alert=True)
+    # Окно колбэка не рендерит HTML и держит лимит 200 символов — отдаём
+    # заранее собранную компактную карточку без разметки.
+    await callback.answer(await _score_short(callback.from_user), show_alert=True)
 
 
 @router.message(Command("rank"))
 async def cmd_rank(message: Message) -> None:
-    """Показывает рейтинг игрока среди стаи."""
-    from app.streaks import calc_rank, title_for_streak
-
-    async with SessionLocal() as session:
-        player = await upsert_player(session, message.from_user)
-        rank = await calc_rank(session, player.id)
-        title = title_for_streak(player.current_streak)
-
-    text = (
-        f"{title.emoji} <b>{title.name}</b>\n\n"
-        f"🐺 Ты среди стаи: #{rank['overall_rank']} из {rank['overall_total']}\n"
-        f"📅 Неделя на плёнке: #{rank['week_rank']} ({rank['week_votes']} голосов)\n"
-        f"🗓 В месяце: {rank['month_votes']} голосов\n\n"
-        f"🔥 Серия верных сцен: {player.current_streak} · Лучшая: {player.best_streak}"
-    )
-
+    """Показывает тот же единый экран, что и /score: счёт и место среди стаи."""
     if message.chat.type == ChatType.PRIVATE:
-        await message.answer(text, parse_mode=ParseMode.HTML)
+        await message.answer(
+            await _score_text(message.from_user),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_score_keyboard(),
+        )
     else:
         await message.answer(
             "Рейтинг — только в личке.",
@@ -536,22 +597,10 @@ async def cmd_rank(message: Message) -> None:
 
 @router.callback_query(F.data == "rank:view")
 async def on_rank_view(callback: CallbackQuery) -> None:
-    from app.streaks import calc_rank, title_for_streak
-
     if callback.message is None:
         await callback.answer()
         return
-    async with SessionLocal() as session:
-        player = await upsert_player(session, callback.from_user)
-        rank = await calc_rank(session, player.id)
-        title = title_for_streak(player.current_streak)
-
-    text = (
-        f"{title.emoji} Рейтинг\n"
-        f"📊 #{rank['overall_rank']} из {rank['overall_total']} | "
-        f"📅 Неделя: #{rank['week_rank']} ({rank['week_votes']})"
-    )
-    await callback.answer(text[:200], show_alert=True)
+    await callback.answer(await _score_short(callback.from_user), show_alert=True)
 
 
 @router.callback_query(F.data == "noop")
