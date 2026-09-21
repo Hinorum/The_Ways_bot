@@ -108,8 +108,8 @@ async def cmd_menu(message: Message) -> None:
     )
     await message.answer(
         f"{day_mark(uid)} <b>Пульт {settings.world_name}</b>\n\n"
-        "Всё по кнопкам: кадр дня, твой счёт, кошелёк и стая — одним нажатием. "
-        "Сцену голосования выбираешь кнопкой под кадром дня.",
+        "Всё по кнопкам: кадр дня, твой счёт и место в стае, кошелёк — одним "
+        "нажатием. Сцену голосования выбираешь кнопкой под кадром дня.",
         parse_mode=ParseMode.HTML,
         reply_markup=_menu_keyboard(label),
     )
@@ -259,14 +259,14 @@ async def _record_start_referral(session, message: Message) -> None:
 def _menu_keyboard(toggle_label: str) -> InlineKeyboardMarkup:
     """Пульт LOST HOWL: кнопки-действия вместо вызова команд слепым меню.
 
-    Сами действия — уже существующие колбэки, где их хватает (счёт, место,
-    ставка — с приватным окном в группе), или короткие menu:* сценарии.
+    Сами действия — уже существующие колбэки, где их хватает (карточка
+    «счёт и место», ставка — с приватным окном в группе), или короткие
+    menu:* сценарии.
     """
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text="▶️ Сегодня", callback_data="menu:today"),
-            InlineKeyboardButton(text="⭐ Счёт", callback_data="score:view"),
-            InlineKeyboardButton(text="🐺 Место", callback_data="rank:view"),
+            InlineKeyboardButton(text="⭐ Счёт и место", callback_data="score:view"),
         ],
         [
             InlineKeyboardButton(text="💰 Кошелёк", callback_data="menu:wallet"),
