@@ -517,6 +517,8 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
             # строка-накопитель; деньги остаются на кошельке казначея и забираются
             # хранителем вручную (см. /panel, ручной вывод).
             if fund_cut > 0:
+                from app.handlers.wallet import _pct_text
+
                 fund_row = (
                     await session.execute(
                         select(PackFund).order_by(PackFund.id).limit(1)
@@ -532,7 +534,7 @@ async def finalize_day_payouts(session: AsyncSession, round_row: Round) -> int:
                         entry_type="in",
                         amount_nanotons=fund_cut,
                         round_id=round_row.id,
-                        note=f"1% банка дня {round_row.day_index}",
+                        note=f"{_pct_text(settings.pack_fund_pct)}% банка дня {round_row.day_index}",
                     )
                 )
             round_row.pot_nanotons = pot
