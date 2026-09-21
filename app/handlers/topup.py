@@ -67,9 +67,9 @@ async def _revote_status(user) -> tuple[str, int | None]:
             return f"{warn_mark('revote-closed')} Кадр уже записан — перемотать нельзя.", None
         vote = await get_vote(session, round_row.id, player.id)
         if vote is None:
-            return f"{hint_mark('revote-free')} Ты ещё не отметил сцену дня — первая запись бесплатная.", None
+            return f"{hint_mark('revote-free')} Ты ещё не сделал выбор дня — первая запись бесплатная.", None
         return (
-            f"{path_mark('care', str(player.id))} Сегодня твоя сцена дня: {POSITIONS[vote.card_position]}. "
+            f"{path_mark('care', str(player.id))} Сегодня твой выбор: {POSITIONS[vote.card_position]}. "
             "Оплати перемотку кадра и нажми другую сцену. Грант действует до конца дня.",
             round_row.id,
         )
