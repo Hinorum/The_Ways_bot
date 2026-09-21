@@ -300,7 +300,7 @@ def format_economics(stats: dict) -> str:
     ton = from_nano
     lines.insert(0, f"💰 Банк дня: {ton(stats['pot']):.2f} Gram")
     if stats["refunded"]:
-        lines.append("🎯 На верный путь не поставил никто — все ставки возвращены игрокам")
+        lines.append("🎯 На верную сцену не поставил никто — все ставки возвращены игрокам")
     if stats["fund_total"] > 0:
         lines.append(f"🐾 В Фонде Стаи: {ton(stats['fund_total']):.2f} Gram")
     if stats.get("referral_today", 0) > 0:

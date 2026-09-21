@@ -661,8 +661,8 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                         bot,
                         player.id,
                         f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
-                        "за перемотку кадра платить нечего — ты ещё не отметил сцену дня. "
-                        "Первая запись бесплатная: жми сцену дня, без оплаты.",
+                        "за перемотку кадра платить нечего — ты ещё не сделал выбор дня. "
+                        "Первая запись бесплатная: жми свой вариант, без оплаты.",
                     )
                 elif status == "revote_too_large":
                     await _dm_stake(
@@ -698,7 +698,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     bot,
                     player.id,
                     f"💎 Перемотка кадра оплачена ({from_nano(transfer.value_nanotons):g} Gram, "
-                    "без мемо — зачтено по сумме). Нажми другую сцену — кадр перемотан.",
+                    "без мемо — зачтено по сумме). Нажми другой вариант — кадр перемотан.",
                 )
                 return "revote_ok"
             if auto_status == "no_vote":
@@ -716,8 +716,8 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                     player.id,
                     f"↩️ Перевод {from_nano(transfer.value_nanotons):g} Gram возвращается: "
                     "он меньше минимума ставки, а за перемотку кадра платить нечего — "
-                    "ты ещё не отметил сцену дня. Первая запись бесплатная: жми сцену "
-                    "дня, без оплаты.",
+                    "ты ещё не сделал выбор дня. Первая запись бесплатная: жми свой "
+                    "вариант, без оплаты.",
                 )
                 return "revote_auto_no_vote"
             # revote_closed — открытого дня нет: поведение обращения как обычно

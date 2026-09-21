@@ -70,7 +70,7 @@ async def _revote_status(user) -> tuple[str, int | None]:
             return f"{hint_mark('revote-free')} Ты ещё не сделал выбор дня — первая запись бесплатная.", None
         return (
             f"{path_mark('care', str(player.id))} Сегодня твой выбор: {POSITIONS[vote.card_position]}. "
-            "Оплати перемотку кадра и нажми другую сцену. Грант действует до конца дня.",
+            "Оплати перемотку кадра и нажми другой вариант. Грант действует до конца дня.",
             round_row.id,
         )
 
@@ -222,7 +222,7 @@ async def on_successful_payment(message: Message) -> None:
         )
         await session.commit()
     if valid:
-        await message.answer(f"{ok_mark(str(round_id))} Оплачено ⭐ Нажми другую сцену — кадр перемотан.")
+        await message.answer(f"{ok_mark(str(round_id))} Оплачено ⭐ Нажми другой вариант — кадр перемотан.")
     else:
         await message.answer(
             f"{warn_mark('late-pay')} Оплата прошла, но день уже закрылся — грант сохранён. "

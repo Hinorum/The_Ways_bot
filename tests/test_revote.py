@@ -261,7 +261,7 @@ async def test_paid_revote_via_card_press() -> None:
         )
         try:
             await on_vote(callback)
-            assert "изменена" in callback.answer.call_args.args[0]
+            assert "изменён" in callback.answer.call_args.args[0]
             vote = (
                 (await db.execute(select(Vote).where(Vote.round_id == rid, Vote.player_id == pid)))
                 .scalars()
