@@ -222,7 +222,7 @@ async def test_stuck_clears_after_success(monkeypatch: pytest.MonkeyPatch) -> No
     base = int(datetime.now(UTC).timestamp()) - 3_600
     tx = ton_watch.Transfer("retry-1", "0:" + "cc" * 32, to_nano(0.2), "", base + 2)
 
-    async def fetch(_since, before_hash=None):
+    async def fetch(_since, before_lt=None):
         return ([tx], True)
 
     calls = {"fail": True}

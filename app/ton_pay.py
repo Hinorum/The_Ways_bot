@@ -337,7 +337,7 @@ async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
     Одна страница (128 tx) — слишком мелкое окно: в длинной очереди слово
     «потерялся» выносится на пустом месте (memo уже отправленного легко лежит
     глубже 128 свежих транзакций), и сверка возвращает в очередь уже ушедший
-    перевод. Ходим страницами (offset) вниз по времени, пока не накроем
+    перевод. Ходим страницами (before_lt) вниз по времени, пока не накроем
     payout_reconcile_history_seconds или не упрёмся в пустую/повторную страницу.
 
     targets — кому это нужно: жадный полный скан (12 страниц) заменяется
@@ -346,20 +346,21 @@ async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
     """
     if not settings.active_treasury_address:
         return {}
-    if not settings.active_treasury_address:
-        return {}
-    url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
-    headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
+    url = (
+        f"{settings.active_ton_api_base}/v2/blockchain/accounts/"
+        f"{settings.active_treasury_address}/transactions"
+    )
+    headers = api_headers(settings.ton_api_key)
     tx_map: dict[str, str] = {}
     cutoff = time.time() - settings.payout_reconcile_history_seconds
     max_pages = max(1, settings.payout_reconcile_max_pages)
-    offset = 0
+    before_lt: str | None = None
     first_hash: str | None = None
     client = get_http_client()
     for _ in range(max_pages):
         response = await client.get(
             url,
-            params={"limit": _RECONCILE_PAGE_LIMIT, "sort_order": "desc", "offset": offset},
+            params={"limit": _RECONCILE_PAGE_LIMIT, "sort_order": "desc", **({"before_lt": before_lt} if before_lt else {})},
             headers=headers,
         )
         response.raise_for_status()
@@ -368,7 +369,7 @@ async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
             break
         page_first_hash = str(items[0].get("hash") or "")
         if page_first_hash and page_first_hash == first_hash:
-            break  # пагинация не сдвинулась (провайдер не взял offset) — хватит
+            break  # пагинация не сдвинулась (провайдер не взял before_lt) — хватит
         first_hash = page_first_hash
         for item in items:
             tx_hash = str(item.get("hash") or "")
@@ -386,7 +387,9 @@ async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
             break  # окно истории покрыто
         if len(items) < _RECONCILE_PAGE_LIMIT:
             break  # неполная страница = хвост истории, следующая запрос пуста
-        offset += _RECONCILE_PAGE_LIMIT - _RECONCILE_PAGE_OVERLAP
+        before_lt = str(items[-1].get("lt") or "")
+        if not before_lt:
+            break  # lt нет — следующий шаг невозможен, пагинация провалится
     return tx_map
 
 

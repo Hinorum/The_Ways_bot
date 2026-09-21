@@ -20,7 +20,7 @@ from app.ton_utils import to_nano
 TREASURY = "0:" + "ab" * 32
 SENDER = "0:" + "cd" * 32
 
-_HISTORY = f"/v2/accounts/{TREASURY}/transactions"
+_HISTORY = f"/v2/blockchain/accounts/{TREASURY}/transactions"
 _ACCOUNT = f"/v2/accounts/{TREASURY}"
 _V3 = "/api/v3/transactions"
 
@@ -84,6 +84,7 @@ def _api_tx(utime: int, value_nano: int) -> dict:
     raw = os.urandom(32)
     return {
         "hash": base64.urlsafe_b64encode(raw).decode().rstrip("="),
+        "lt": utime,
         "utime": utime,
         "in_msg": {"source": {"address": SENDER}, "value": str(value_nano), "raw_message": ""},
     }
@@ -121,6 +122,36 @@ async def test_tonapi_success_reads_verify_comment(monkeypatch) -> None:
     assert ok is True
     assert len(transfers) == 1
     assert transfers[0].comment == "bv:ABC123"
+
+
+async def test_tonapi_pagination_walks_by_lt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Полная страница уводит TonAPI-проход вглубь курсором before_lt.
+
+    Курсор — младший lt страницы (тот же механизм, что у Toncenter v3),
+    а не offset: /v2/blockchain/accounts/.../transactions такого параметра
+    не имеет.
+    """
+    limit = ton_watch._PAGE_LIMIT
+    page_one = [_api_tx(2000 - index, to_nano(0.01)) for index in range(limit)]
+    page_two = [_api_tx(1500, to_nano(0.02))]
+    calls = install_http(
+        monkeypatch,
+        {_HISTORY: [_Response(200, {"transactions": page_one}), _Response(200, {"transactions": page_two})]},
+    )
+
+    transfers, complete = await ton_watch._deep_collect(
+        ton_watch._tonapi_page,
+        lambda page: page[-1].provider_ref or page[-1].tx_hash,
+        1000,
+    )
+
+    assert complete is True
+    assert len(transfers) == limit + 1
+    v2_calls = [params for url, params in calls if "/v2/blockchain/" in url]
+    assert len(v2_calls) == 2
+    assert "before_lt" not in v2_calls[0] and "offset" not in v2_calls[0]
+    # Курсор второй страницы — младший lt первой (сортировка desc).
+    assert v2_calls[1]["before_lt"] == str(page_one[-1]["lt"])
 
 
 async def test_tonapi_http_error_falls_back(monkeypatch) -> None:

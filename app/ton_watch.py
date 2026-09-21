@@ -73,12 +73,13 @@ _clean_comment = clean_comment
 _decode_comment = extract_comment
 
 
-async def fetch_recent_transfers(since_utime: int, before_hash: str | None = None) -> tuple[list[Transfer], bool]:
+async def fetch_recent_transfers(since_utime: int, before_lt: str | None = None) -> tuple[list[Transfer], bool]:
     """Страница входящих переводов казначея активной сети (новые сверху).
 
     Ошибки сети не поднимают исключение: возвращается (пусто, False), чтобы
     цикл знал, что проверка не состоялась, и не ставил сердцебиение.
-    before_hash — пагинация вглубь.
+    before_lt — пагинация вглубь по логическому времени (lt): каждая следующая
+    страница строго старше последнего lt предыдущей.
 
     Честная работа с 404: раньше «нет истории» считалось здоровьем, и падение
     индексатора TonAPI маскировалось под тихую цепочку (реальный инцидент:
@@ -89,13 +90,16 @@ async def fetch_recent_transfers(since_utime: int, before_hash: str | None = Non
     """
     if not settings.ton_enabled or not settings.active_treasury_address:
         return [], True
-    url = f"{settings.active_ton_api_base}/v2/accounts/{settings.active_treasury_address}/transactions"
+    url = (
+        f"{settings.active_ton_api_base}/v2/blockchain/accounts/"
+        f"{settings.active_treasury_address}/transactions"
+    )
     headers = _api_headers(settings.ton_api_key)
     try:
         client = get_http_client()
         response = await http_get_with_retry(
             client, url,
-            params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before": before_hash} if before_hash else {})},
+            params={"limit": _PAGE_LIMIT, "sort_order": "desc", **({"before_lt": before_lt} if before_lt else {})},
             headers=headers,
         )
         if response.status_code == 404:
@@ -216,6 +220,7 @@ def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
             value_nanotons=value,
             comment=_decode_comment(in_msg),
             utime=utime,
+            provider_ref=str(item.get("lt") or ""),
         )
     except Exception as exc:
         logger.warning("Странная транзакция пропущена: %s", exc)
@@ -1095,9 +1100,9 @@ def _warn_degraded_primary() -> None:
     )
 
 
-async def _tonapi_page(since_utime: int, before_hash: str | None) -> tuple[list[Transfer], str]:
+async def _tonapi_page(since_utime: int, before_lt: str | None) -> tuple[list[Transfer], str]:
     """Адаптер основного источника под единый контракт (список, состояние)."""
-    transfers, ok = await fetch_recent_transfers(since_utime, before_hash=before_hash)
+    transfers, ok = await fetch_recent_transfers(since_utime, before_lt=before_lt)
     return transfers, (_PAGE_OK if ok else _PAGE_DEGRADED)
 
 
@@ -1161,7 +1166,7 @@ async def _collect_transfers(since: int) -> tuple[list[Transfer], bool, str]:
     успешного прохода возвращается третьим значением для /health.
     """
     primary, primary_complete = await _deep_collect(
-        _tonapi_page, lambda page: page[-1].tx_hash, since
+        _tonapi_page, lambda page: page[-1].provider_ref or page[-1].tx_hash, since
     )
     if primary_complete:
         return primary, True, "tonapi"
