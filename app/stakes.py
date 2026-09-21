@@ -51,7 +51,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,7 +74,6 @@ from app.models import (
 from app.ops import claim_once
 from app.ton_utils import from_nano, to_nano
 from app.weeks import iso_week_key
-
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +201,7 @@ async def register_stake(
         previous.tx_hash = tx_hash
         previous.memo = memo[:64]
         previous.network = current_network()
-        previous.created_at = datetime.now(timezone.utc)
+        previous.created_at = datetime.now(UTC)
         previous.confirmed_at = None
         await session.commit()
         return reason or "ok"
@@ -232,7 +231,7 @@ async def confirm_stake(session: AsyncSession, tx_hash: str) -> bool:
     if round_row is None or round_row.status != RoundStatus.OPEN:
         return False
     stake.status = "confirmed"
-    stake.confirmed_at = datetime.now(timezone.utc)
+    stake.confirmed_at = datetime.now(UTC)
     await session.commit()
     return True
 
@@ -248,7 +247,7 @@ async def _credit_referral(session: AsyncSession, referrer_id: int, amount: int)
         session.add(ReferralPot(referrer_id=referrer_id, nanotons=amount))
     else:
         row.nanotons += amount
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(UTC)
 
 
 async def _settle_referral_pots(session: AsyncSession) -> int:
@@ -297,7 +296,7 @@ async def _settle_referral_pots(session: AsyncSession) -> int:
         claimed = await session.execute(
             update(ReferralPot)
             .where(ReferralPot.id == pot.id, ReferralPot.nanotons == amount)
-            .values(nanotons=0, updated_at=datetime.now(timezone.utc))
+            .values(nanotons=0, updated_at=datetime.now(UTC))
         )
         if claimed.rowcount == 0:
             continue  # другой процесс уже забрал — следующий цикл догонит

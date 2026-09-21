@@ -25,7 +25,6 @@ from app.rounds import (
 )
 from app.tally import award_points
 
-
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
 _bot: Bot | None = None

@@ -4,8 +4,8 @@ import logging
 import signal
 from pathlib import Path
 
-from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
 from app.config import settings
 from app.db import init_db

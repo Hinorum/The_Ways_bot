@@ -8,7 +8,7 @@
   жребий без энтропии — ничья не зависает на сетевой ошибке.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.config import settings
 from app.models import Card, Player, Round, RoundStatus, Vote, WinRule
@@ -17,7 +17,7 @@ from app.rounds.voting import tied_positions
 
 
 def _round(day_index: int) -> Round:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     round_row = Round(
         day_index=day_index,
         status=RoundStatus.OPEN,
@@ -83,9 +83,9 @@ async def test_tie_seed_embeds_entropy() -> None:
         status=RoundStatus.OPEN,
         chapter_title="t",
         chapter_text="t",
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc),
-        tally_ends_at=datetime.now(timezone.utc),
+        opens_at=datetime.now(UTC),
+        voting_ends_at=datetime.now(UTC),
+        tally_ends_at=datetime.now(UTC),
     )
     assert tie_seed(round_row) == "7:majority"
     round_row.tie_entropy = "93123949:abcd1234"

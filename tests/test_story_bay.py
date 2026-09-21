@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -78,7 +78,7 @@ def _write_cassette(
     )
 
 
-_FIXED_NOW = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
+_FIXED_NOW = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
 
 
 class _FakeDatetime:

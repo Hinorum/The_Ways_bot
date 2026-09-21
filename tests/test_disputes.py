@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import disputes as mod
 from app.config import settings
-from app.models import Dispute, Player, Payout
+from app.models import Dispute, Payout, Player
 from app.ton_utils import to_nano
 
 

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, time, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from app.config import settings
@@ -171,7 +171,7 @@ async def _decision_day_winner(session, decision: date) -> int | None:
 
     from app.models import Round
 
-    start = datetime.combine(decision, time.min, tzinfo=timezone.utc)
+    start = datetime.combine(decision, time.min, tzinfo=UTC)
     end = start + timedelta(days=1)
     row = await session.scalar(
         select(Round)
@@ -243,7 +243,7 @@ async def _plan_and_render(
         selected = await get_next_cassette(session)
     except Exception:
         selected = None
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     cassette = active_cassette(
         today, selected=selected, directory=_library_dir
     )

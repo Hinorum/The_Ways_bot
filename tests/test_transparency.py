@@ -1,6 +1,6 @@
 """Прозрачность для игроков: расписание суток, распределение фонда, /top."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.config import settings
@@ -10,11 +10,10 @@ async def test_start_explains_schedule_and_disclaimer(monkeypatch, tmp_path) -> 
     """Игрок с порога знает: когда итоги, куда уходит фонд и кто рискует."""
     from unittest.mock import AsyncMock as AM
 
+    from app import handlers as h
     from app.models import Card, Round, RoundStatus, WinRule
 
-    from app import handlers as h
-
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     fake_round = Round(
         day_index=901,
         status=RoundStatus.OPEN,
@@ -112,7 +111,7 @@ async def test_status_text_shows_results_time() -> None:
     from app.broadcast import status_text
     from app.models import Card, Round, RoundStatus, WinRule
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     round_row = Round(
         day_index=3,
         status=RoundStatus.OPEN,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.config import settings
 
@@ -8,7 +8,7 @@ _ROMAN = ("I", "II", "III")
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utc_aware(value: datetime) -> datetime:
@@ -18,7 +18,7 @@ def utc_aware(value: datetime) -> datetime:
     timezone=True и отдаёт наивные значения — без нормализации любое
     сравнение «дата из базы против _now()» падает на локальных прогонах.
     """
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _next_hour_slot(after: datetime, hour: int) -> datetime:

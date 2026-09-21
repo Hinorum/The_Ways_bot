@@ -13,7 +13,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from aiogram import Bot
@@ -64,7 +64,7 @@ MANUAL_IN_KIND = "manual_in"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _age_seconds(iso: str | None) -> float | None:
@@ -75,7 +75,7 @@ def _age_seconds(iso: str | None) -> float | None:
     except ValueError:
         return None
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
     return max(0.0, (_now() - moment).total_seconds())
 
 
@@ -208,7 +208,7 @@ async def snapshot() -> dict:
             "ton_network": "testnet" if settings.is_testnet else "mainnet",
         }
         if oldest_pending is not None:
-            moment = oldest_pending if oldest_pending.tzinfo else oldest_pending.replace(tzinfo=timezone.utc)
+            moment = oldest_pending if oldest_pending.tzinfo else oldest_pending.replace(tzinfo=UTC)
             payload["oldest_payout_age"] = max(0.0, (_now() - moment).total_seconds())
         if settings.ton_enabled:
             payload["watcher_beat_age"] = _age_seconds(cursor_iso)
@@ -311,7 +311,7 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
             )
         ).scalar_one()
         if oldest is not None:
-            moment = oldest if oldest.tzinfo else oldest.replace(tzinfo=timezone.utc)
+            moment = oldest if oldest.tzinfo else oldest.replace(tzinfo=UTC)
             age_min = int((_now() - moment).total_seconds() // 60)
             if age_min >= _QUEUE_OLD_AFTER.total_seconds() // 60:
                 problems.append(f"очередь выплат стоит {age_min} мин")
@@ -364,7 +364,7 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
             moment = (
                 oldest_refund
                 if oldest_refund.tzinfo
-                else oldest_refund.replace(tzinfo=timezone.utc)
+                else oldest_refund.replace(tzinfo=UTC)
             )
             age_min = int((_now() - moment).total_seconds() // 60)
             if age_min >= _REFUND_OLD_AFTER.total_seconds() // 60:
@@ -392,7 +392,7 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
                 moment = (
                     oldest_stake
                     if oldest_stake.tzinfo
-                    else oldest_stake.replace(tzinfo=timezone.utc)
+                    else oldest_stake.replace(tzinfo=UTC)
                 )
                 if (_now() - moment).total_seconds() >= stale_threshold:
                     pending_stakes_count = (

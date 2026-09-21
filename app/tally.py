@@ -7,16 +7,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    RULE_PHRASES,
+    VOTE_RULE_PHRASES,
     LeaderboardPot,
     PackFund,
-    Player,
     Payout,
+    Player,
     Round,
     Stake,
     Vote,
     WeeklyPot,
-    RULE_PHRASES,
-    VOTE_RULE_PHRASES,
 )
 from app.rounds import pick_winner
 from app.stakes import current_network

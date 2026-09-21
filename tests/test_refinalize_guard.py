@@ -5,7 +5,7 @@
 Повтор невозможен только пока ни одна строка раунда не ушла в сеть.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -35,9 +35,9 @@ async def _seed_closed_round(session, day_index: int, *, has_sent: bool) -> int:
         chapter_title="Эхо",
         chapter_text="т",
 
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc),
-        tally_ends_at=datetime.now(timezone.utc),
+        opens_at=datetime.now(UTC),
+        voting_ends_at=datetime.now(UTC),
+        tally_ends_at=datetime.now(UTC),
         payouts_finalized=True,
     )
     session.add(round_row)

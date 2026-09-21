@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from .anchor import get_run_anchor, default_anchor, parse_anchor  # noqa: F401
+from .anchor import default_anchor, get_run_anchor, parse_anchor  # noqa: F401
 from .lifecycle import (  # noqa: F401
     claim_announcement,
     close_voting,

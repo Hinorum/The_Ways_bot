@@ -6,7 +6,7 @@
 даже когда медиа-группа не ушла.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -125,9 +125,9 @@ def _transient_round(tmp_path) -> Round:
         chapter_text="Текст.",
 
 
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
-        tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        opens_at=datetime.now(UTC),
+        voting_ends_at=datetime.now(UTC) + timedelta(hours=23),
+        tally_ends_at=datetime.now(UTC) + timedelta(hours=24),
     )
     for position in range(3):
         image = tmp_path / f"card{position}.jpg"

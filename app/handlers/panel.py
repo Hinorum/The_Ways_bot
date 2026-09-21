@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from aiogram import F
@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Payout, Round, RoundStatus, WatcherState
+from app.story.bay import get_next_cassette, list_cassettes, set_next_cassette
 from app.ton_utils import from_nano
 
 from .admin import (
@@ -36,7 +37,6 @@ from .payout import (
     _revenue_text,
     _stakes_panel_text,
 )
-from app.story.bay import get_next_cassette, list_cassettes, set_next_cassette
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def _panel_confirm(key: str) -> bool:
     watcher_state, как у корректировок казны: общая для процессов и переживает
     рестарт — на полпути между «первым и вторым тапом» день не потеряется.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with SessionLocal() as session:
         row = await session.get(WatcherState, key)
         pending = json.loads(row.value) if row is not None else None
@@ -60,7 +60,7 @@ async def _panel_confirm(key: str) -> bool:
                 created = None
             if created is not None:
                 if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
+                    created = created.replace(tzinfo=UTC)
                 if (now - created).total_seconds() <= _ADJ_CONFIRM_WINDOW:
                     await session.delete(row)
                     await session.commit()
@@ -112,9 +112,9 @@ async def _admin_panel_text(session=None) -> str:
 
 async def _build_panel_text(session) -> str:
     """Внутренняя логика сборки текста пульта."""
-    from app.ops import snapshot
     from app.ops import is_game_paused as _paused_flag
     from app.ops import paused_reason as _pause_reason
+    from app.ops import snapshot
 
     snap = await snapshot()
     lines = ["🎛 <b>ПУЛЬТ ХРАНИТЕЛЯ</b>"]
@@ -530,7 +530,7 @@ async def on_panel_action(callback: CallbackQuery) -> None:
 
 async def _cassette_menu_text(session) -> str:
     """Список библиотеки кассет: валидные файлы, назначение, замечания."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     next_name = await get_next_cassette(session)
     lines = ["📼 <b>КАССЕТЫ</b>"]
     lines.append(f"Следующая: <b>{next_name}</b>" if next_name else "Следующая: —")

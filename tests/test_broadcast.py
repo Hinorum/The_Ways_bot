@@ -1,12 +1,11 @@
 """Рассылка дня: падение одного чата не мешает дню открыться в остальных."""
 
-from datetime import datetime, timedelta, timezone
-
-from sqlalchemy import select
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramForbiddenError
+from sqlalchemy import select
 
 from app.broadcast import _deliver_day, announce_new_day
 from app.config import settings
@@ -26,9 +25,9 @@ def _round(day_index: int, media_dir) -> Round:
         chapter_text="Текст.",
 
 
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=23),
-        tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        opens_at=datetime.now(UTC),
+        voting_ends_at=datetime.now(UTC) + timedelta(hours=23),
+        tally_ends_at=datetime.now(UTC) + timedelta(hours=24),
     )
     for position in range(3):
         name = f"day{day_index}_card{position}.jpg"

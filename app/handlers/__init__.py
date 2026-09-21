@@ -115,6 +115,35 @@ __all__ = [
     "track_chat",
 ]
 
+import time as time
+
+from .admin import (
+    _ACTIVE_STATUSES,
+    _ADJ_CONFIRM_WINDOW,
+    _adjust_confirm_text,
+    _adjust_keyboard,
+    _adjust_menu_text,
+    _apply_adjustment,
+    _resolve_player_arg,
+    cmd_adjust,
+    cmd_advance,
+    cmd_dispute,
+    cmd_disputes,
+    cmd_pause,
+    cmd_resetgame,
+    cmd_resume,
+    on_adjust_action,
+    track_chat,
+)
+from .bootstrap import (
+    _LAST_UPDATE_ERROR_ALERT,
+    _PLAYER_ERROR_TEXT,
+    _UPDATE_ERROR_ALERT_COOLDOWN,
+    _register_error_handler,
+    build_dispatcher,
+    create_bot,
+    handle_update_error,
+)
 from .common import (
     _DYOR_TEXT,
     _active_round_money_mode,
@@ -126,6 +155,27 @@ from .common import (
     _personal_keyboard,
     _set_paused_and_broadcast,
     router,
+)
+from .fallback import on_private_fallback
+from .panel import (
+    _admin_panel_text,
+    _panel_keyboard,
+    cmd_panel,
+    on_panel_action,
+)
+from .payout import (
+    _payouts_text,
+    _refunds_panel_text,
+    _revenue_text,
+    _stakes_panel_text,
+    cmd_fundout,
+    cmd_incoming,
+    cmd_payout,
+    cmd_payouts,
+    cmd_return,
+    cmd_revenue,
+    cmd_stakes,
+    cmd_treasury,
 )
 from .player import (
     _MONTH_NAMES_RU,
@@ -146,6 +196,18 @@ from .player import (
     on_noop,
     on_score_view,
     on_vote,
+)
+from .topup import (
+    _revote_gram_ceiling,
+    _revote_keyboard,
+    _revote_status,
+    cmd_change,
+    on_change_view,
+    on_paystars,
+    on_payton,
+    on_pre_checkout,
+    on_refunded_payment,
+    on_successful_payment,
 )
 from .wallet import (
     _STAKE_HOWTO,
@@ -173,65 +235,3 @@ from .wallet import (
     on_stake_view,
     on_wallet_view,
 )
-from .topup import (
-    _revote_gram_ceiling,
-    _revote_keyboard,
-    _revote_status,
-    cmd_change,
-    on_change_view,
-    on_paystars,
-    on_payton,
-    on_pre_checkout,
-    on_refunded_payment,
-    on_successful_payment,
-)
-from .admin import (
-    _ACTIVE_STATUSES,
-    _ADJ_CONFIRM_WINDOW,
-    _adjust_confirm_text,
-    _adjust_keyboard,
-    _adjust_menu_text,
-    _apply_adjustment,
-    _resolve_player_arg,
-    cmd_adjust,
-    cmd_advance,
-    cmd_dispute,
-    cmd_disputes,
-    cmd_pause,
-    cmd_resetgame,
-    cmd_resume,
-    on_adjust_action,
-    track_chat,
-)
-from .payout import (
-    _payouts_text,
-    _refunds_panel_text,
-    _revenue_text,
-    _stakes_panel_text,
-    cmd_fundout,
-    cmd_incoming,
-    cmd_payout,
-    cmd_payouts,
-    cmd_return,
-    cmd_revenue,
-    cmd_stakes,
-    cmd_treasury,
-)
-from .panel import (
-    _admin_panel_text,
-    _panel_keyboard,
-    cmd_panel,
-    on_panel_action,
-)
-from .fallback import on_private_fallback
-from .bootstrap import (
-    _LAST_UPDATE_ERROR_ALERT,
-    _PLAYER_ERROR_TEXT,
-    _UPDATE_ERROR_ALERT_COOLDOWN,
-    _register_error_handler,
-    build_dispatcher,
-    create_bot,
-    handle_update_error,
-)
-
-import time as time

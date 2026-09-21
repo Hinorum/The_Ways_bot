@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -23,8 +23,8 @@ from app.handlers import (
     _panel_keyboard,
     cmd_adjust,
     cmd_advance,
-    cmd_payouts,
     cmd_pause,
+    cmd_payouts,
     cmd_resume,
     on_adjust_action,
     on_panel_action,
@@ -36,7 +36,6 @@ from app.models import Income, Payout, Player, Round, RoundStatus, Stake, Watche
 from app.stakes import register_stake
 from app.ton_utils import normalize_address, to_nano
 from app.ton_watch import Transfer, process_transfer
-
 
 RAW = normalize_address("UQpfcexKrlNjGFPF44W9am1o75Z6fs_QBdwVNzuhHVX2L4oo")
 STRANGER = "0:" + "9" * 62
@@ -165,7 +164,7 @@ async def test_single_stake_not_double_counted(ton_on, monkeypatch) -> None:
     monkeypatch.setattr(
         ton_pay, "fetch_account_state", AsyncMock(return_value=(balance, None, "tonapi"))
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
         async with SessionLocal() as db:
             round_row = Round(
@@ -267,7 +266,7 @@ async def test_manual_refund_creates_net_payout_and_is_idempotent(ton_on) -> Non
     вычетом газа), ставка помечается возвращённой, повторный вызов не дублирует."""
     from app.stakes import create_manual_refund
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
         async with SessionLocal() as db:
             round_row = Round(
@@ -482,13 +481,13 @@ async def test_process_transfer_refunds_everyone_during_pause(ton_on) -> None:
     try:
         status = await process_transfer(
             Transfer(tx_hash=tx_stranger, source=STRANGER, value_nanotons=to_nano(0.3),
-                     comment="", utime=int(datetime.now(timezone.utc).timestamp()))
+                     comment="", utime=int(datetime.now(UTC).timestamp()))
         )
         assert status == "paused_refund_queued"
 
         status2 = await process_transfer(
             Transfer(tx_hash=tx_player, source=RAW, value_nanotons=to_nano(0.7),
-                     comment="", utime=int(datetime.now(timezone.utc).timestamp())),
+                     comment="", utime=int(datetime.now(UTC).timestamp())),
             bot=bot,
         )
         assert status2 == "paused_refund_queued"
@@ -523,7 +522,7 @@ async def test_process_transfer_refunds_everyone_during_pause(ton_on) -> None:
 
 
 async def test_register_stake_blocked_while_paused(ton_on) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     round_row = Round(
         day_index=97_901,
         status=RoundStatus.OPEN,
@@ -629,7 +628,7 @@ async def test_resume_allows_tick_to_open_day(ton_on, monkeypatch) -> None:
                     select(Round).order_by(Round.day_index.desc()).limit(1)
                 )
             ).scalar_one()
-            moment = datetime.now(timezone.utc) - timedelta(minutes=5)
+            moment = datetime.now(UTC) - timedelta(minutes=5)
             current.voting_ends_at = moment
             current.tally_ends_at = moment
             await session.commit()

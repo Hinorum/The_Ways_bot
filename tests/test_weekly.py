@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -19,8 +19,8 @@ from app.config import settings
 from app.core.registry import WEEK_CLAIM_WINDOW_KEY
 from app.db import SessionLocal
 from app.leaderboard import (
-    WEEKLY_MARKER_KEY,
     WEEK_READY_KEY,
+    WEEKLY_MARKER_KEY,
     _rank_window,
     _week_prize_amounts,
     settle_week_if_due,
@@ -58,7 +58,7 @@ async def _set_week_ready(session: AsyncSession, week_key: str) -> None:
 
 async def _seed_expired_week_window(session: AsyncSession, week_key: str, players: list[int]) -> None:
     """Ставит окно Claim, дедлайн которого давно прошёл: выплата может идти сразу."""
-    opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    opened_at = (datetime.now(UTC) - timedelta(hours=200)).isoformat()
     session.add(
         WatcherState(
             key=WEEK_CLAIM_WINDOW_KEY,
@@ -69,17 +69,17 @@ async def _seed_expired_week_window(session: AsyncSession, week_key: str, player
 
 
 def test_iso_week_key_and_bounds() -> None:
-    moment = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)  # понедельник
+    moment = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)  # понедельник
     assert iso_week_key(moment) == "2026-W35"
     assert iso_week_key(moment.replace(tzinfo=None)) == "2026-W35"
     start, end = week_bounds("2026-W35")
-    assert start == datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc)
-    assert end == datetime(2026, 8, 31, 0, 0, tzinfo=timezone.utc)
+    assert start == datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
+    assert end == datetime(2026, 8, 31, 0, 0, tzinfo=UTC)
 
 
 def test_previous_week_key_across_year_boundary() -> None:
-    assert previous_week_key(datetime(2026, 8, 26, tzinfo=timezone.utc)) == "2026-W34"
-    assert previous_week_key(datetime(2026, 1, 1, tzinfo=timezone.utc)) == "2025-W52"
+    assert previous_week_key(datetime(2026, 8, 26, tzinfo=UTC)) == "2026-W34"
+    assert previous_week_key(datetime(2026, 1, 1, tzinfo=UTC)) == "2025-W52"
 
 
 def test_parse_prize_pcts_filters_garbage_and_caps_at_three() -> None:
@@ -459,7 +459,7 @@ async def test_rank_window_orders_ties_by_gram_then_id(session: AsyncSession) ->
 
     Дни участия больше не влияют на порядок — они лишь порог для стажа.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     steady, lucky = 900_001, 900_002
     session.add_all([Player(id=steady, username="steady"), Player(id=lucky, username="lucky")])
     # steady: 3 дня участия, из них 2 верных (в последний день промахнулся);
@@ -484,7 +484,7 @@ async def test_rank_window_orders_ties_by_gram_then_id(session: AsyncSession) ->
 
 async def test_rank_window_gram_breaks_tie(session: AsyncSession) -> None:
     """Тот же счёт верных: игрок с бОльшим вкладом Gram в неделе стоит выше."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     light, heavy = 900_101, 900_102  # heavy выше по id, но побеждать должен по Gram
     session.add_all([Player(id=light, username="light"), Player(id=heavy, username="heavy")])
     round_row = await _seed_closed_round(session, 830_500, now - timedelta(hours=5))
@@ -904,7 +904,7 @@ async def test_settle_week_tie_pays_after_all_claimed(monkeypatch: pytest.Monkey
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "weekly_min_days", 1)
     week_key = previous_week_key()
-    base_t = datetime.now(timezone.utc)
+    base_t = datetime.now(UTC)
     async with SessionLocal() as session:
         pid_one, pid_two, rounds = await _seed_week_tie_scene(session, 983_000, 2)
         try:

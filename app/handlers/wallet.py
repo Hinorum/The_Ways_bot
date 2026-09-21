@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiogram import F
 from aiogram.enums import ChatType, ParseMode
@@ -274,7 +274,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             )
             return True
         player.wallet_address = normalize_address(address)
-        player.wallet_linked_at = datetime.now(timezone.utc)
+        player.wallet_linked_at = datetime.now(UTC)
         if settings.ton_enabled:
             # Деньги включены: привязка не доверяется сразу — иначе любой мог бы
             # присвоить публичный адрес чужого кошелька (их видно в постах дня) и
@@ -283,7 +283,7 @@ async def _bind_wallet(message: Message, address: str) -> bool:
             # телеграм-аккаунта, а перевести с адреса может только владелец кошелька.
             player.wallet_verified = False
             player.wallet_verify_code = _wallet_verify_code()
-            player.wallet_verify_created = datetime.now(timezone.utc)
+            player.wallet_verify_created = datetime.now(UTC)
         else:
             # Бесплатная версия без ставок и призов: доказывать нечего.
             player.wallet_verified = True
@@ -329,7 +329,7 @@ async def _wallet_throttled(session, user_id: int) -> bool:
     удаляем и заводим заново, чтобы запись оставалась единственным источником."""
     key = f"wallet_cd:{user_id}"
     row = await session.get(WatcherState, key)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     throttled = False
     if row is not None:
         try:
@@ -338,7 +338,7 @@ async def _wallet_throttled(session, user_id: int) -> bool:
             last = None
         if last is not None:
             if last.tzinfo is None:
-                last = last.replace(tzinfo=timezone.utc)
+                last = last.replace(tzinfo=UTC)
             throttled = (now - last).total_seconds() < _WALLET_COOLDOWN
         await session.delete(row)
     session.add(WatcherState(key=key, value=now.isoformat()))
@@ -668,7 +668,7 @@ async def _fund_text() -> str:
         when = (
             row.created_at.strftime("%d.%m")
             if row.created_at.tzinfo
-            else row.created_at.replace(tzinfo=timezone.utc).strftime("%d.%m")
+            else row.created_at.replace(tzinfo=UTC).strftime("%d.%m")
         )
         lines.append(
             f"  {when} {sign}{row.amount_nanotons / 1e9:.4g} Gram · день {day} · {row.note}"
@@ -689,12 +689,13 @@ async def cmd_fund(message: Message) -> None:
 
 async def _top_text() -> str:
     """Копилки недели и месяца с лидерами (текст; публичный, можно в группе)."""
+    from datetime import timedelta
+
     from app.leaderboard import _players_with_stake, _rank_window
     from app.models import WeeklyPot
     from app.weeks import iso_week_key, week_bounds
-    from datetime import timedelta
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     week_start, week_end = week_bounds(iso_week_key(now))
     async with SessionLocal() as session:

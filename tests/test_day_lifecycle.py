@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -39,7 +39,6 @@ from app.models import (
 from app.ops import PAUSE_KEY, set_game_paused
 from app.rounds import heal_stale_rounds
 
-
 ADMIN_ID = 4242
 
 
@@ -54,7 +53,7 @@ def _message(text: str) -> SimpleNamespace:
 
 
 def _round(day_index: int, status: RoundStatus, *, voting_in_minutes: int) -> Round:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     round_row = Round(
         day_index=day_index,
         status=status,
@@ -259,9 +258,9 @@ async def test_announce_new_day_is_text_only(monkeypatch, tmp_path) -> None:
         chapter_text="Текст.",
 
 
-        opens_at=datetime.now(timezone.utc),
-        voting_ends_at=datetime.now(timezone.utc) + timedelta(hours=20),
-        tally_ends_at=datetime.now(timezone.utc) + timedelta(hours=21),
+        opens_at=datetime.now(UTC),
+        voting_ends_at=datetime.now(UTC) + timedelta(hours=20),
+        tally_ends_at=datetime.now(UTC) + timedelta(hours=21),
     )
     round_row.cards.append(
         Card(position=0, title="t", description="d", consequence="c", image_path="")

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -65,7 +65,7 @@ async def _set_week_ready(session: AsyncSession, week_key: str) -> None:
 
 
 async def _seed_expired_week_window(session: AsyncSession, week_key: str, players: list[int]) -> None:
-    opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    opened_at = (datetime.now(UTC) - timedelta(hours=200)).isoformat()
     session.add(
         WatcherState(
             key=WEEK_CLAIM_WINDOW_KEY,
@@ -264,7 +264,7 @@ async def test_week_dust_place_rolls_to_next_week_pot(monkeypatch: pytest.Monkey
                 base: pot_total * 50 // 100,
                 base + 1: pot_total * 30 // 100,
             }
-            current_week = iso_week_key(datetime.now(timezone.utc))
+            current_week = iso_week_key(datetime.now(UTC))
             pot_row = (
                 await session.execute(select(WeeklyPot).where(WeeklyPot.week == current_week))
             ).scalar_one_or_none()
@@ -297,9 +297,9 @@ async def _seed_month_scene(
     """
     prev_key = previous_month_key()
     prev_start = datetime(
-        *map(int, prev_key.split("-")), 1, tzinfo=timezone.utc
+        *map(int, prev_key.split("-")), 1, tzinfo=UTC
     )
-    month_start = datetime.now(timezone.utc).replace(
+    month_start = datetime.now(UTC).replace(
         day=1, hour=0, minute=0, second=0, microsecond=0
     )
     pids = list(weights)
@@ -379,7 +379,7 @@ async def test_month_dust_recarries_to_current_pot(monkeypatch: pytest.MonkeyPat
                 for p in (await session.execute(select(Payout).where(Payout.kind == "leaderboard"))).scalars()
             }
             assert payouts == {base: to_nano(0.05) * 70 // 100}
-            current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+            current_month = datetime.now(UTC).strftime("%Y-%m")
             current_pot = (
                 await session.execute(select(LeaderboardPot).where(LeaderboardPot.month == current_month))
             ).scalar_one_or_none()
@@ -449,7 +449,7 @@ async def test_month_boundary_tied_fourth_promoted_by_claim(monkeypatch: pytest.
     monkeypatch.setattr(settings, "monthly_prize_weights", "50,30,20")
     base = 840_000
     prev_key = previous_month_key()
-    prev_start = datetime(*map(int, prev_key.split("-")), 1, tzinfo=timezone.utc)
+    prev_start = datetime(*map(int, prev_key.split("-")), 1, tzinfo=UTC)
     async with SessionLocal() as session:
         rounds, prev_key = await _seed_month_scene(
             session, base, {base: 3, base + 1: 2, base + 2: 1, base + 3: 1}, 10.0
@@ -461,7 +461,7 @@ async def test_month_boundary_tied_fourth_promoted_by_claim(monkeypatch: pytest.
                 claimed_at=prev_start + timedelta(days=1),
             )
         )
-        opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+        opened_at = (datetime.now(UTC) - timedelta(hours=200)).isoformat()
         session.add(
             WatcherState(
                 key=MONTH_CLAIM_WINDOW_KEY,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from aiogram import F
 from aiogram.enums import ChatType, ParseMode
@@ -236,7 +237,7 @@ async def on_refunded_payment(message: Message) -> None:
     Если грант ещё не потрачен — он больше не даст сменить путь; если уже
     потрачен, смена пути остаётся, а хранитель получает алерт о расхождении.
     """
-    from datetime import datetime, timezone as _tz
+    from datetime import datetime
 
     from app.ops import notify_admins
 
@@ -259,7 +260,7 @@ async def on_refunded_payment(message: Message) -> None:
             await session.execute(select(Income).where(Income.unit_ref == charge_id))
         ).scalar_one_or_none()
         if income is not None:
-            stamp = int(datetime.now(_tz.utc).timestamp())
+            stamp = int(datetime.now(UTC).timestamp())
             tail = f"refunded:{stamp}"
             income.note = (f"{income.note} | {tail}" if income.note else tail)[:200]
         await session.commit()

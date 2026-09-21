@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -63,7 +63,7 @@ def _clamp(text: str, limit: int) -> str:
 
 
 def _utc(value: datetime) -> datetime:
-    return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc)
+    return value if getattr(value, "tzinfo", None) else value.replace(tzinfo=UTC)
 
 
 async def status_text(round_row: Round, *, show_title: bool = True) -> str:

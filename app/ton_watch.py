@@ -15,21 +15,21 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from sqlalchemy import select
 
 from app.config import settings
-from app.db import SessionLocal
-from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
-from app.payments import parse_revote_memo, parse_verify_memo
-from app.ops import claim_once, is_game_paused
 from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, STUCK_TX_KEY, WALLET_NORM_KEY
-from app.ton_codec import api_headers, clean_comment, extract_comment, norm_tx_hash
+from app.db import SessionLocal
 from app.http_utils import get_http_client, http_get_with_retry
+from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
+from app.ops import claim_once, is_game_paused
+from app.payments import parse_revote_memo, parse_verify_memo
 from app.stakes import confirm_stake, current_network, register_stake
+from app.ton_codec import api_headers, clean_comment, extract_comment, norm_tx_hash
 from app.ton_utils import from_nano, normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,7 @@ async def _stash_refund(
     известный отправитель (привязанный игрок, неудачная верификация кошелька)
     должен получить свои копейки назад — иначе деньги пропадают молча.
     """
-    age_days = (datetime.now(timezone.utc).timestamp() - transfer.utime) / 86_400
+    age_days = (datetime.now(UTC).timestamp() - transfer.utime) / 86_400
     if age_days > max(0, settings.watch_refund_max_age_days):
         logger.warning(
             "Перевод %s старше %d дн. — авто-возврат не создаётся (спам/хлам остаётся в казне)",
@@ -819,7 +819,7 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
                 "bv:… (код из ответа при привязке, дублируется в /wallet).",
             )
         elif result == "ok":
-            age = datetime.now(timezone.utc).timestamp() - transfer.utime
+            age = datetime.now(UTC).timestamp() - transfer.utime
             if age >= settings.stake_confirm_seconds:
                 if await confirm_stake(session, transfer.tx_hash):
                     await _dm_stake(
@@ -843,7 +843,7 @@ async def confirm_aged_pending(bot: Bot | None = None) -> int:
     их pending-ставки финализация вернёт как «залипшие».
     """
     confirmed = 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=settings.stake_confirm_seconds)
     async with SessionLocal() as session:
         rows = (
@@ -983,7 +983,7 @@ async def _read_cursor(session) -> int:
     row = await session.get(WatcherState, CURSOR_KEY)
     if row is not None and row.value.isdigit():
         return max(0, int(row.value) - _CURSOR_OVERLAP_SECONDS)
-    return int((datetime.now(timezone.utc) - timedelta(hours=_CURSOR_FALLBACK_HOURS)).timestamp())
+    return int((datetime.now(UTC) - timedelta(hours=_CURSOR_FALLBACK_HOURS)).timestamp())
 
 
 async def _read_cursor_raw(session) -> int:
@@ -996,7 +996,7 @@ async def _read_cursor_raw(session) -> int:
     row = await session.get(WatcherState, CURSOR_KEY)
     if row is not None and row.value.isdigit():
         return int(row.value)
-    return int((datetime.now(timezone.utc) - timedelta(hours=_CURSOR_FALLBACK_HOURS)).timestamp())
+    return int((datetime.now(UTC) - timedelta(hours=_CURSOR_FALLBACK_HOURS)).timestamp())
 
 
 async def _write_cursor(session, utime: int) -> None:
@@ -1011,7 +1011,7 @@ async def _write_cursor(session, utime: int) -> None:
 async def _write_beat(session) -> None:
     """Сердцебиение успешного цикла — для алертов и /health."""
     row = await session.get(WatcherState, BEAT_KEY)
-    stamp = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(UTC).isoformat()
     if row is None:
         session.add(WatcherState(key=BEAT_KEY, value=stamp))
     else:

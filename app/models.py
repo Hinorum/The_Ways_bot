@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import enum
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     BigInteger,
@@ -24,13 +24,13 @@ class Base(DeclarativeBase):
     pass
 
 
-class RoundStatus(str, enum.Enum):
+class RoundStatus(StrEnum):
     OPEN = "open"
     TALLYING = "tallying"
     CLOSED = "closed"
 
 
-class WinRule(str, enum.Enum):
+class WinRule(StrEnum):
     MAJORITY = "majority"
     MINORITY = "minority"
     MEDIAN = "median"

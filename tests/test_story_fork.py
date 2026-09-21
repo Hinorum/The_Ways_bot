@@ -9,7 +9,7 @@ opens_at. Сбой дороги = fail-open: играем главную.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -187,7 +187,7 @@ def test_day_for_picks_road_content() -> None:
     assert cassette.day_for(12, "нет-такой") is None
 
 
-_FIXED_NOW = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
+_FIXED_NOW = datetime(2026, 5, 11, 12, 0, tzinfo=UTC)
 
 
 class _FakeDatetime:

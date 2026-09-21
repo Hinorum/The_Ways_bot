@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiogram import Router
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -47,9 +47,9 @@ async def _dialog_open(uid: int) -> bool:
             return False
         since = row.since
         if since is not None and since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
+            since = since.replace(tzinfo=UTC)
         if since is not None and (
-            datetime.now(timezone.utc) - since
+            datetime.now(UTC) - since
         ).total_seconds() > _WALLET_DIALOG_TTL_SECONDS:
             # Просроченный диалог закрываем и для других путей (бутстрап и т.п.).
             await session.delete(row)
@@ -67,7 +67,7 @@ async def _dialog_start(uid: int) -> None:
             session.add(WalletDialog(player_id=uid))
         else:
             # Повторный старт продлевает окно ожидания адреса.
-            row.since = datetime.now(timezone.utc)
+            row.since = datetime.now(UTC)
         await session.commit()
 
 

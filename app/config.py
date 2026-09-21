@@ -4,7 +4,6 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 LIBPQ_QUERY_KEYS = {
     "sslmode",
     "channel_binding",

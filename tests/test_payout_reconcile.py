@@ -20,7 +20,6 @@ from app.db import SessionLocal
 from app.http_utils import http_get_with_retry
 from app.models import Payout, WatcherState
 
-
 # ---------- Пагинация истории казначея ----------
 
 

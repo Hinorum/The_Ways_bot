@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aiogram import F
 from aiogram.enums import ChatType, ParseMode
@@ -22,7 +22,6 @@ from sqlalchemy.exc import IntegrityError
 from app.broadcast import POSITIONS, cards_keyboard, status_text
 from app.config import settings
 from app.db import SessionLocal
-from app.ton_utils import from_nano, to_nano
 from app.models import LeaderboardClaim, Player, RoundStatus
 from app.rounds import get_active_round, get_latest_round
 from app.style import (
@@ -33,6 +32,7 @@ from app.style import (
     result_mark,
     warn_mark,
 )
+from app.ton_utils import from_nano, to_nano
 from app.voting import cast_vote, change_vote, get_vote, upsert_player
 
 from .common import _DYOR_TEXT, _ensure_round, _personal_keyboard, router
@@ -431,7 +431,7 @@ async def _on_claim(callback: CallbackQuery, kind: str) -> None:
                 player_id=player.id,
                 kind=kind,
                 period=period,
-                claimed_at=datetime.now(timezone.utc),
+                claimed_at=datetime.now(UTC),
             )
         )
         try:
@@ -657,6 +657,7 @@ async def _menu_wallet(callback: CallbackQuery) -> None:
         )
         return
     from app.handlers.wallet import _wallet_bind_prompt, _wallet_view_safe
+
     from .common import _dialog_start
 
     async with SessionLocal() as session:

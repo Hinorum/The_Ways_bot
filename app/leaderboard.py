@@ -32,13 +32,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import case, delete, func, or_, select, text
 
 from app.config import settings
+from app.core.registry import (
+    MARKER_KEY,
+    MONTH_CLAIM_WINDOW_KEY,
+    MONTH_READY_KEY,
+    WEEK_CLAIM_WINDOW_KEY,
+    WEEK_READY_KEY,
+    WEEKLY_MARKER_KEY,
+)
 from app.db import SessionLocal
 from app.models import (
     LeaderboardClaim,
@@ -51,14 +59,6 @@ from app.models import (
     Vote,
     WatcherState,
     WeeklyPot,
-)
-from app.core.registry import (
-    MARKER_KEY,
-    MONTH_CLAIM_WINDOW_KEY,
-    MONTH_READY_KEY,
-    WEEK_CLAIM_WINDOW_KEY,
-    WEEK_READY_KEY,
-    WEEKLY_MARKER_KEY,
 )
 from app.stakes import split_equal
 from app.ton_utils import to_nano
@@ -132,7 +132,7 @@ def _capped(expr, cap: int):
 
 def previous_month_key(now: datetime | None = None) -> str:
     """Ключ последнего ПОЛНОСТЬЮ прошедшего месяца («YYYY-MM»)."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
 
@@ -256,12 +256,12 @@ async def _claim_times(session, kind: str, periods: list[str]) -> dict[int, date
     )
     claims: dict[int, datetime] = {}
     for pid, claimed in rows.all():
-        moment = claimed if claimed.tzinfo else claimed.replace(tzinfo=timezone.utc)
+        moment = claimed if claimed.tzinfo else claimed.replace(tzinfo=UTC)
         claims[int(pid)] = min(claims.get(int(pid), moment), moment)
     return claims
 
 
-_FAR_FUTURE = datetime(9999, 12, 31, tzinfo=timezone.utc)
+_FAR_FUTURE = datetime(9999, 12, 31, tzinfo=UTC)
 
 
 def _prize_tied_groups(
@@ -320,7 +320,7 @@ async def _open_claim_window(
     data = json.dumps({
         "period": period,
         "players": tied_player_ids,
-        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "opened_at": datetime.now(UTC).isoformat(),
     })
     row = await session.get(WatcherState, key)
     if row is None:
@@ -449,7 +449,7 @@ async def _resolve_claim_window(
     try:
         opened_at = datetime.fromisoformat(opened_at_str)
         if opened_at.tzinfo is None:
-            opened_at = opened_at.replace(tzinfo=timezone.utc)
+            opened_at = opened_at.replace(tzinfo=UTC)
     except (ValueError, TypeError):
         opened_at = now
     deadline_passed = (
@@ -589,7 +589,7 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
     месяца. Это гарантирует, что лидерборд не сработает раньше завершения
     нарративной части дня.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prev_key = previous_month_key(now)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -618,7 +618,7 @@ async def _settle_month_locked(bot: Bot | None = None) -> bool:
         period_start = month_start
         if pots:
             year, mon = map(int, pots[0].month.split("-"))
-            period_start = datetime(year, mon, 1, tzinfo=timezone.utc)
+            period_start = datetime(year, mon, 1, tzinfo=UTC)
 
         # Последние дни месяца ещё не финализированы (долгий тик, сбой) —
         # их вклад в копилку может быть недолит. Как в неделе: платим только
@@ -909,7 +909,7 @@ async def _settle_week_locked(bot: Bot | None = None) -> bool:
     который ставится в _finalize_new_day_job() при записи эпилога последнего дня
     недели (воскресенья).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prev_key = previous_week_key(now)
 
     async with SessionLocal() as session:

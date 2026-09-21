@@ -9,9 +9,8 @@
 test_winrule_stake_guard.py.
 """
 
-from datetime import datetime, timedelta, timezone
-
 import json
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +22,7 @@ from app.ton_utils import to_nano
 
 
 def _round_row(rule: WinRule, day_index: int) -> Round:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     round_row = Round(
         day_index=day_index,
         status=RoundStatus.TALLYING,

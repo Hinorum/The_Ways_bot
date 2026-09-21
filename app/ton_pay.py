@@ -33,7 +33,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot
 from sqlalchemy import func, or_, select, update
@@ -554,7 +554,7 @@ async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: st
         )
     if result != 1:
         raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
-    marker = f"bcast:{int(datetime.now(timezone.utc).timestamp())}"
+    marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
     logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
     return marker
 
@@ -613,7 +613,7 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
             requeued = 0
             # Сравнение в naive UTC: Postgres (timezone=True) вернёт aware,
             # SQLite — naive; снос tzinfo с обеих сторон даёт один масштаб.
-            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
                 seconds=settings.payout_confirm_timeout_seconds
             )
             for payout in rows:
@@ -668,7 +668,7 @@ async def _reset_retriable(session, network: str) -> None:
     ).all()
     if not rows:
         return
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
         seconds=settings.payout_send_timeout_seconds + 30
     )
     reset_ids = [payout_id for payout_id, status, _claimed in rows if status == "failed"]
@@ -903,7 +903,7 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                 continue
             payout.attempts += 1
             payout.status = "sending"
-            payout.claimed_at = datetime.now(timezone.utc)
+            payout.claimed_at = datetime.now(UTC)
             claimed_ids.add(payout.id)
         await session.commit()
         # Работаем только строками, что реально забрали мы: сама рассылка
@@ -946,7 +946,7 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                     # платёж — фиксируем доставку без новой отправки.
                     payout.tx_hash = None
                     payout.status = "sent"
-                    payout.sent_at = datetime.now(timezone.utc)
+                    payout.sent_at = datetime.now(UTC)
                     payout.last_error = None
                     sent += 1
                     logger.warning(
@@ -978,7 +978,7 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                         ),
                         timeout=settings.payout_send_timeout_seconds,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Зависший лайтсервер не имеет права замораживать цикл:
                     # таймаут — обычный ретрай с видимой причиной.
                     logger.warning("Выплата %s: таймаут вещания >%ss", payout.id, settings.payout_send_timeout_seconds)
@@ -1006,7 +1006,7 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                 if tx_hash:
                     payout.tx_hash = tx_hash
                     payout.status = "sent"
-                    payout.sent_at = datetime.now(timezone.utc)
+                    payout.sent_at = datetime.now(UTC)
                     payout.attempts = 0
                     payout.last_error = None
                     sent += 1
@@ -1230,7 +1230,7 @@ async def treasury_diagnostics() -> str:
     lines.append(f"Очередь выплат: ожидает {waiting} · failed {dead}")
     if waiting or dead:
         lines.append("Разбор: /payouts — причина видна у каждой строки.")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     lines.append("Watcher:")
     if not settings.active_treasury_address:
         lines.append("  адрес не задан — смотреть не на что ⚠️")
@@ -1241,7 +1241,7 @@ async def treasury_diagnostics() -> str:
         try:
             beat_moment = datetime.fromisoformat(beat_iso)
             if beat_moment.tzinfo is None:
-                beat_moment = beat_moment.replace(tzinfo=timezone.utc)
+                beat_moment = beat_moment.replace(tzinfo=UTC)
             beat_age = int((now - beat_moment).total_seconds())
         except ValueError:
             pass
@@ -1252,7 +1252,7 @@ async def treasury_diagnostics() -> str:
     if beat_age is not None and beat_age > 180:
         lines.append("  ⚠️ циклы не проходят >3 мин: индексаторы недоступны или процесс спит")
     if cursor_raw and cursor_raw.isdigit():
-        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=timezone.utc)
+        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=UTC)
         lag = int((now - cursor_dt).total_seconds())
         lines.append(f"  курсор: {cursor_dt:%d.%m %H:%M} UTC ({lag:+d} с от текущего времени)")
         if lag < -60:
@@ -1281,6 +1281,8 @@ async def blockchain_diagnostics() -> str:
         BEAT_KEY,
         CURSOR_KEY,
         SOURCE_KEY,
+    )
+    from app.ton_watch import (
         STUCK_TX_KEY as STUCK_KEY,
     )
 
@@ -1342,9 +1344,9 @@ async def blockchain_diagnostics() -> str:
             )
         ).scalar_one()
     # Курсор: лаг от текущего времени (тот же расчёт, что в /treasury).
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if cursor_raw and cursor_raw.isdigit():
-        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=timezone.utc)
+        cursor_dt = datetime.fromtimestamp(int(cursor_raw), tz=UTC)
         lines.append(
             f"Watcher: курсор {cursor_dt:%d.%m %H:%M} UTC "
             f"({int((now - cursor_dt).total_seconds()):+d} с)"
@@ -1356,7 +1358,7 @@ async def blockchain_diagnostics() -> str:
         try:
             beat_moment = datetime.fromisoformat(beat_iso)
             if beat_moment.tzinfo is None:
-                beat_moment = beat_moment.replace(tzinfo=timezone.utc)
+                beat_moment = beat_moment.replace(tzinfo=UTC)
             beat_age = int((now - beat_moment).total_seconds())
         except ValueError:
             beat_age = None

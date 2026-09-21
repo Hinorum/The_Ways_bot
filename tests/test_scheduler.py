@@ -4,7 +4,7 @@
 генераторы заменены мгновенными — интересует только конечный автомат дня.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -25,7 +25,7 @@ def offline_generation(monkeypatch):
 
 
 async def _seed(day_index: int, status: RoundStatus, *, voting_in: timedelta, tally_in: timedelta) -> Round:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with SessionLocal() as db:
         round_row = Round(
             day_index=day_index,
@@ -221,7 +221,7 @@ async def _make_round(
     voting_in: timedelta | None = None,
     tally_in: timedelta | None = None,
 ) -> int:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with SessionLocal() as db:
         r = Round(
             day_index=day_index,
@@ -268,7 +268,7 @@ async def test_tick_announces_first_round(monkeypatch) -> None:
     """Первый день (previous=None) анонсится сразу, закрытие не дёргается."""
     from app import scheduler as sched
 
-    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(sched, "_now", lambda: now)
     monkeypatch.setattr("app.ops.mark_tick", AsyncMock())
     monkeypatch.setattr("app.ops.is_game_paused", AsyncMock(return_value=False))
@@ -312,7 +312,7 @@ async def test_tick_closes_finished_day_and_kicks_background_jobs(monkeypatch) -
     """День с истекшим подсчётом финализируется: очки, выплаты, фоновые джобы."""
     from app import scheduler as sched
 
-    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(sched, "_now", lambda: now)
     monkeypatch.setattr("app.ops.mark_tick", AsyncMock())
     monkeypatch.setattr("app.ops.is_game_paused", AsyncMock(return_value=False))
@@ -620,7 +620,7 @@ async def test_vote_reminder_sends_dms_once_per_day(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "player_dm", True)
     monkeypatch.setattr("app.broadcast.active_player_ids", AsyncMock(return_value=[501, 502]))
-    reminder_now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    reminder_now = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
     monkeypatch.setattr(sched, "_now", lambda: reminder_now)
 
     async with SessionLocal() as db:

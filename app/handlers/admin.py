@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiogram import F
 from aiogram.enums import ChatType, ParseMode
@@ -291,8 +291,8 @@ async def cmd_dispute(message: Message) -> None:
     # Публичная само-подача: жалоба игрока на его последний сыгранный день.
     if message.from_user is None:
         return
-    from app.models import Vote as _Vote
     from app.models import Round as _Round
+    from app.models import Vote as _Vote
 
     reason = message.text.split(maxsplit=1)[1] if " " in message.text else ""
     async with SessionLocal() as session:
@@ -514,7 +514,7 @@ async def on_adjust_action(callback: CallbackQuery) -> None:
     async with SessionLocal() as session:
         row = await session.get(WatcherState, confirm_key)
         pending = json.loads(row.value) if row is not None else None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ready = False
         if pending is not None and pending.get("action") == action:
             try:
@@ -523,7 +523,7 @@ async def on_adjust_action(callback: CallbackQuery) -> None:
                 created = None
             if created is not None:
                 if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
+                    created = created.replace(tzinfo=UTC)
                 ready = (now - created).total_seconds() <= _ADJ_CONFIRM_WINDOW
         if not ready:
             payload = json.dumps(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -256,7 +256,7 @@ async def _revenue_text() -> str:
     """
     from app.ops import MANUAL_IN_KIND, MANUAL_OUT_KIND
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     revenue_kinds = Income.kind.notin_([MANUAL_OUT_KIND, MANUAL_IN_KIND])
 
@@ -333,7 +333,7 @@ async def cmd_incoming(message: Message) -> None:
         )
         stamp = income.created_at
         if stamp is not None:
-            stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+            stamp = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
             when = f"{stamp:%d.%m %H:%M} UTC"
         else:
             when = "—"

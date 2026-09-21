@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -18,7 +18,6 @@ from app.config import settings
 from app.core.registry import MONTH_CLAIM_WINDOW_KEY
 from app.db import SessionLocal
 from app.leaderboard import MARKER_KEY, MONTH_READY_KEY, previous_month_key, settle_month_if_due
-from app.payments import parse_revote_memo
 from app.models import (
     LeaderboardPot,
     Payout,
@@ -30,6 +29,7 @@ from app.models import (
     WatcherState,
     WinRule,
 )
+from app.payments import parse_revote_memo
 from app.ton_utils import to_nano
 
 
@@ -52,7 +52,7 @@ def _closed_round(day_index: int, tally_at: datetime) -> Round:
 
 async def _seed_expired_month_window(session: AsyncSession, period: str, players: list[int]) -> None:
     """Окно месячного Claim с истёкшим дедлайном: выплата может идти сразу."""
-    opened_at = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    opened_at = (datetime.now(UTC) - timedelta(hours=200)).isoformat()
     session.add(
         WatcherState(
             key=MONTH_CLAIM_WINDOW_KEY,
@@ -168,7 +168,7 @@ async def test_watch_once_advances_cursor_and_dedupes(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(settings, "ton_enabled", True)
     # Свежие метки времени: древние переводы watcher больше не возвращает.
-    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    base = int(datetime.now(UTC).timestamp()) - 3_600
     transfers = [
         ton_watch.Transfer(f"c-{i}", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 1 + i)
         for i in range(3)
@@ -213,7 +213,7 @@ async def test_watch_cursor_stops_on_failure(monkeypatch: pytest.MonkeyPatch) ->
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
-    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    base = int(datetime.now(UTC).timestamp()) - 3_600
     bad = ton_watch.Transfer("bad-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base)
     good = ton_watch.Transfer("good-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 1)
     monkeypatch.setattr(
@@ -245,7 +245,7 @@ async def test_overlap_window_recovers_same_second_transfer(monkeypatch: pytest.
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
-    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    base = int(datetime.now(UTC).timestamp()) - 3_600
     tx_same = ton_watch.Transfer("same-1", "0:" + os.urandom(32).hex(), to_nano(0.3), "", base + 5)
     tx_later = ton_watch.Transfer("later-1", "0:" + os.urandom(32).hex(), to_nano(0.2), "", base + 6)
     fetch = AsyncMock(return_value=([tx_same, tx_later], True))
@@ -283,7 +283,7 @@ async def test_degraded_cycle_freezes_cursor(monkeypatch: pytest.MonkeyPatch) ->
     from app import ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
-    base = int(datetime.now(timezone.utc).timestamp()) - 3_600
+    base = int(datetime.now(UTC).timestamp()) - 3_600
     fetch = AsyncMock(return_value=([], False, "none"))
     monkeypatch.setattr(ton_watch, "_collect_transfers", fetch)
     try:
@@ -309,8 +309,7 @@ async def test_watch_beats_on_quiet_chain(monkeypatch: pytest.MonkeyPatch) -> No
     Именно этот кейс раньше порождал ложный алерт «watcher ещё ни разу не
     отмечал курсор»: курсор двигался только переводами.
     """
-    from app import ops
-    from app import ton_watch
+    from app import ops, ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(
@@ -341,8 +340,7 @@ async def test_watch_beats_on_quiet_chain(monkeypatch: pytest.MonkeyPatch) -> No
 
 async def test_api_outage_does_not_beat_and_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     """TonAPI и Toncenter лежат вместе — сердцебиения нет, админ узнает об этом."""
-    from app import ops
-    from app import ton_watch
+    from app import ops, ton_watch
 
     monkeypatch.setattr(settings, "ton_enabled", True)
     monkeypatch.setattr(settings, "admin_ids", "42")
@@ -456,8 +454,8 @@ def test_old_or_empty_transactions_are_skipped() -> None:
 
 
 def test_previous_month_key() -> None:
-    assert previous_month_key(datetime(2026, 8, 22, tzinfo=timezone.utc)) == "2026-07"
-    assert previous_month_key(datetime(2026, 1, 5, tzinfo=timezone.utc)) == "2025-12"
+    assert previous_month_key(datetime(2026, 8, 22, tzinfo=UTC)) == "2026-07"
+    assert previous_month_key(datetime(2026, 1, 5, tzinfo=UTC)) == "2025-12"
 
 
 # ---------- Копилка месяца ----------
@@ -474,7 +472,7 @@ async def _seed_leaderboard_month(session: AsyncSession) -> tuple[int, dict]:
             Player(id=pid2, username=f"u{pid2}"),
         ]
     )
-    prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+    prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
     round_a = _closed_round(700_001, prev_month - timedelta(days=10))
     round_b = _closed_round(700_002, prev_month - timedelta(days=9))
     session.add_all([round_a, round_b])
@@ -570,7 +568,7 @@ async def test_monthly_pot_split_between_tied_leaders(monkeypatch: pytest.Monkey
                 Player(id=pid_b, username=f"u{pid_b}", wallet_address=wallet_b),
             ]
         )
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         round_row = _closed_round(702_001, prev_month - timedelta(days=2))
         session.add(round_row)
         await session.flush()
@@ -641,7 +639,7 @@ async def test_monthly_pot_pays_top_k_by_weights(monkeypatch: pytest.MonkeyPatch
     wallet_a = "0:" + os.urandom(32).hex()
     wallet_b = "0:" + os.urandom(32).hex()
     async with SessionLocal() as session:
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         ra = _closed_round(760_001, prev_month - timedelta(days=9))
         rb = _closed_round(760_002, prev_month - timedelta(days=8))
         session.add_all(
@@ -706,7 +704,7 @@ async def test_monthly_pot_carried_when_leader_has_no_wallet(
         # Только игрок без кошелька угадывает.
         pid = 920_000 + int.from_bytes(os.urandom(2), "big")
         session.add(Player(id=pid, username=f"u{pid}"))
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         round_row = _closed_round(701_001, prev_month - timedelta(days=3))
         session.add(round_row)
         await session.flush()
@@ -738,7 +736,7 @@ async def test_monthly_pot_waits_when_leader_has_no_stake(monkeypatch: pytest.Mo
         session.add(
             Player(id=pid, username=f"u{pid}", wallet_address="0:" + os.urandom(32).hex())
         )
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         round_row = _closed_round(706_001, prev_month - timedelta(days=3))
         session.add(round_row)
         await session.flush()
@@ -772,7 +770,7 @@ async def test_monthly_pot_waits_until_last_day_finalized(monkeypatch: pytest.Mo
     """
     monkeypatch.setattr(settings, "ton_enabled", True)
     async with SessionLocal() as session:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         prev_month = now.replace(day=1) - timedelta(days=5)
         unfinished = Round(
             day_index=704_001,
@@ -830,7 +828,7 @@ async def test_monthly_pot_not_burned_by_empty_weights(monkeypatch: pytest.Monke
         session.add(
             Player(id=pid, username=f"u{pid}", wallet_address="0:" + os.urandom(32).hex())
         )
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         round_row = _closed_round(705_001, prev_month - timedelta(days=3))
         session.add(round_row)
         await session.flush()
@@ -880,7 +878,7 @@ async def test_monthly_pot_gram_tiebreak_at_third_place(monkeypatch: pytest.Monk
             Player(id=pid, username=f"p{i}", wallet_address=wallets[pid])
             for i, pid in enumerate(pids)
         )
-        prev_month = datetime.now(timezone.utc).replace(day=1) - timedelta(days=5)
+        prev_month = datetime.now(UTC).replace(day=1) - timedelta(days=5)
         rounds: list[Round] = []
         for i in range(5):
             round_row = _closed_round(707_001 + i, prev_month - timedelta(days=9 + i))
@@ -941,7 +939,7 @@ async def test_monthly_pot_ignores_already_settled_months(
     pid_champ = 940_000 + int.from_bytes(os.urandom(2), "big")
     pid_new = pid_champ + 1
     wallet_new = "0:" + os.urandom(32).hex()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     prev_first = (now.replace(day=1) - timedelta(days=1)).replace(
         day=1, hour=0, minute=0, second=0, microsecond=0
     )
@@ -1012,7 +1010,7 @@ async def test_monthly_pot_ignores_already_settled_months(
 
 
 def _open_round(day_index: int) -> Round:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Round(
         day_index=day_index,
         status=RoundStatus.OPEN,
@@ -1028,10 +1026,9 @@ def _open_round(day_index: int) -> Round:
 
 async def _fresh_watcher_marks() -> None:
     """Свежие тик и сердцебиение: фоновые алерты watcher'а не спамят в тесте."""
-    from app import ops
-    from app import ton_watch
+    from app import ops, ton_watch
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     async with SessionLocal() as db:
         await db.execute(
             WatcherState.__table__.delete().where(
@@ -1057,7 +1054,7 @@ async def test_snapshot_reports_unprocessed_and_payout_by_kind(
     monkeypatch.setattr(settings, "ton_enabled", True)
     uid = 950_000 + int.from_bytes(os.urandom(2), "big")
     wallet = "0:" + os.urandom(16).hex()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     old = now - timedelta(hours=2)
     async with SessionLocal() as db:
         db.add(Player(id=uid, username=f"u{uid}", wallet_address=wallet))
@@ -1112,7 +1109,7 @@ async def test_stuck_refund_alert_is_targeted(monkeypatch: pytest.MonkeyPatch) -
             Payout(round_id=None, player_id=uid, kind="refund",
                    amount_nanotons=to_nano(0.4), dest_address=wallet,
                    status="pending",
-                   created_at=datetime.now(timezone.utc) - timedelta(hours=3))
+                   created_at=datetime.now(UTC) - timedelta(hours=3))
         )
         await db.commit()
     try:
@@ -1152,7 +1149,7 @@ async def test_unprocessed_pending_stakes_alert(monkeypatch: pytest.MonkeyPatch)
         db.add(
             Stake(round_id=rnd.id, player_id=uid, amount_nanotons=to_nano(0.2),
                   tx_hash="pending-tx", status="pending",
-                  created_at=datetime.now(timezone.utc) - timedelta(minutes=15))
+                  created_at=datetime.now(UTC) - timedelta(minutes=15))
         )
         await db.commit()
     try:

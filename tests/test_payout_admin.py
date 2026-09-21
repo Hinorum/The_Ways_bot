@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -60,7 +60,7 @@ async def test_stash_refund_skips_ancient_transfers(
     превращаться в dead-letter возвраты."""
     monkeypatch.setattr(settings, "watch_refund_max_age_days", 14)
     monkeypatch.setattr(settings, "refund_min_gram", 0)
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     ancient = Transfer(tx_hash="ancient", source="0:aa", value_nanotons=1_000, comment="РЕКЛАМА", utime=int(now - 40 * 86_400))
     fresh = Transfer(tx_hash="fresh", source="0:bb", value_nanotons=2_000, comment="", utime=int(now - 3_600))
 
@@ -79,7 +79,7 @@ async def test_stash_refund_skips_dust_below_threshold(
     """Микро-спам дешевле refund_min_gram не порождает возврат: газ отправки
     (payout_fee_gram) дороже самой пыли."""
     monkeypatch.setattr(settings, "refund_min_gram", 0.05)
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     dust = Transfer(
         tx_hash="dust-1", source="0:cc", value_nanotons=10_000,  # 0.00001 Gram
         comment="", utime=int(now - 60),

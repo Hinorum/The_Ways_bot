@@ -141,8 +141,8 @@ async def reset_game(session: AsyncSession, keep_story: bool = False) -> Round:
 
     Защита: пока в очереди есть неотправленная выплата — сброс запрещён.
     """
-    from app.ton_pay import pending_payout_count
     from app.core.registry import RUN_START_KEY
+    from app.ton_pay import pending_payout_count
 
     owed = await pending_payout_count(session)
     if owed:
