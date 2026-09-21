@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Round, Stake, Vote, WinRule
@@ -28,16 +28,14 @@ _TIE_THEATER = (
 
 
 async def count_votes_for_tally(session: AsyncSession, round_id: int) -> dict[int, int]:
-    """Allowed only from the tally job. One GROUP BY, O(n) scan of the day partition."""
-    result = await session.execute(
-        select(Vote.card_position, func.count())
-        .where(Vote.round_id == round_id)
-        .group_by(Vote.card_position)
-    )
-    counts = {0: 0, 1: 0, 2: 0}
-    for position, total in result.all():
-        counts[int(position)] = int(total)
-    return counts
+    """Счёт голосов для подведения итога дня.
+
+    Совместимая обёртка: единственная реализация GROUP BY по голосам —
+    plain_vote_counts (хранимый счёт и fallback-исход при пустом фонде).
+    Имя сохранено — по нему ходят tally-джоба и тесты
+    (test_winner_by_stakes).
+    """
+    return await plain_vote_counts(session, round_id)
 
 
 async def plain_vote_counts(session: AsyncSession, round_id: int) -> dict[int, int]:
@@ -136,20 +134,6 @@ def tie_seed(round_row: Round) -> str:
     if entropy:
         return f"{base}:{entropy}"
     return base
-
-
-async def _staked_paths(session: AsyncSession, round_id: int) -> set[int]:
-    """Пути дня, за которые есть хотя бы один подтверждённый ставщик."""
-    rows = await session.execute(
-        select(Vote.card_position, func.count(distinct(Vote.player_id)))
-        .join(
-            Stake,
-            (Stake.round_id == Vote.round_id) & (Stake.player_id == Vote.player_id),
-        )
-        .where(Vote.round_id == round_id, Stake.status == "confirmed")
-        .group_by(Vote.card_position)
-    )
-    return {int(p) for p, holders in rows.all() if holders > 0}
 
 
 async def _winner_and_tied(
