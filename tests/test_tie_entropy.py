@@ -192,3 +192,22 @@ async def test_tie_note_reaches_results_post(
         assert "93123949" in text  # seqno блока виден игрокам — можно перепроверить
     finally:
         await session.rollback()
+
+
+async def test_epilogue_escaped_in_results_html(session) -> None:
+    """Эпилог сюжетного слоя — не доверенный HTML: в пост итогов идёт экранированным."""
+    from app.broadcast import results_message
+
+    round_row = await _seed_tied_day(session, 860)
+    try:
+        loaded = await session.get(Round, round_row.id)
+        loaded.status = RoundStatus.CLOSED
+        loaded.winner_card = 0
+        loaded.epilogue_text = "<b>хитрость</b> & <i>вставка</i>"
+        await session.commit()
+
+        text = await results_message(loaded, session)
+        assert "<b>хитрость</b>" not in text  # сырой HTML не попадает в пост
+        assert "&lt;b&gt;хитрость&lt;/b&gt; &amp; &lt;i&gt;вставка&lt;/i&gt;" in text
+    finally:
+        await session.rollback()

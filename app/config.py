@@ -69,11 +69,6 @@ class Settings(BaseSettings):
     database_ca: str = ""
     timezone: str = "Europe/Moscow"
     media_dir: str = "./media/generated"
-    # Ключи подключения к внешним API. Настройки тонкой настройки генераций
-    # (LLM/арт) вынесены: слой перерабатывается, остаются только сами ключи.
-    llm_api_key: str = ""
-    llm_base_url: str = "https://router.huggingface.co/v1/chat/completions"
-    gemini_api_key: str = ""
 
     ton_enabled: bool = False
     ton_network: str = "mainnet"

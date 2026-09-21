@@ -115,8 +115,6 @@ __all__ = [
     "track_chat",
 ]
 
-import time as time
-
 from .admin import (
     _ACTIVE_STATUSES,
     _ADJ_CONFIRM_WINDOW,

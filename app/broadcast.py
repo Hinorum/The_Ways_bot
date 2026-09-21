@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -15,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Chat, Round
+from app.models import Chat, Round, RoundStatus
 from app.style import day_mark
 from app.tally import format_results
 
@@ -69,7 +70,7 @@ def _utc(value: datetime) -> datetime:
 async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     from app.models import RULE_PHRASES, VOTE_RULE_PHRASES
 
-    if round_row.status.value == "open":
+    if round_row.status == RoundStatus.OPEN:
         stake_mode = (
             settings.ton_enabled
             and getattr(round_row, "money_mode", True) is not False
@@ -85,7 +86,7 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
                 f"🎬 Сцена дня: {VOTE_RULE_PHRASES[round_row.win_rule]}. "
                 "Счёт сцен скрыт до конца сцены."
             )
-    elif round_row.status.value == "tallying":
+    elif round_row.status == RoundStatus.TALLYING:
         phase = "⏳ Подсчёт: итоги через мгновение."
     else:
         phase = "🌙 День закрыт."
@@ -257,7 +258,10 @@ async def results_body(finished: Round, session=None) -> str:
 
 
 async def results_message(finished: Round, session=None) -> str:
-    """Полные итоги дня: сухой блок + экономика + эпилог от нейросети (если готов).
+    """Полные итоги дня: сухой блок + экономика + эпилог (если готов).
+
+    Эпилог — текст сюжетного слоя с разметкой от нейросети; в HTML-пост он
+    попадает экранированным целиком (это простой текст, своих тегов нет).
 
     session можно передать готовую (тесты, вызовы внутри транзакции);
     иначе открывается своя краткоживущая сессия.
@@ -265,7 +269,7 @@ async def results_message(finished: Round, session=None) -> str:
     text = await results_body(finished, session)
     epilogue = getattr(finished, "epilogue_text", "") or ""
     if epilogue:
-        text += f"\n\n{epilogue}"
+        text += f"\n\n{html.escape(epilogue)}"
     return text
 
 

@@ -11,14 +11,6 @@ from app.stakes import current_network
 
 logger = logging.getLogger(__name__)
 
-# Визуальная фактура типов эхов: содержание скрыто, фактура повторяется —
-# внимательный игрок учится узнавать класс следа по кадру дня.
-_ECHO_ART_MOTIFS = {
-    "угроза": "ominous burnt-wire glow in the fog",
-    "память": "a warm amber keepsake bowl catching light",
-    "обман": "a mirage-like silhouette of an unfamiliar dog",
-}
-
 # Театр жребия: реплики к честному броску при ничьей (детерминированы сидом).
 _TIE_THEATER = (
     "Котёл булькнул дважды — жребий лёг на {chosen}.",

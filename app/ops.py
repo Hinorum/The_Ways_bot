@@ -29,6 +29,7 @@ from app.core.registry import (
     ALERT_STUCK_KEY,
     ALERT_TICK_KEY,
     ALERT_WATCHER_KEY,
+    BEAT_KEY,
     MONEY_MODE_KEY,
     PAUSE_KEY,
     PAUSE_REASON_KEY,
@@ -189,7 +190,7 @@ async def snapshot() -> dict:
                 select(func.count()).select_from(Stake).where(Stake.status == "pending")
             )
         ).scalar_one()
-        cursor_iso = await _get_state(session, "ton_watch_beat_iso")
+        cursor_iso = await _get_state(session, BEAT_KEY)
         payload = {
             "status": "ok",
             "uptime_seconds": round(time.time() - PROCESS_START, 1),
