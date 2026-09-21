@@ -57,18 +57,19 @@ def _economy_text() -> str:
     m_pcts = "/".join(
         part.strip() for part in settings.monthly_prize_weights.split(",") if part.strip()
     )
-    pool_pct = int(
+    pool_pct = round(
         100
         - settings.owner_rake_pct
         - settings.leaderboard_rake_pct
         - settings.weekly_pot_pct
         - settings.pack_fund_pct
-        - settings.referral_pct
+        - settings.referral_pct,
+        2,
     )
 
     return (
         "\n\nРаспределение фонда дня:\n"
-        f"• {pool_pct}% — поставившим на верный путь, пропорционально ставкам "
+        f"• {_pct_text(pool_pct)}% — поставившим на верную сцену, пропорционально ставкам "
         f"(газ сети ~{settings.payout_fee_gram:g} Gram за перевод вычитается из пула заранее)\n"
         f"• {_pct_text(settings.pack_fund_pct)}% — Фонд Стаи: накопительный, разыгрывается хранителем\n"
         f"• {_pct_text(settings.weekly_pot_pct)}% — копилка недели: в понедельник топ-3 по верным путям "

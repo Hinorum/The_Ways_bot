@@ -55,21 +55,24 @@ def _commands_help() -> list[str]:
             else f"/change — перемотать кадр (⭐ {settings.revote_stars})"
         )
     if settings.ton_enabled:
+        from app.handlers.wallet import _pct_text
+
         lines.append("/wallet — кошелёк · /stake — поставить Gram на кадр")
         lines.append("/top — копилки и лидеры")
         lines.append("/fund — Фонд Стаи: баланс и журнал")
-        pool_pct = int(
+        pool_pct = round(
             100
             - settings.owner_rake_pct
             - settings.leaderboard_rake_pct
             - settings.weekly_pot_pct
             - settings.pack_fund_pct
-            - settings.referral_pct
+            - settings.referral_pct,
+            2,
         )
         lines.append(
-            f"\n💰 Фонд дня: {pool_pct}% — поставившим на верный кадр; остальное — "
+            f"\n💰 Фонд дня: {_pct_text(pool_pct)}% — поставившим на верную сцену; остальное — "
             "Фонд Стаи, копилки недели и месяца (/top), хранителю и пригласившим "
-            f"({settings.referral_pct:.0f}%, см. /referral). Подробности: /stake."
+            f"({_pct_text(settings.referral_pct)}%, см. /referral). Подробности: /stake."
         )
     lines += [
         "/invite — позвать в стаю по личной ссылке",
