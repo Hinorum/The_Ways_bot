@@ -459,10 +459,10 @@ async def cmd_today(message: Message) -> None:
 
 
 async def _score_text(user) -> str:
-    """Единый экран Стаи: кадр, Следы, серия, место и личный блок.
+    """Единый экран Стаи: выбор дня, титул, серия, голоса и личный блок.
 
-    Одна карточка для /score и /rank: сцена дня, прогресс и место среди
-    стаи, затем личные данные (кошелёк, ставка дня, приведённые в стаю).
+    Одна карточка для /score и /rank: выбор дня, прогресс и голоса за
+    неделю и месяц, затем личные данные (кошелёк, ставка дня, приведённые в стаю).
     В группе сюда не показываем — только приватный поп-ап _score_short.
     """
     from app.handlers.wallet import _today_stake_line
@@ -592,7 +592,7 @@ async def on_score_view(callback: CallbackQuery) -> None:
 
 @router.message(Command("rank"))
 async def cmd_rank(message: Message) -> None:
-    """Показывает тот же единый экран, что и /score: счёт и место среди стаи."""
+    """Показывает тот же единый экран, что и /score: титул, серия и голоса."""
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(
             await _score_text(message.from_user),
