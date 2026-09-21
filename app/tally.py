@@ -61,15 +61,9 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
             .where(Player.id.in_(chunk))
             .values(score=Player.score + 10, correct_picks=Player.correct_picks + 1)
         )
-    # Вдохновение («Второй нюх») за верную серию: каждый 7-й верный путь
-    # кладёт жетон. Жетон тратится только на личную микросцену — на механику
-    # дня он не влияет.
-    for chunk in _chunks(winner_ids):
-        await session.execute(
-            update(Player)
-            .where(Player.id.in_(chunk), (Player.correct_picks % 7) == 0, Player.correct_picks > 0)
-            .values(inspiration=Player.inspiration + 1)
-        )
+    # Жетон «Вдохновение» пока не выдаём: механики личной микросцены ещё нет,
+    # а непотратный ресурс копить нечестно. Поле inspiration в моделях —
+    # задел под неё (как ton_watch и не выдаёт покупку такого жетона).
 
     # Обновление стриков: победители увеличивают, проигравшие сбрасывают
     from app.streaks import update_streak
