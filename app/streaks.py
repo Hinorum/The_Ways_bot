@@ -145,6 +145,28 @@ async def calc_rank(session: AsyncSession, player_id: int) -> dict:
     )
     month_data = {row.player_id: row.votes for row in month_stats}
 
+    week_correct_stats = await session.execute(
+        select(
+            Vote.player_id,
+            func.count(Vote.id).label("correct"),
+        )
+        .join(Round, Vote.round_id == Round.id)
+        .where(Round.opens_at >= week_start, Vote.card_position == Round.winner_card)
+        .group_by(Vote.player_id)
+    )
+    week_correct_data = {row.player_id: row.correct for row in week_correct_stats}
+
+    month_correct_stats = await session.execute(
+        select(
+            Vote.player_id,
+            func.count(Vote.id).label("correct"),
+        )
+        .join(Round, Vote.round_id == Round.id)
+        .where(Round.opens_at >= month_start, Vote.card_position == Round.winner_card)
+        .group_by(Vote.player_id)
+    )
+    month_correct_data = {row.player_id: row.correct for row in month_correct_stats}
+
     # Получаем correct_picks для периода (из Round winner + Vote)
     # Упрощённо: используем total correct_picks как приблизительный показатель
     # для ранжирования (точный подсчёт за период требует сложного JOIN)
@@ -175,5 +197,7 @@ async def calc_rank(session: AsyncSession, player_id: int) -> dict:
         "week_rank": player_week_pos,
         "week_total": len(week_ranked),
         "week_votes": week_data.get(player_id, 0),
+        "week_correct": week_correct_data.get(player_id, 0),
         "month_votes": month_data.get(player_id, 0),
+        "month_correct": month_correct_data.get(player_id, 0),
     }

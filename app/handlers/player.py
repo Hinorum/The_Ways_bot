@@ -29,7 +29,6 @@ from app.style import (
     hint_mark,
     ok_mark,
     path_mark,
-    result_mark,
     warn_mark,
 )
 from app.ton_utils import from_nano, to_nano
@@ -476,12 +475,18 @@ async def _score_text(user) -> str:
 
     invited = await invited_count(user.id)
 
+    def _scene_label() -> str:
+        name = next((c.title for c in round_row.cards if c.position == vote.card_position), None)
+        if name is None:
+            return f"{POSITIONS[vote.card_position]}."
+        return f"{POSITIONS[vote.card_position]}. «{name}»"
+
     if vote is None:
-        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не отметил сцену дня."
+        choice = f"{hint_mark(str(user.id))} Сегодня ты ещё не сделал выбор дня."
     elif round_row.status in (RoundStatus.OPEN, RoundStatus.TALLYING):
-        choice = f"{path_mark('care', str(user.id))} Твоя сцена дня: {POSITIONS[vote.card_position]}."
+        choice = f"{path_mark('care', str(user.id))} Твой выбор: {_scene_label()}"
     else:
-        choice = f"Вчера ты держал сцену {POSITIONS[vote.card_position]}."
+        choice = f"Вчера твой выбор: {_scene_label()}"
 
     personal: list[str] = []
     if settings.ton_enabled:
@@ -500,13 +505,10 @@ async def _score_text(user) -> str:
         f"{title.emoji} <b>{title.name}</b> — титул Стаи: растёт за серию верных сцен",
         choice,
         "",
-        f"{result_mark(f'score:{user.id}')} Следы на ленте: {player.score} · за каждый день голоса +1, за верную сцену +10",
-        f"✅ Верных сцен: {player.correct_picks} — решают титулы и копилки Gram",
         *streak_lines(player),
         "",
-        f"🐺 Место в стае: #{rank['overall_rank']} из {rank['overall_total']} · по верным сценам, при равенстве — по следам",
-        f"📅 Неделя на плёнке: #{rank['week_rank']} из {rank['week_total']} · голосов",
-        f"🗓 Голосов в месяце: {rank['month_votes']}",
+        f"📅 Голосов на неделе: {rank['week_votes']} · верных: {rank['week_correct']}",
+        f"🗓 Голосов в месяце: {rank['month_votes']} · верных: {rank['month_correct']}",
     ]
     if settings.ton_enabled:
         lines.append("🏆 Топ-3 верных сцен недели и месяца делят копилки Gram (доли 50/30/20)")
@@ -532,11 +534,9 @@ async def _score_short(user) -> str:
     title = title_for_streak(player.current_streak)
     return (
         f"{title.emoji} {title.name}\n"
-        f"{result_mark(f'score:{user.id}')} Следы: {player.score} · "
-        f"Верных сцен: {player.correct_picks}\n"
         f"🔥 Серия: {player.current_streak} · Лучшая: {player.best_streak}\n"
-        f"🐺 #{rank['overall_rank']}/{rank['overall_total']} · "
-        f"📅 #{rank['week_rank']} ({rank['week_votes']})"
+        f"📅 Голосов на неделе: {rank['week_votes']} · верных: {rank['week_correct']}\n"
+        f"🗓 Голосов в месяце: {rank['month_votes']} · верных: {rank['month_correct']}"
     )
 
 
