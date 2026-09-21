@@ -1315,7 +1315,7 @@ async def _heal_stuck_transfers(bot: Bot | None = None) -> int:
                     except Exception as exc2:
                         logger.error(
                             "Stuck-транзакция %s: авто-возврат не удался: %s",
-                            tx_hash[:16], exc2,
+                            tx_hash[:16], exc2, exc_info=True,
                         )
         if healed or touched:
             await _write_stuck(session, stuck)

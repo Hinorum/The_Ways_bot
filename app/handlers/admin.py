@@ -209,6 +209,7 @@ async def cmd_resetgame(message: Message) -> None:
             from app.backups import backup_now
             await backup_now()
         except Exception:
+            logger.warning("Бэкап перед /resetgame не удался", exc_info=True)
             await message.answer(f"{warn_mark('queue')} Бэкап перед сбросом не удался, " "продолжаю без снимка.")
         new_round = await reset_game(session, keep_story=keep_story)
         first = await claim_announcement(session, new_round)

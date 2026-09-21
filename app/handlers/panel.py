@@ -158,7 +158,7 @@ async def _build_panel_text(session) -> str:
             ).scalar_one()
             lines.append(f"🐾 Фонд Стаи: {fund_nano / 1e9:.2f} Gram")
         except Exception:
-            pass
+            logger.warning("Строка Фонда Стаи в панели не собралась", exc_info=True)
         # Метрики суток: явка вчера, всплывшие эха, оставшиеся заглушки.
         try:
             from app.models import Vote as _Vote

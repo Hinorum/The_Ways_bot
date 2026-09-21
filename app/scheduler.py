@@ -329,7 +329,7 @@ async def _cleanup_watcher_state_job() -> None:
             await session.commit()
             logger.info("watcher_state: вычищено %d устаревших ключей", len(rows))
     except Exception as exc:
-        logger.warning("Очистка watcher_state не удалась: %s", exc)
+        logger.warning("Очистка watcher_state не удалась: %s", exc, exc_info=True)
 
 
 def start_scheduler() -> None:
@@ -425,8 +425,8 @@ async def _vote_reminder_job() -> None:
             async def _deliver(pid: int) -> None:
                 try:
                     await bot.send_message(pid, text)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Напоминание о голосовании игроку %s не доставлено: %s", pid, exc)
 
             sent = await _dm_send_all(bot, _deliver, "vote-reminder")
             logger.info("Напоминание о голосовании отправлено: %d сообщений", sent)

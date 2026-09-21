@@ -247,7 +247,7 @@ async def _throttled(session, key: str) -> bool:
             if _now() - datetime.fromisoformat(raw) < _ALERT_COOLDOWN:
                 return False
         except ValueError:
-            pass
+            logger.debug("Кулдаун-метка %s не парсится (%r) — отсчёт заново", key, raw)
     await _set_state(session, key, _now().isoformat())
     return True
 
@@ -264,7 +264,7 @@ def _load_only_stuck(raw: str | None) -> dict:
         if isinstance(value, dict):
             return value
     except (ValueError, TypeError):
-        pass
+        logger.debug("Битый stuck-JSON (%r) — начинаем с чистого списка", (raw or "")[:128])
     return {}
 
 

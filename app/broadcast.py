@@ -190,9 +190,11 @@ async def _dm_send_all(bot: Bot, deliver, label: str) -> int:
                 try:
                     await deliver(player_id)
                     return True
-                except Exception:
+                except Exception as exc2:
+                    logger.warning("Игроку %s сообщение не доставлено (после ретрая): %s", player_id, exc2)
                     return False
-            except Exception:
+            except Exception as exc:
+                logger.warning("Игроку %s сообщение не доставлено: %s", player_id, exc)
                 return False
 
     outcomes = await asyncio.gather(*(worker(pid) for pid in player_ids))
@@ -430,7 +432,8 @@ async def _broadcast_text(
                     try:
                         await bot.send_message(chat_id, text, parse_mode=parse_mode)
                         return chat_id
-                    except Exception:
+                    except Exception as exc2:
+                        logger.warning("Текст не доставлен в чат %s (после ретрая): %s", chat_id, exc2)
                         return None
                 except TelegramForbiddenError:
                     await deactivate_chat(chat_id)
@@ -495,7 +498,8 @@ async def whisper_to_chats(bot: Bot | None, text: str) -> int:
                 try:
                     await bot.send_message(chat_id, text)
                     return True
-                except Exception:
+                except Exception as exc2:
+                    logger.warning("Шёпот дня не доставлен в чат %s (после ретрая): %s", chat_id, exc2)
                     return False
             except TelegramForbiddenError:
                 await deactivate_chat(chat_id)
