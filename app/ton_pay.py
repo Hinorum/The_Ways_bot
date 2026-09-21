@@ -280,6 +280,30 @@ def _comment_cell(text: str):
     return begin_cell().store_uint(0, 32).store_string(text[:120]).end_cell()
 
 
+def _payout_comment_candidates(payout) -> list[str]:
+    """Все комментарии, которыми эта выплата МОГЛА уйти в цепочку.
+
+    Служебное memo «way:<день>:<тип>#<id>» уникально глобально — на нём держится
+    анти-дубль. Свободный текст переопределения (возвраты при паузе) общий для
+    многих выплат: если слать его как есть, два возврата с одинаковым текстом
+    становятся НЕРАЗЛИЧИМЫ для сверки — таймаут вещания одной строки прочитается
+    как «уже ушла» по чужому переводу, и игрок не получит деньги.
+
+    Поэтому переопределение дополняется служебным суффиксом (уникальный ключ
+    сохраняется даже у строки на 120 символов — сам текст усекается), а
+    первичный кандидат идёт в цепочку. Второй кандидат — сырой текст: это
+    легаси-строки, отправленные ДО введения суффикса; их сверка должна уметь
+    находить их в истории, иначе вернёт в очередь уже разосланное.
+    """
+    unique = f"way:{payout.round_id}:{payout.kind}#{payout.id}"
+    override = payout.comment_override
+    if not override:
+        return [unique]
+    suffix = f" | {unique}"
+    available = max(0, 120 - len(suffix))
+    return [f"{override[:available]}{suffix}", override]
+
+
 async def _send_raw_with_seqno(wallet, seqno: int, dest_address: str, amount_nanotons: int, body) -> int:
     """Один перевод с ЗАДАННЫМ seqno (без get_seqno у сети).
 
@@ -542,7 +566,11 @@ async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: st
             result = await _send_raw_with_seqno(
                 wallet, seqno, dest_address, amount_nanotons, _comment_cell(comment)
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # Таймаут диспетчера (asyncio.wait_for) обрывает корутину через
+            # CancelledError — это НЕ Exception, и без явного перехвата
+            # _batch_seqno остался бы протухшим: следующий перевод батча
+            # переиспользовал бы уже разосланный seqno и молча потерялся.
             _batch_seqno = None
             raise
         if result != 1:
@@ -605,8 +633,7 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
             # запросов в квартал провайдера минимум, а «нет в истории» остаётся
             # правдивым (отсутствующая цель дожимает скан до конца окна).
             targets = {
-                payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
-                for payout in rows
+                candidate for payout in rows for candidate in _payout_comment_candidates(payout)
             }
             tx_map = await fetch_broadcast_tx_map(targets=targets)
             if not tx_map:
@@ -620,8 +647,14 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
                 seconds=settings.payout_confirm_timeout_seconds
             )
             for payout in rows:
-                comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
-                real_hash = tx_map.get(comment)
+                real_hash = next(
+                    (
+                        tx_map[candidate]
+                        for candidate in _payout_comment_candidates(payout)
+                        if candidate in tx_map
+                    ),
+                    None,
+                )
                 if real_hash:
                     payout.tx_hash = real_hash
                     confirmed += 1
@@ -634,7 +667,7 @@ async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
                 payout.status = "pending"
                 payout.attempts += 1
                 payout.last_error = (
-                    f"memo «{comment[:40]}» не найдено в блокчейне "
+                    f"memo «{_payout_comment_candidates(payout)[0][:40]}» не найдено в блокчейне "
                     f"за {settings.payout_confirm_timeout_seconds} с после вещания — повторная отправка"
                 )
                 requeued += 1
@@ -940,10 +973,12 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                 logger.warning("Не удалось получить seqno для батч-отправки — отправлю по одному", exc_info=True)
         try:
             for payout in payouts:
-                # Свободный комментарий (возвраты при паузе) либо служебное memo
-                # «way:<день>:<тип>#<id>» — по нему же работает анти-дубль.
-                comment = payout.comment_override or f"way:{payout.round_id}:{payout.kind}#{payout.id}"
-                if comment in markers:
+                # Свободный комментарий (возвраты при паузе) дополняется
+                # служебным суффиксом «way:<день>:<тип>#<id>», чтобы анти-дубль
+                # не спотыкался на одинаковом тексте разных возвратов.
+                candidates = _payout_comment_candidates(payout)
+                comment = candidates[0]
+                if any(candidate in markers for candidate in candidates):
                     # Перевод уже ушёл в цепочку раньше, но статус тогда не
                     # сохранился (краш/таймаут после вещания). Повтор задвоил бы
                     # платёж — фиксируем доставку без новой отправки.
@@ -957,7 +992,11 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                         payout.id,
                     )
                     continue
-                if payout.attempts > 1 and comment not in markers and not _RECONCILE_HISTORY_OK:
+                if (
+                    payout.attempts > 1
+                    and not any(candidate in markers for candidate in candidates)
+                    and not _RECONCILE_HISTORY_OK
+                ):
                     # Повтор (>1 попытки) и история казначея НЕДОСТУПНА: не знаем,
                     # не ушёл ли этот перевод тем же memo в прошлом цикле (краш
                     # между вещанием и коммитом). Пустой ответ маркеров в этом

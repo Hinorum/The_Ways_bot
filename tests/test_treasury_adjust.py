@@ -747,7 +747,9 @@ async def test_dispatch_sends_comment_override(monkeypatch) -> None:
             await db.commit()
             payout_id = payout.id
         assert await ton_pay.dispatch_pending_payouts() >= 1
-        assert captured["comment"] == "Игра приостановлена: идут технические работы"
+        assert captured["comment"].startswith("Игра приостановлена: идут технические работы")
+        # Анти-дубль опознаёт возврат по уникальному суффиксу way:…:refund#<id>
+        assert captured["comment"].endswith(f"refund#{payout_id}")
         assert captured["amount"] == to_nano(0.4)
         async with SessionLocal() as db:
             sent = await db.get(Payout, payout_id)

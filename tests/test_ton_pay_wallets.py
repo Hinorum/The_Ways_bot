@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -198,6 +199,32 @@ async def test_send_batch_aborts_on_failure(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(ton_pay, "_batch_seqno", 100)
     try:
         with pytest.raises(RuntimeError, match="не приняли"):
+            await ton_pay.send_ton_transfer("0:" + "11" * 32, to_nano(1), comment="a")
+        assert ton_pay._batch_seqno is None
+    finally:
+        monkeypatch.setattr(ton_pay, "_batch_seqno", None)
+
+
+async def test_send_batch_aborts_on_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """asyncio.wait_for-таймаут диспетчера рвёт корутину вещания CancelledError
+    (это НЕ Exception): батч-счётчик обязан сброситься и здесь, иначе следующий
+    перевод пачки переиспользует уже разосланный seqno и молча потеряется."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "treasury_mnemonic", " ".join(mnemonic_new(24)))
+
+    class _CancelledWallet(_BatchWallet):
+        async def send_external(self, body=None):
+            raise asyncio.CancelledError()
+
+    fake = _CancelledWallet()
+
+    async def fake_get():
+        return fake
+
+    monkeypatch.setattr(ton_pay, "_get_wallet", fake_get)
+    monkeypatch.setattr(ton_pay, "_batch_seqno", 100)
+    try:
+        with pytest.raises(asyncio.CancelledError):
             await ton_pay.send_ton_transfer("0:" + "11" * 32, to_nano(1), comment="a")
         assert ton_pay._batch_seqno is None
     finally:

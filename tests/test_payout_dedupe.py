@@ -533,3 +533,92 @@ async def test_dead_letter_alert_carries_reason(monkeypatch) -> None:
         async with SessionLocal() as session:
             await session.delete(await session.get(Payout, payout_id))
             await session.commit()
+
+
+# ---------- Свободный комментарий возврата не ломает анти-дубль ----------
+
+
+def test_payout_comment_candidates_keep_unique_suffix() -> None:
+    """Переопределённый текст дополняется уникальным суффиксом way:…:#id.
+
+    Два возврата с одним текстом (пауза) неразличимы для сверки, если слать
+    текст как есть: потерявшийся возврат может быть помечен sent «по чужой»
+    транзакции, и игрок не получит деньги. Суффикс возвращает уникальность."""
+    override = "Игра приостановлена: идут технические работы"
+    p1 = Payout(round_id=7, kind="refund", id=11, comment_override=override)
+    p2 = Payout(round_id=7, kind="refund", id=12, comment_override=override)
+    c1 = ton_pay._payout_comment_candidates(p1)
+    c2 = ton_pay._payout_comment_candidates(p2)
+    assert c1[0] != c2[0]
+    assert c1[0].endswith("| way:7:refund#11")
+    assert c2[0].endswith("| way:7:refund#12")
+    assert override in c1[0]
+    # Легаси-кандидат — сырой текст: старые переводы (до суффикса) всё ещё
+    # находятся в истории, иначе сверка вернёт в очередь уже разосланное.
+    assert c1[1] == override
+    # Без переопределения — привычное служебное memo.
+    assert ton_pay._payout_comment_candidates(Payout(round_id=7, kind="prize", id=5)) == ["way:7:prize#5"]
+    # Длинный текст не съедает суффикс (лимит ячейки 120): режется сам текст.
+    long_row = Payout(round_id=7, kind="refund", id=13, comment_override="д" * 120)
+    c3 = ton_pay._payout_comment_candidates(long_row)[0]
+    assert len(c3) <= 120 and c3.endswith("| way:7:refund#13")
+
+
+async def _seed_override_payout() -> int:
+    async with SessionLocal() as session:
+        payout = Payout(
+            round_id=7,
+            player_id=None,
+            kind="refund",
+            amount_nanotons=500_000_000,
+            dest_address="0:" + os.urandom(32).hex(),
+            comment_override="Игра приостановлена: идут технические работы",
+        )
+        session.add(payout)
+        await session.flush()
+        payout.attempts = 1
+        payout.status = "pending"
+        await session.commit()
+        return payout.id
+
+
+async def test_same_override_comments_stay_distinct(monkeypatch) -> None:
+    """Возврат, потерянный в таймауте, не списывается на чужую транзакцию
+    с тем же текстом: сверка видит свой уникальный суффикс и отправляет заново."""
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    x_id = await _seed_override_payout()
+    y_id = await _seed_override_payout()
+    async with SessionLocal() as session:
+        x_row = await session.get(Payout, x_id)
+        y_row = await session.get(Payout, y_id)
+    x_comment = ton_pay._payout_comment_candidates(x_row)[0]
+    y_comment = ton_pay._payout_comment_candidates(y_row)[0]
+    assert x_comment != y_comment
+
+    async def fake_markers() -> set[str]:
+        return {y_comment}
+
+    captured: dict[str, object] = {}
+
+    async def fake_transfer(dest, amount, comment):
+        captured["dest"], captured["amount"], captured["comment"] = dest, amount, comment
+        return "bcast:123"
+
+    monkeypatch.setattr(ton_pay, "fetch_broadcast_markers", fake_markers)
+    monkeypatch.setattr(ton_pay, "send_ton_transfer", fake_transfer)
+
+    try:
+        await ton_pay.dispatch_pending_payouts(bot=None)
+        async with SessionLocal() as session:
+            x = await session.get(Payout, x_id)
+            y = await session.get(Payout, y_id)
+        # X: суффикса нет в истории — не верим, что ушло, шлём заново.
+        assert x.status == "sent" and x.tx_hash == "bcast:123"
+        assert captured["comment"] == x_comment
+        # Y: свой суффикс в истории — отметка sent без повторной отправки.
+        assert y.status == "sent" and y.tx_hash is None
+    finally:
+        async with SessionLocal() as session:
+            await session.delete(await session.get(Payout, x_id))
+            await session.delete(await session.get(Payout, y_id))
+            await session.commit()
