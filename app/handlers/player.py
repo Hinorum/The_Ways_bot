@@ -465,7 +465,7 @@ async def _score_text(user) -> str:
     """
     from app.handlers.wallet import _today_stake_line
     from app.referrals import invited_count
-    from app.streaks import calc_rank, streak_lines, title_for_streak
+    from app.streaks import TITLES, calc_rank, streak_lines, title_for_streak
 
     async with SessionLocal() as session:
         player = await upsert_player(session, user)
@@ -497,16 +497,24 @@ async def _score_text(user) -> str:
 
     title = title_for_streak(player.current_streak)
     lines = [
-        f"{title.emoji} <b>{title.name}</b> — карточка Стаи",
+        f"{title.emoji} <b>{title.name}</b> — титул Стаи: растёт за серию верных сцен",
         choice,
         "",
-        f"{result_mark(f'score:{user.id}')} Следы: {player.score} · Верных сцен: {player.correct_picks}",
+        f"{result_mark(f'score:{user.id}')} Следы на ленте: {player.score} · за каждый день голоса +1, за верную сцену +10",
+        f"✅ Верных сцен: {player.correct_picks} — решают титулы и копилки Gram",
         *streak_lines(player),
         "",
-        f"🐺 Место в стае: #{rank['overall_rank']} из {rank['overall_total']}",
-        f"📅 Неделя на плёнке: #{rank['week_rank']} из {rank['week_total']} ({rank['week_votes']} голосов)",
-        f"🗓 В месяце: {rank['month_votes']} голосов",
+        f"🐺 Место в стае: #{rank['overall_rank']} из {rank['overall_total']} · по верным сценам, при равенстве — по следам",
+        f"📅 Неделя на плёнке: #{rank['week_rank']} из {rank['week_total']} · голосов",
+        f"🗓 Голосов в месяце: {rank['month_votes']}",
     ]
+    if settings.ton_enabled:
+        lines.append("🏆 Топ-3 верных сцен недели и месяца делят копилки Gram (доли 50/30/20)")
+    lines.append("")
+    lines.append("🐾 Лестница титулов (верных сцен подряд):")
+    ladder = [f"{t.correct_needed} {t.name}" for t in TITLES[1:]]
+    for i in range(0, len(ladder), 3):
+        lines.append(" · ".join(ladder[i : i + 3]))
     if personal:
         lines.append("")
         lines.extend(personal)
