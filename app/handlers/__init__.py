@@ -154,7 +154,7 @@ from .common import (
     _set_paused_and_broadcast,
     router,
 )
-from .fallback import on_private_fallback
+from .fallback import on_private_fallback, register_private_fallback
 from .panel import (
     _admin_panel_text,
     _panel_keyboard,
@@ -233,3 +233,7 @@ from .wallet import (
     on_stake_view,
     on_wallet_view,
 )
+
+# Вызов после всех @router.message доменов. Сам import fallback isort
+# ставит раньше player/wallet — без декоратора там ничего не регистрируется.
+register_private_fallback()
