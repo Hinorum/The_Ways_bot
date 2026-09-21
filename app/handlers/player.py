@@ -223,7 +223,6 @@ async def cmd_start(message: Message) -> None:
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
-    await cmd_today(message)
 
 
 async def _record_start_referral(session, message: Message) -> None:
