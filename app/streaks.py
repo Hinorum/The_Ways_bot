@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Player, Round, Vote
@@ -110,9 +110,11 @@ def remaining_word(n: int) -> str:
 
 
 async def calc_rank(session: AsyncSession, player_id: int) -> dict:
-    """Вычисляет позицию игрока в рейтинге за текущую неделю и месяц.
+    """Счётчики игрока за текущую неделю и месяц.
 
-    Рейтинг = correct_picks за период + дни голосования за период.
+    Возвращает количество голосов и верных выборов (Vote.card_position
+    совпал с Round.winner_card) в днях недели и месяца. Лидербордов здесь
+    нет — карточка Стаи показывает только личные цифры.
     """
     from datetime import datetime, timedelta
 
@@ -121,83 +123,26 @@ async def calc_rank(session: AsyncSession, player_id: int) -> dict:
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    # Подсчитываем для каждого игрока: верные голоса + дни голосования за период
-    # Используем подзапрос для подсчёта
-    week_stats = await session.execute(
-        select(
-            Vote.player_id,
-            func.count(Vote.id).label("votes"),
+    async def _counters(since: datetime) -> tuple[int, int]:
+        result = await session.execute(
+            select(
+                func.count(Vote.id).label("votes"),
+                func.sum(case((Vote.card_position == Round.winner_card, 1), else_=0)).label(
+                    "correct"
+                ),
+            )
+            .join(Round, Vote.round_id == Round.id)
+            .where(Round.opens_at >= since, Vote.player_id == player_id)
         )
-        .join(Round, Vote.round_id == Round.id)
-        .where(Round.opens_at >= week_start)
-        .group_by(Vote.player_id)
-    )
-    week_data = {row.player_id: row.votes for row in week_stats}
+        row = result.one()
+        return int(row.votes or 0), int(row.correct or 0)
 
-    month_stats = await session.execute(
-        select(
-            Vote.player_id,
-            func.count(Vote.id).label("votes"),
-        )
-        .join(Round, Vote.round_id == Round.id)
-        .where(Round.opens_at >= month_start)
-        .group_by(Vote.player_id)
-    )
-    month_data = {row.player_id: row.votes for row in month_stats}
-
-    week_correct_stats = await session.execute(
-        select(
-            Vote.player_id,
-            func.count(Vote.id).label("correct"),
-        )
-        .join(Round, Vote.round_id == Round.id)
-        .where(Round.opens_at >= week_start, Vote.card_position == Round.winner_card)
-        .group_by(Vote.player_id)
-    )
-    week_correct_data = {row.player_id: row.correct for row in week_correct_stats}
-
-    month_correct_stats = await session.execute(
-        select(
-            Vote.player_id,
-            func.count(Vote.id).label("correct"),
-        )
-        .join(Round, Vote.round_id == Round.id)
-        .where(Round.opens_at >= month_start, Vote.card_position == Round.winner_card)
-        .group_by(Vote.player_id)
-    )
-    month_correct_data = {row.player_id: row.correct for row in month_correct_stats}
-
-    # Получаем correct_picks для периода (из Round winner + Vote)
-    # Упрощённо: используем total correct_picks как приблизительный показатель
-    # для ранжирования (точный подсчёт за период требует сложного JOIN)
-    all_players = await session.execute(
-        select(Player.id, Player.correct_picks, Player.score)
-    )
-    players = {row.id: (row.correct_picks, row.score) for row in all_players}
-
-    # Сортируем по верным голосам (а потом по очкам)
-    ranked = sorted(
-        players.keys(),
-        key=lambda pid: (players[pid][0], players[pid][1]),
-        reverse=True,
-    )
-
-    week_ranked = sorted(
-        week_data.keys(),
-        key=lambda pid: week_data[pid],
-        reverse=True,
-    )
-
-    player_pos = ranked.index(player_id) + 1 if player_id in ranked else len(ranked) + 1
-    player_week_pos = week_ranked.index(player_id) + 1 if player_id in week_ranked else len(week_ranked) + 1
+    week_votes, week_correct = await _counters(week_start)
+    month_votes, month_correct = await _counters(month_start)
 
     return {
-        "overall_rank": player_pos,
-        "overall_total": len(ranked),
-        "week_rank": player_week_pos,
-        "week_total": len(week_ranked),
-        "week_votes": week_data.get(player_id, 0),
-        "week_correct": week_correct_data.get(player_id, 0),
-        "month_votes": month_data.get(player_id, 0),
-        "month_correct": month_correct_data.get(player_id, 0),
+        "week_votes": week_votes,
+        "week_correct": week_correct,
+        "month_votes": month_votes,
+        "month_correct": month_correct,
     }
