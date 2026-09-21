@@ -58,7 +58,7 @@ def _build_commands() -> tuple[list[BotCommand], list[BotCommand]]:
     private = [
         BotCommand(command="start", description="Как играть: PLAY кассеты"),
         BotCommand(command="today", description="Карты дня"),
-        BotCommand(command="score", description="Следы и рейтинг"),
+        BotCommand(command="score", description="Карточка Стаи: титул и серия"),
     ]
     if settings.revote_enabled:
         private.append(

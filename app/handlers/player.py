@@ -110,8 +110,8 @@ async def cmd_menu(message: Message) -> None:
     )
     await message.answer(
         f"{day_mark(uid)} <b>Пульт {settings.world_name}</b>\n\n"
-        "Всё по кнопкам: кадр дня, твой счёт и место в стае, кошелёк — одним "
-        "нажатием. Сцену голосования выбираешь кнопкой под кадром дня.",
+        "Всё по кнопкам: кадр дня, твой счёт, кошелёк — одним нажатием. "
+        "Вариант дня выбираешь кнопкой под кадром.",
         parse_mode=ParseMode.HTML,
         reply_markup=_menu_keyboard(label),
     )
@@ -261,13 +261,12 @@ def _menu_keyboard(toggle_label: str) -> InlineKeyboardMarkup:
     """Пульт LOST HOWL: кнопки-действия вместо вызова команд слепым меню.
 
     Сами действия — уже существующие колбэки, где их хватает (карточка
-    «счёт и место», ставка — с приватным окном в группе), или короткие
-    menu:* сценарии.
+    Стаи, ставка — с приватным окном в группе), или короткие menu:* сценарии.
     """
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text="▶️ Сегодня", callback_data="menu:today"),
-            InlineKeyboardButton(text="⭐ Счёт и место", callback_data="score:view"),
+            InlineKeyboardButton(text="⭐ Карточка Стаи", callback_data="score:view"),
         ],
         [
             InlineKeyboardButton(text="💰 Кошелёк", callback_data="menu:wallet"),
@@ -761,22 +760,22 @@ async def on_vote(callback: CallbackQuery) -> None:
     if result == "already":
         if outcome == "ok":
             await callback.answer(
-                f"Грант списан. Сцена дня изменена на {POSITIONS[position]}.",
+                f"Грант списан. Выбор изменён на {POSITIONS[position]}.",
                 show_alert=True,
             )
             return
         if outcome == "no_grant":
             hint = (
-                f"Сцена дня уже записана. Перемотать кадр — ⭐{settings.revote_stars}, команда /change."
+                f"Твой выбор уже записан. Перемотать кадр — ⭐{settings.revote_stars}, команда /change."
             )
             if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
-                hint = "Сцена дня уже записана. Перемотка кадра платная — через личку бота: /change."
+                hint = "Твой выбор уже записан. Перемотка кадра платная — через личку бота: /change."
             await callback.answer(hint[:200], show_alert=True)
             return
     texts = {
-        "ok": f"{ok_mark(str(round_id))} Сцена {POSITIONS[position]} принята. Итоги скрыты до конца дня.",
-        "already": f"{hint_mark('already')} Ты уже оставил свой след сегодня.",
+        "ok": f"{ok_mark(str(round_id))} Выбор {POSITIONS[position]} принят. Итоги скрыты до конца дня.",
+        "already": f"{hint_mark('already')} Ты уже сделал выбор сегодня.",
         "closed": f"{warn_mark('closed')} День закрыт — кадр фиксируется, итоги скоро.",
-        "invalid": f"{warn_mark('invalid')} Такой сцены нет в кадре дня.",
+        "invalid": f"{warn_mark('invalid')} Такого варианта нет в кадре дня.",
     }
     await callback.answer(texts.get(result, "Неизвестный ответ."), show_alert=True)

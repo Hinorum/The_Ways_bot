@@ -14,7 +14,7 @@ def _by_data(markup):
 def test_menu_keyboard_covers_daily_actions() -> None:
     kb = _by_data(_menu_keyboard("🔔 Итоги в личку: ВКЛ"))
     assert kb["menu:today"] == "▶️ Сегодня"
-    assert kb["score:view"] == "⭐ Счёт и место"
+    assert kb["score:view"] == "⭐ Карточка Стаи"
     assert "rank:view" not in kb
     assert kb["menu:wallet"] == "💰 Кошелёк"
     assert kb["stake:view"] == "💸 Ставка"
