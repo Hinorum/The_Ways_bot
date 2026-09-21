@@ -29,7 +29,6 @@ tx_hash после отправки — метка вещания «bcast:<unix>
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import time
@@ -44,6 +43,7 @@ from app.db import SessionLocal
 from app.http_utils import get_http_client, http_get_with_retry
 from app.models import Income, Payout, Player, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
+from app.ton_codec import api_headers, extract_comment
 from app.ton_utils import friendly_address, from_nano, normalize_address, to_nano
 
 logger = logging.getLogger(__name__)
@@ -308,54 +308,27 @@ async def _send_raw_with_seqno(wallet, seqno: int, dest_address: str, amount_nan
 # ---------- Анти-дубль: сверка memo с историей казначея ----------
 
 
-def _out_comments_tonapi(item: dict) -> list[str]:
-    """Комментарии исходящих сообщений одной транзакции (формат TonAPI v2).
+def _out_comments(item: dict) -> list[str]:
+    """Комментарии исходящих сообщений одной транзакции.
 
-    Приоритет: decoded_comment (чистый текст) → text (base64-строка) → raw_message
-    (только если выглядит как короткий текст, а не BoC blob).
+    Единая расшифровка для TonAPI v2 и Toncenter v3 (app.ton_codec):
+    decoded_body по op-имени → decoded_comment → base64 text →
+    message_content.decoded (comment/text_comment) → короткий raw_message.
     """
     comments: list[str] = []
     for msg in item.get("out_msgs") or []:
         if not isinstance(msg, dict):
             continue
-        msg_data = msg.get("msg_data") or {}
-        if isinstance(msg_data, dict):
-            decoded = msg_data.get("decoded_comment")
-            if decoded:
-                comments.append(str(decoded))
-                continue
-            b64 = msg_data.get("text")
-            if b64:
-                try:
-                    text = base64.b64decode(str(b64)).decode("utf-8", "ignore")
-                except Exception:
-                    text = ""
-                if text:
-                    comments.append(text)
-                    continue
-        raw = str(msg.get("raw_message") or "")
-        if raw and len(raw) < 200:
-            comments.append(raw)
+        comment = extract_comment(msg)
+        if comment:
+            comments.append(comment)
     return comments
 
 
-def _out_comments_toncenter(item: dict) -> list[str]:
-    """Комментарии исходящих сообщений одной транзакции (формат Toncenter v3).
-
-    Toncenter v3 отдаёт ``"comment"`` или ``"text_comment"`` — поддерживаем
-    оба варианта, чтобы резервный провайдер анти-дубля не был слеп.
-    """
-    comments: list[str] = []
-    for msg in item.get("out_msgs") or []:
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("message_content") or {}
-        decoded = content.get("decoded") if isinstance(content, dict) else None
-        if isinstance(decoded, dict) and decoded.get("@type") in ("comment", "text_comment"):
-            text = str(decoded.get("comment") or "")
-            if text:
-                comments.append(text)
-    return comments
+# Совместимость имён: «формат-специфичные» экстракторы были двумя копиями
+# одного декодера — тесты ходят по прежним именам (test_payout_dedupe).
+_out_comments_tonapi = _out_comments
+_out_comments_toncenter = _out_comments
 
 
 async def _tx_map_via_tonapi(targets: set[str] | None = None) -> dict[str, str]:
@@ -1080,7 +1053,7 @@ async def settle_closed_rounds(bot: Bot | None = None) -> int:
 
 async def _tonapi_account_raw(address: str) -> dict:
     url = f"{settings.active_ton_api_base}/v2/accounts/{address}"
-    headers = {"X-API-Key": settings.ton_api_key} if settings.ton_api_key else {}
+    headers = api_headers(settings.ton_api_key)
     client = get_http_client()
     response = await http_get_with_retry(client, url, headers=headers)
     response.raise_for_status()
@@ -1089,7 +1062,7 @@ async def _tonapi_account_raw(address: str) -> dict:
 
 async def _toncenter_account(address: str) -> dict:
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/accountInformation"
-    headers = {"X-API-Key": settings.toncenter_api_key} if settings.toncenter_api_key else {}
+    headers = api_headers(settings.toncenter_api_key)
     # v3 ждёт query-параметр «account», а не «address» (как в /api/v3/transactions).
     client = get_http_client()
     response = await http_get_with_retry(client, url, params={"account": address}, headers=headers)

@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -28,6 +27,7 @@ from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, 
 from app.payments import parse_revote_memo, parse_verify_memo
 from app.ops import claim_once, is_game_paused
 from app.core.registry import BEAT_KEY, CURSOR_KEY, SOURCE_KEY, STUCK_TX_KEY, WALLET_NORM_KEY
+from app.ton_codec import api_headers, clean_comment, extract_comment, norm_tx_hash
 from app.http_utils import get_http_client, http_get_with_retry
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_utils import from_nano, normalize_address, to_nano
@@ -64,8 +64,13 @@ class Transfer:
     provider_ref: str = ""
 
 
-def _api_headers(api_key: str) -> dict:
-    return {"X-API-Key": api_key} if api_key else {}
+# Кодеки (заголовки, комментарии, хеши) переехали в app.ton_codec — единая
+# реализация для watcher'а и диспетчера выплат. Префиксные имена оставлены
+# псевдонимами: по ним ходят тесты (test_ops, test_watch_sources).
+_api_headers = api_headers
+_norm_tx_hash = norm_tx_hash
+_clean_comment = clean_comment
+_decode_comment = extract_comment
 
 
 async def fetch_recent_transfers(since_utime: int, before_hash: str | None = None) -> tuple[list[Transfer], bool]:
@@ -217,34 +222,6 @@ def _parse_tx_item(item: dict, since_utime: int) -> Transfer | None:
         return None
 
 
-def _norm_tx_hash(raw: str) -> str:
-    """Единая форма хеша транзакции для всех провайдеров — hex lowercase.
-
-    TonAPI отдаёт base64url, Toncenter v3 — стандартный base64 с паддингом.
-    Идемпотентность ставок/возвратов строится на tx_hash, поэтому одна и та же
-    транзакция, увиденная разными источниками, обязана дать одну строку.
-    Разобрать не удалось — возвращаем как есть (в нижнем регистре).
-    """
-    candidate = raw.strip()
-    # Только правдоподобные длины хеша транзакции: hex-64 либо base64
-    # тридцати двух байт (43 без паддинга / 44 с ним). Прочие строки —
-    # служебные метки тестов и логов — проходят насквозь нетронутыми.
-    if len(candidate) == 64:
-        try:
-            int(candidate, 16)
-            return candidate.lower()
-        except ValueError:
-            pass
-    if len(candidate) not in (43, 44):
-        return candidate.lower()
-    b64 = candidate.replace("-", "+").replace("_", "/")
-    try:
-        padded = b64 + "=" * (-len(b64) % 4)
-        return base64.b64decode(padded, validate=True).hex()
-    except Exception:
-        return candidate.lower()
-
-
 def _parse_toncenter_item(item: dict, since_utime: int) -> Transfer | None:
     """Транзакция Toncenter v3 -> Transfer либо None (старая/пустая).
 
@@ -316,42 +293,6 @@ async def _toncenter_page(since_utime: int, before_lt: str | None = None) -> tup
         if transfer is not None:
             transfers.append(transfer)
     return transfers, _PAGE_OK
-
-
-# Кошелёк изредка добавляет к комментарию невидимые символы (нулевая ширина,
-# неразрывные пробелы, BOM) — они ломали бы строгий разбор rv:-memo.
-_COMMENT_NOISE = str.maketrans(
-    {
-        "\ufeff": "",
-        "\u200b": "",
-        "\u200c": "",
-        "\u200d": "",
-        "\u00a0": " ",
-        "\u202f": " ",
-    }
-)
-
-
-def _clean_comment(text: str) -> str:
-    """Убирает невидимые символы из комментария, сохраняя остальное как есть."""
-    return str(text).translate(_COMMENT_NOISE)
-
-
-def _decode_comment(in_msg: dict) -> str:
-    decoded_body = in_msg.get("decoded_body")
-    if isinstance(decoded_body, dict) and in_msg.get("decoded_op_name") == "text_comment":
-        return _clean_comment(str(decoded_body.get("text") or ""))
-    msg_data = in_msg.get("msg_data") or {}
-    decoded = msg_data.get("decoded_comment") or ""
-    if decoded:
-        return _clean_comment(decoded)
-    text_b64 = msg_data.get("text")
-    if text_b64:
-        try:
-            return _clean_comment(base64.b64decode(text_b64).decode("utf-8", "ignore"))
-        except Exception:
-            return ""
-    return _clean_comment(str(in_msg.get("raw_message") or ""))
 
 
 async def _ledger_stuck_incoming(
