@@ -54,7 +54,7 @@ def test_parse_revote_memo_tolerates_wallet_noise() -> None:
     assert parse_revote_memo("RV:17") == 17
     assert parse_revote_memo("rv : 17") == 17
     assert parse_revote_memo("rv:17\nподпись кошелька") == 17
-    assert parse_revote_memo("Tonkeeper\nrv:17") == 17
+    assert parse_revote_memo("Keeper\nrv:17") == 17
     assert parse_revote_memo("смена пути\nrv:17") == 17
     assert parse_revote_memo("rv:\u00a017") == 17
     assert parse_revote_memo("\u200brv\u200d:17") == 17

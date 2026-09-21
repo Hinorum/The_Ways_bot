@@ -237,7 +237,7 @@ async def test_send_batch_aborts_on_cancellation(monkeypatch: pytest.MonkeyPatch
 def test_v5_external_body_matches_contract_spec() -> None:
     """Тело внешнего сообщения v5 обязано быть
     [op 'sign'|wallet_id|valid_until|seqno|флаги][подпись 512 бит] + ref на
-    цепочку OutList — сверено с реальной транзакцией Tonkeeper тестнета.
+    цепочку OutList — сверено с реальной транзакцией Keeper тестнета.
     Дрейф версий pytoniq-core ломал сборку молча; этот тест ловит такое.
 
     Контракт парсит ровно так: signature = последние 512 бит тела, подпись
@@ -297,7 +297,7 @@ def test_v5_external_body_matches_contract_spec() -> None:
 
 
 def test_v5_wallet_id_testnet_packing() -> None:
-    """wallet_id тестнета (Tonkeeper-казначей): 0x7FFFFFFD = 2147483645."""
+    """wallet_id тестнета (Keeper-казначей): 0x7FFFFFFD = 2147483645."""
     from pytoniq.contract.wallets.wallet_v5 import WalletV5WalletID
 
     packed = WalletV5WalletID(workchain=0, network_global_id=-3).pack()

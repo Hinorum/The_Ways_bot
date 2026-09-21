@@ -431,7 +431,7 @@ _STAKE_HOWTO = (
     "{mark} Ставка на кадр дня — три шага:\n"
     "1. Привяжи кошелёк: /wallet (потом можно перепривязать — старый адрес просто перестанет считаться).\n"
     "2. Переведи от {min:g} Gram (потолка нет) со СВОЕГО привязанного кошелька — "
-    "подойдёт любой TON-кошелёк (Tonkeeper, Tonhub, MyTonWallet…):\n"
+    "подойдёт любой TON-кошелёк (Keeper, Tonhub, MyTonWallet…):\n"
     "<code>{treasury}</code>\n"
     "Кнопки ниже: открыть кошелёк с готовым получателем или скопировать адрес. "
     "Memo не нужен: перевод найдётся по отправителю.\n"
@@ -496,8 +496,8 @@ async def _stake_view_text(user) -> str:
 def _stake_pay_keyboard() -> InlineKeyboardMarkup | None:
     """Кнопки оплаты ставки: несколько кошельков + копирование адреса.
 
-    Универсальная ссылка Tonkeeper осталась, но добавлены Tonhub и кнопка
-    «Скопировать адрес» — не у всех Tonkeeper, а адрес нужен любому
+    Универсальная ссылка Keeper осталась, но добавлены Tonhub и кнопка
+    «Скопировать адрес» — не у всех Keeper, а адрес нужен любому
     TON-кошельку. Memo не требуется: watcher ищет перевод по отправителю.
     """
     if not settings.ton_enabled or not settings.active_treasury_address:
@@ -507,7 +507,7 @@ def _stake_pay_keyboard() -> InlineKeyboardMarkup | None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💸 Tonkeeper", url=f"https://app.tonkeeper.com/transfer/{addr}"
+                    text="💸 Keeper", url=f"https://app.tonkeeper.com/transfer/{addr}"
                 ),
                 InlineKeyboardButton(
                     text="🪙 Tonhub", url=f"https://tonhub.com/transfer/{addr}"

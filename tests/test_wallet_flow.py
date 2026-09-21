@@ -206,7 +206,7 @@ def _pay_keyboard_rows(markup):
 
 
 async def test_pay_keyboard_multiwallet_and_copy(monkeypatch) -> None:
-    """Кнопки: Tonkeeper + Tonhub (ссылки) и «Скопировать адрес» (callback)."""
+    """Кнопки: Keeper + Tonhub (ссылки) и «Скопировать адрес» (callback)."""
     from app.handlers import _stake_pay_keyboard
 
     monkeypatch.setattr(settings, "ton_enabled", True)
@@ -216,7 +216,7 @@ async def test_pay_keyboard_multiwallet_and_copy(monkeypatch) -> None:
     rows = _pay_keyboard_rows(markup)
     assert len(rows) == 2
     texts = [cell[0] for row in rows for cell in row]
-    assert any("Tonkeeper" in t for t in texts)
+    assert any("Keeper" in t for t in texts)
     assert any("Tonhub" in t for t in texts)
     assert any("Скопировать адрес" in t for t in texts)
     urls = [cell[2] for row in rows for cell in row if cell[2]]
