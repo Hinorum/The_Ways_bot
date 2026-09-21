@@ -327,6 +327,10 @@ def validate_payload(payload: dict) -> ValidationResult:
             errors=[f"стоп-слова: {', '.join(taboo)}"],
         )
     warnings.extend(cassette.rule_hint_budget_warnings())
+    if not (cassette.attribution or "").strip():
+        warnings.append(
+            "attribution не указано — клеймо плёнки-фанфика («по мотивам …») желательно"
+        )
     return ValidationResult(cassette=cassette, errors=[], warnings=warnings)
 
 
