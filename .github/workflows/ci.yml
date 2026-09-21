@@ -27,8 +27,54 @@ jobs:
         run: |
           python -m alembic upgrade head
           python -m alembic check
-      - name: Tests
+      - name: Tests (SQLite)
         env:
           BOT_TOKEN: "123456:ci-dummy-token"
           ADMIN_IDS: "1"
         run: python -m pytest -q --cov=app --cov-report=term-missing --cov-fail-under=70
+
+  # Продакшен живет на Supabase Postgres, а основная джоба тестирует только
+  # SQLite: прод-инциденты от дрейфа диалектов уже были (VARCHAR-длины
+  # вм. truncation, жизненный цикл соединений пулера). Здесь — тот же набор
+  # на свежем PostgreSQL 16: alembic drift-check и весь pytest-прогон.
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: the_way_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Локальный хост -> postgres_connect_args не включает SSL (см. config.py).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/the_way_ci
+      BOT_TOKEN: "123456:ci-dummy-token"
+      ADMIN_IDS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov ruff
+      - name: Alembic drift check (Postgres)
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+      # Тесты сами поднимут init_db: alembic upgrade head уже создал схему,
+      # поэтому conftest пойдёт по пути _migrate — так валидируется и
+      # рантаймовая миграция на Postgres, а не только свежий create_all.
+      - name: Tests (Postgres)
+        run: python -m pytest -q

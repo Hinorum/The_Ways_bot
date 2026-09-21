@@ -41,7 +41,7 @@ def test_upgrade_head_is_noop_after_bootstrap() -> None:
     """`alembic upgrade head` на базе, бутстрапнутой через create_all со штампом,
     отрабатывает без «table already exists»."""
     db_url = os.environ.get("DATABASE_URL")
-    assert db_url and db_url.startswith("sqlite"), "conftest задал DATABASE_URL"
+    assert db_url, "conftest задал DATABASE_URL"
     env = dict(os.environ) | {"DATABASE_URL": db_url}
     proc = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
