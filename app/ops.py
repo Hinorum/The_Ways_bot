@@ -452,11 +452,11 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
         mirror_note = await _treasury_mirror_anomaly(session)
         if mirror_note is not None:
             problems.append(mirror_note)
-            day_key = f"alert:mirror:{_now().strftime('%Y-%m-%d')}"
-            if await claim_once(session, day_key):
-                # Метка дня durable до рассылки: рестарт посреди отправки не
-                # превращает ежедневный алерт в многочасовой град сообщений.
-                await session.commit()
+            day_key = f"alert:mirror:{_now():%Y-%m-%d}"
+            if await _get_state(session, day_key) is None:
+                # _set_state коммитит сам: метка дня durable до рассылки,
+                # рестарт посреди отправки не градит повторными алертами.
+                await _set_state(session, day_key, _now().isoformat())
                 await notify_admins(bot, mirror_note + " Разбор: /treasury")
     return problems
 
