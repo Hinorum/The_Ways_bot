@@ -26,6 +26,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
+
+from app.models import Income, Payout, Stake
 from app.payments import parse_revote_memo, parse_verify_memo
 from app.ton_codec import extract_comment, norm_tx_hash
 from app.ton_utils import normalize_address
@@ -271,3 +274,77 @@ def classify_outgoing(comment: str) -> str:
         return "unknown_out"
     kind, _payout_id = parsed
     return "refund" if kind == "refund" else f"payout:{kind}"
+
+
+# ---------- Связка с БД (диспетчерская классификация) ----------
+
+
+def _incoming_kind_from_income(income: Income) -> str:
+    """Точный тег входящего из note watcher'а («in:<result>;src:…»)."""
+    note = income.note or ""
+    for marker, tag in (
+        ("in:stake", "stake"),
+        ("in:revote", "revote"),
+        ("in:walletverify", "walletverify"),
+        ("in:paused", "paused"),
+        ("in:unknown", "unknown_in"),
+    ):
+        if marker in note:
+            return tag
+    if income.kind == "ton":
+        return "income"
+    return "unknown_in"
+
+
+async def resolve_kind(session, move: MirrorMove) -> tuple[str, int | None]:
+    """Полная классификация движения по БД: (kind, linked_id).
+
+    Входящее: watcher уже создал Income (unit_ref=tx_hash) и, если это ставка,
+    строку Stake (tx_hash+network) — берём точный тег из note. Чужие/пыльный
+    приход без строк БД остаётся unknown_in. Исходящее: связываем по
+    служебному мемо (way:…:kind#id) или, для легаси-строк, по tx_hash выплаты.
+    Самопереводы казначея проходят как self.
+    """
+    if move.direction == "self":
+        return "self", None
+    if move.direction == "other":
+        return "other", None
+    if move.direction == "in":
+        income = (
+            await session.execute(
+                select(Income).where(Income.unit_ref == move.tx_hash).limit(1)
+            )
+        ).scalar_one_or_none()
+        if income is not None:
+            return _incoming_kind_from_income(income), income.id
+        stake = (
+            await session.execute(
+                select(Stake).where(
+                    Stake.tx_hash == move.tx_hash,
+                    Stake.network == move.network,
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if stake is not None:
+            return "stake", stake.id
+        return "unknown_in", None
+    # Исходящее: сначала служебное memo (уникальный ключ выплаты), потом хеш.
+    parsed = parse_way_memo(move.comment)
+    if parsed is not None:
+        kind, payout_id = parsed
+        payout = await session.get(Payout, payout_id)
+        if payout is not None:
+            tag = "refund" if kind == "refund" else f"payout:{kind}"
+            return tag, payout.id
+    payout = (
+        await session.execute(
+            select(Payout)
+            .where(Payout.tx_hash == move.tx_hash)
+            .order_by(Payout.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if payout is not None:
+        tag = "refund" if payout.kind == "refund" else f"payout:{payout.kind}"
+        return tag, payout.id
+    return "unknown_out", None
