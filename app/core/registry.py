@@ -60,3 +60,24 @@ WALLET_NORM_KEY = "wallet_norm_v1"
 # fails < минимума, а исчерпавшие лимит — пропускаем, НЕ двигая курсор за них
 # с потерей: админ видит их в watcher_state и может разобрать вручную.
 STUCK_TX_KEY = "ton_watch_stuck_tx"
+
+# --- Зеркало казны (app/treasury_mirror.py) ---
+
+# Голова зеркала: lt самой свежей учтённой транзакции. Пока бутстрап не
+# завершён (TREASURY_MIRROR_BOOTSTRAP_KEY пуст) — голова это верх истории,
+# на неё опирается инкрементальный проход после покрытия генезиса.
+TREASURY_MIRROR_CURSOR_KEY = "treasury_mirror_cursor_lt"
+# Дно бутстрапа: lt самой ДРЕВНЕЙ транзакции, до которой зеркало уже дошло.
+# Действует только в небутстрапленном состоянии; ровно с него продолжается
+# следующий цикл (страницы строго старше, по before_lt).
+TREASURY_MIRROR_BOTTOM_KEY = "treasury_mirror_bottom_lt"
+# "1" — зеркало покрыло генезис→голову, тождество «Σ balance_delta = баланс»
+# измеримо и строго; пусто — бутстрап ещё идёт, сверка невозможна.
+TREASURY_MIRROR_BOOTSTRAP_KEY = "treasury_mirror_bootstrapped"
+TREASURY_MIRROR_BEAT_KEY = "treasury_mirror_beat_iso"
+TREASURY_MIRROR_SOURCE_KEY = "treasury_mirror_last_source"
+# Результат последней проверки тождества «зеркало == баланс цепочки» (JSON:
+# exact, diff_nanotons, checked_at). Читается ежедневной автосверкой без
+# лишнего запроса к индексатору.
+TREASURY_MIRROR_CHECK_KEY = "treasury_mirror_check"
+ALERT_MIRROR_KEY = "alert_mirror_ts"

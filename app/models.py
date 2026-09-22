@@ -506,6 +506,50 @@ class Income(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TreasuryMove(Base):
+    """Зеркало транзакций казначея: точная копия истории активного кошелька.
+
+    Каждая цепочечная транзакция (сторона казначея) — строка здесь.
+    Тождество «по построению»: баланс казны = сумма balance_delta от генезиса
+    до головы цепочки, поэтому сверка зеркала с живым балансом не знает
+    допуска на газ — реальный fee приходит из самой цепочки (total_fees), и
+    сходимость «тютелька в тютельку» не зависит от оценки payout_fee_gram.
+    Строки зеркала НЕ заменяют Income/Payout/Stake: это независимый дубликат
+    блокчейна для аудита, диагноза «куда делось» и ежедневной автосверки.
+    """
+
+    __tablename__ = "treasury_moves"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tx_hash: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    network: Mapped[str] = mapped_column(String(16), default="mainnet", index=True)
+    utime: Mapped[int] = mapped_column(BigInteger, index=True)
+    # Логическое время транзакции (lt): стабильный ключ пагинации индексаторов.
+    lt: Mapped[int] = mapped_column(BigInteger, index=True)
+    # Куда двигался баланс казны: in — пришло, out — ушло, self — перевод
+    # казначея самому себе (рейк/доли копилки), other — без перевода сумм.
+    direction: Mapped[str] = mapped_column(String(8), default="in")
+    # Классификация после связки с БД: stake / revote / refund / payout:prize /
+    # unknown_in / unknown_out ... Импровизированная строка для отчёта.
+    kind: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    # Абсолютная сумма перевода (для чтения); знак несёт balance_delta.
+    value_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Реальная комиссия транзакции из цепочки (total_fees) — не оценка.
+    fee_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Сальдо аккаунта от этой транзакции (со знаком): Σ по генезису = баланс.
+    balance_delta_nanotons: Mapped[int] = mapped_column(BigInteger, default=0)
+    counterparty: Mapped[str] = mapped_column(String(80), default="")
+    comment: Mapped[str] = mapped_column(String(200), default="")
+    # id связанной строки БД: Payout (out) / Income или Stake (in). None — нет.
+    linked_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_treasury_moves_lt", "network", "lt", "id"),
+    )
+
+
 class WalletDialog(Base):
     """Диалог привязки кошелька в личке: игрок → ожидаем адрес следующим сообщением.
 
