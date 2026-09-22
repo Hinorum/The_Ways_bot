@@ -111,6 +111,36 @@ def test_tonapi_parse_outgoing_with_memo() -> None:
     assert move.comment == "way:7:prize#42"
 
 
+def test_tonapi_parse_outgoing_without_provider_delta_counts_forward_fee() -> None:
+    """Исходящий перевод: fwd_fee списывается с казны, но не входит в total_fees."""
+    item = _tonapi_item("out-fwd", outgoing=True, comment="way:7:prize#42")
+    item.pop("balance_delta")
+    item["total_fees"] = 5_000_000
+    item["out_msgs"] = [{"value": 1_000_000_000, "fwd_fee": 44446,
+                         "destination": {"address": PLAYER},
+                         "msg_data": {"decoded_comment": "way:7:prize#42"}}]
+    move = _to_move(item)
+    assert move is not None and move.direction == "out"
+    assert move.balance_delta_nanotons == -(1_000_000_000 + 5_000_000 + 44446)
+    assert move.fee_nanotons == 5_000_000
+
+
+def test_toncenter_parse_outgoing_counts_forward_fee() -> None:
+    item = {
+        "hash": _h64("tc-fwd"),
+        "now": 1_700_000_002,
+        "lt": 5002,
+        "total_fees": 5_000_000,
+        "in_msg": {"value": 0, "source": "0:" + "00" * 32,
+                   "message_content": {"decoded": {"@type": "comment", "comment": ""}}},
+        "out_msgs": [{"value": 300_000_000, "fwd_fee": 44446, "destination": PLAYER,
+                      "message_content": {"decoded": {"@type": "comment", "comment": "way:3:refund#9"}}}],
+    }
+    move = parse_toncenter_move(item, NET, TREASURY)
+    assert move is not None and move.direction == "out"
+    assert move.balance_delta_nanotons == -(300_000_000 + 5_000_000 + 44446)
+
+
 def test_tonapi_parse_self_transfer_becomes_self() -> None:
     move = _move("self-1", outgoing=True, source=TREASURY)
     assert move is not None and move.direction == "self"

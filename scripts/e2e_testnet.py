@@ -37,11 +37,15 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Запуск скрипта из любого каталога: скрипт ходит в app.*.
 # isort: off
 if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # isort: on
+
+load_dotenv()  # ключи из репозиторного .env (bot читает его в config.py)
 
 logger = logging.getLogger("e2e_testnet")
 
@@ -109,7 +113,22 @@ async def _player_provider():
     else:
         provider = LiteBalancer.from_testnet_config()
     await provider.start_up()
-    return provider
+    # Разогрев: без первого запроса пиры не успевают зарегистрироваться,
+    # и создание кошелька падает «have no alive peers» сразу после старта.
+    for attempt in range(30):
+        try:
+            await provider.get_masterchain_info()
+            return provider
+        except Exception as exc:
+            if attempt % 5 == 0:
+                logger.warning(
+                    "Разогрев провайдера (попытка %s) упал: %s (живых пиров %s)",
+                    attempt + 1,
+                    exc,
+                    getattr(provider, "alive_peers_num", "?"),
+                )
+            await asyncio.sleep(2)
+    raise RuntimeError("Лайтсерверы не ответили на разогрев (have no alive peers)")
 
 
 async def _player_wallet(provider):
@@ -273,6 +292,16 @@ async def phase_stake() -> int:
     provider = await _player_provider()
     try:
         wallet = await _player_wallet(provider)
+        # Неразвёрнутый контракт: get_seqno() падает, пока аккаунт голый
+        # (баланс есть, кода нет). Разворачиваем v5r1 один раз внешним сообщением.
+        state = await wallet.get_account_state()
+        if state.is_uninitialized():
+            logger.info("Контракт игрока не развёрнут — раскладываем (деплой)…")
+            await wallet.deploy_via_external()
+            await asyncio.sleep(10)
+            state = await wallet.get_account_state()
+            if state.is_uninitialized():
+                raise RuntimeError("Деплой контракта игрока не подтвердился")
         amount = to_nano(settings.stake_min_ton)
         comment = f"e2e:день{round_row.day_index}"
         logger.info(
@@ -414,7 +443,7 @@ async def phase_mirror() -> int:
                 mirrored = await mirror_balance(session, "testnet")
             on_chain_raw = await fetch_account_state()
             on_chain = on_chain_raw[0] or 0
-            if on_chain_raw[2]:
+            if on_chain_raw[0] is None:
                 raise RuntimeError(f"Не удалось прочитать баланс казначея: {on_chain_raw[2]}")
             if mirrored == on_chain:
                 break

@@ -135,6 +135,24 @@ def _out_value(item: dict) -> tuple[int, str, str]:
     return total, dest, comment
 
 
+def _out_forward_fees(item: dict) -> int:
+    """Сумма fwd_fee исходящих сообщений транзакции.
+
+    Это плата за продвижение исходящих сообщений: она списывается с баланса
+    отправителя, но не входит в total_fees (TonAPI/Toncenter), поэтому зеркало
+    без неё завышает баланс казны (классический «пропал газ»).
+    """
+    total = 0
+    for msg in item.get("out_msgs") or []:
+        if not isinstance(msg, dict):
+            continue
+        try:
+            total += int(msg.get("fwd_fee") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def parse_tonapi_move(item: dict, network: str, treasury: str = "") -> MirrorMove | None:
     """Транзакция TonAPI v2 -> нормализованное движение зеркала.
 
@@ -159,7 +177,11 @@ def parse_tonapi_move(item: dict, network: str, treasury: str = "") -> MirrorMov
         fee = int(item.get("total_fees") or 0)
     except (TypeError, ValueError):
         fee = 0
-    delta = _derive_balance_delta(item.get("balance_delta"), in_value, out_value, fee)
+    # fwd_fee исходящих сообщений списывается с баланса отправителя, но
+    # не входит в total_fees — учтём, чтобы Σ balance_delta совпадала с цепочкой.
+    delta = _derive_balance_delta(
+        item.get("balance_delta"), in_value, out_value, fee + _out_forward_fees(item)
+    )
     if delta == 0 and in_value == 0 and out_value == 0:
         return None
     if in_value > 0:
@@ -208,10 +230,12 @@ def parse_toncenter_move(item: dict, network: str, treasury: str = "") -> Mirror
         utime = 0
         lt = 0
     try:
-        fee = int(item.get("fee") or 0)
+        fee = int(item.get("total_fees") or item.get("fee") or 0)
     except (TypeError, ValueError):
         fee = 0
-    delta = _derive_balance_delta(item.get("balance_delta"), in_value, out_value, fee)
+    delta = _derive_balance_delta(
+        item.get("balance_delta"), in_value, out_value, fee + _out_forward_fees(item)
+    )
     if delta == 0 and in_value == 0 and out_value == 0:
         return None
     if in_value > 0:
