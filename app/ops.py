@@ -432,19 +432,32 @@ async def check_anomalies(bot: Bot | None) -> list[str]:
                         "Авто-лечение запущено, но записи дольше часа требуют "
                         "взгляда: /blockchain",
                     )
-        # 4. Сверка баланса казначея с учётом БД. Две беды разного рода:
-        #    дефицит под очередь (пополни — и всё уйдёт само) и расхождение
-        #    с ожиданиями (ручной вывод, потерянные средства, чужой доступ).
-        if settings.ton_enabled and settings.active_treasury_address:
-            balance_note = await _treasury_balance_anomaly(session)
-            if balance_note is not None:
-                problems.append(balance_note)
-                if await _throttled(session, ALERT_BALANCE_KEY):
-                    await notify_admins(
-                        bot,
-                        f"⚠️ Казначей: {balance_note}. Детали: /treasury и /payouts.\n"
-                        "Это был твой ручной перевод — закрой расхождение: /adjust",
-                    )
+# 4. Сверка баланса казначея с учётом БД. Две беды разного рода:
+    #    дефицит под очередь (пополни — и всё уйдёт само) и расхождение
+    #    с ожиданиями (ручной вывод, потерянные средства, чужой доступ).
+    if settings.ton_enabled and settings.active_treasury_address:
+        balance_note = await _treasury_balance_anomaly(session)
+        if balance_note is not None:
+            problems.append(balance_note)
+            if await _throttled(session, ALERT_BALANCE_KEY):
+                await notify_admins(
+                    bot,
+                    f"⚠️ Казначей: {balance_note}. Детали: /treasury и /payouts.\n"
+                    "Это был твой ручной перевод — закрой расхождение: /adjust",
+                )
+        # 4b. Зеркало казны: ежедневная сверка «в ноль». Тождество измеряется
+        # зеркалом на каждом цикле синка (без сети здесь — читаем результат из
+        # watcher_state), поэтому сбой виден сразу, без маскировки допуском на
+        # газ: Σ движений зеркала должна равняться живому балансу ровно.
+        mirror_note = await _treasury_mirror_anomaly(session)
+        if mirror_note is not None:
+            problems.append(mirror_note)
+            day_key = f"alert:mirror:{_now().strftime('%Y-%m-%d')}"
+            if await claim_once(session, day_key):
+                # Метка дня durable до рассылки: рестарт посреди отправки не
+                # превращает ежедневный алерт в многочасовой град сообщений.
+                await session.commit()
+                await notify_admins(bot, mirror_note + " Разбор: /treasury")
     return problems
 
 
@@ -584,6 +597,38 @@ async def _treasury_balance_anomaly(session) -> str | None:
             f"Закрыть расхождение: /adjust"
         )
     return None
+
+
+async def _treasury_mirror_anomaly(session) -> str | None:
+    """Ежедневная сверка «в ноль»: зеркало казны против цепочки. None — всё сходится.
+
+    Читает результат тождества, который синк зеркала кладёт в watcher_state
+    каждым циклом (без лишнего запроса к индексатору здесь). Расхождение
+    «Σ движений ≠ живой баланс» — инцидент, который прежний допуск на газ
+    мог маскировать неделями. Пока история не выстроена — это не тревога,
+    если циклы зеркала живы (тихо идёт бутстрап); замирание циклов — тревога.
+    """
+    from app.treasury_mirror import treasury_mirror_stats
+
+    stats = await treasury_mirror_stats(session)
+    if stats["bootstrapped"]:
+        check = stats["check"]
+        if not check:
+            return "зеркало казны: тождество ещё не измерено"
+        if check.get("exact") is True:
+            return None
+        diff = int(check.get("diff_nanotons") or 0)
+        return (
+            f"зеркало казны расходится с цепочкой на {diff / 1e9:+.4f} Gram: "
+            "∑ движений ≠ живой баланс"
+        )
+    beat_age: float | None = None
+    beat_iso = stats.get("beat_iso")
+    if beat_iso:
+        beat_age = _age_seconds(beat_iso)
+    if beat_age is None or beat_age > _WATCHER_STALE_AFTER.total_seconds():
+        return "зеркало казны не выстроено и циклы не идут — индексаторы молчат?"
+    return None  # бутстрап идёт: тихая работа, не тревога
 
 
 async def record_manual_adjustment(

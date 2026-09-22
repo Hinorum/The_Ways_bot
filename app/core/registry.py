@@ -80,4 +80,3 @@ TREASURY_MIRROR_SOURCE_KEY = "treasury_mirror_last_source"
 # exact, diff_nanotons, checked_at). Читается ежедневной автосверкой без
 # лишнего запроса к индексатору.
 TREASURY_MIRROR_CHECK_KEY = "treasury_mirror_check"
-ALERT_MIRROR_KEY = "alert_mirror_ts"
