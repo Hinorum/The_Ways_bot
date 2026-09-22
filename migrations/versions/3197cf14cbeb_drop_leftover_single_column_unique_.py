@@ -20,17 +20,16 @@ Revises: c9d0e1f2a3b4
 Create Date: 2026-09-21 09:30:38.806559
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
-
 # revision identifiers, used by Alembic.
 revision: str = '3197cf14cbeb'
-down_revision: Union[str, Sequence[str], None] = 'c9d0e1f2a3b4'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = 'c9d0e1f2a3b4'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # Соглашение имён для безымянного unique: то же, что SQLAlchemy использовал бы
 # для обычного авто-именования UniqueConstraint (здесь имя детерминировано).
