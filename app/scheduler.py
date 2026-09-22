@@ -198,6 +198,23 @@ async def _watch_job_guarded() -> None:
     await _alert_guarded("ton-watch", _watch_job)
 
 
+async def _treasury_mirror_job() -> None:
+    """Зеркало казны: инкрементальный синк истории активного кошелька.
+
+    Отдельная джоба от watcher'а (тот ищет новые ставки и живёт готовым
+    курсором): зеркало бутстрапится от генезиса и не должно вставать на
+    долгую паузу из-за сбоев окна watcher'а — у сверки «в ноль» свой ритм.
+    """
+    from app.treasury_mirror import sync_treasury_mirror
+
+    await sync_treasury_mirror()
+
+
+async def _treasury_mirror_guarded() -> None:
+    """Обёртка _treasury_mirror_job с алертом при падении."""
+    await _alert_guarded("treasury-mirror", _treasury_mirror_job)
+
+
 async def _ton_maintenance() -> None:
     """Финализация дней, очередь выплат, ретраи, копилки недели и месяца."""
     from app.leaderboard import settle_month_if_due, settle_week_if_due
@@ -349,6 +366,12 @@ def start_scheduler() -> None:
     if settings.ton_enabled:
         _register_job("ton-watch", _watch_job_guarded, "interval", seconds=settings.ton_watch_interval_seconds)
         _register_job("ton-settle", _ton_maintenance_guarded, "interval", seconds=120)
+        _register_job(
+            "treasury-mirror",
+            _treasury_mirror_guarded,
+            "interval",
+            seconds=settings.treasury_mirror_interval_seconds,
+        )
     # Сброс разросшегося watcher_state: еженедельно в ночь после нагрузок.
     _register_job(
         "ws-cleanup",
