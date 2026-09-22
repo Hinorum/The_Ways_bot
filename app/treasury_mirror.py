@@ -22,15 +22,28 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.models import Income, Payout, Stake
+from app.config import settings
+from app.core.registry import (
+    TREASURY_MIRROR_BEAT_KEY,
+    TREASURY_MIRROR_BOOTSTRAP_KEY,
+    TREASURY_MIRROR_BOTTOM_KEY,
+    TREASURY_MIRROR_CHECK_KEY,
+    TREASURY_MIRROR_CURSOR_KEY,
+    TREASURY_MIRROR_SOURCE_KEY,
+)
+from app.db import SessionLocal
+from app.http_utils import get_http_client, http_get_with_retry
+from app.models import Income, Payout, Stake, TreasuryMove, WatcherState
 from app.payments import parse_revote_memo, parse_verify_memo
-from app.ton_codec import extract_comment, norm_tx_hash
+from app.ton_codec import api_headers, extract_comment, norm_tx_hash
 from app.ton_utils import normalize_address
 
 logger = logging.getLogger(__name__)
@@ -348,3 +361,394 @@ async def resolve_kind(session, move: MirrorMove) -> tuple[str, int | None]:
         tag = "refund" if payout.kind == "refund" else f"payout:{payout.kind}"
         return tag, payout.id
     return "unknown_out", None
+
+
+# ---------- Состояние зеркала в watcher_state ----------
+
+
+async def _state_int(session, key: str) -> int | None:
+    row = await session.get(WatcherState, key)
+    if row is None or not (row.value or "").isdigit():
+        return None
+    return int(row.value)
+
+
+async def _set_state(session, key: str, value: str) -> None:
+    row = await session.get(WatcherState, key)
+    if row is None:
+        session.add(WatcherState(key=key, value=value))
+    else:
+        row.value = value
+
+
+# ---------- Чтение истории (TonAPI → фолбэк Toncenter) ----------
+
+
+async def _fetch_page(before_lt: int | None = None) -> tuple[list[MirrorMove], str, bool]:
+    """Страница истории казначея (новые сверху): (движения, источник, ok).
+
+    TonAPI — основной источник; при его сбое отдаём страницу Toncenter v3.
+    ok=False — оба провайдера молчат: цикл не двигает состояние зеркала
+    (курсор не тронут, сердцебиение не ставится).
+    """
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        return [], "none", False
+    network = "testnet" if settings.is_testnet else "mainnet"
+    treasury = settings.active_treasury_address
+    client = get_http_client()
+    candidates = (
+        (
+            "tonapi",
+            f"{settings.active_ton_api_base.rstrip('/')}/v2/blockchain/accounts/{treasury}/transactions",
+            settings.ton_api_key,
+        ),
+        (
+            "toncenter",
+            f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/transactions",
+            settings.toncenter_api_key,
+        ),
+    )
+    for kind, url, api_key in candidates:
+        try:
+            params: dict[str, Any] = {"limit": _MIRROR_PAGE_LIMIT, "sort_order": "desc"}
+            if kind == "toncenter":
+                params["account"] = treasury
+                params["sort"] = "desc"
+            if before_lt is not None:
+                params["before_lt"] = str(before_lt)
+            response = await http_get_with_retry(
+                client, url, params=params, headers=api_headers(api_key)
+            )
+            response.raise_for_status()
+            items = response.json().get("transactions") or []
+            moves: list[MirrorMove] = []
+            for item in items:
+                move = (
+                    parse_toncenter_move(item, network, treasury)
+                    if kind == "toncenter"
+                    else parse_tonapi_move(item, network, treasury)
+                )
+                if move is not None:
+                    moves.append(move)
+            return moves, kind, True
+        except Exception as exc:
+            logger.warning("Зеркало: история (%s) недоступна: %s", kind, exc)
+    return [], "none", False
+
+
+# ---------- Применение движений (идемпотентный upsert по tx_hash) ----------
+
+
+async def _resolve_kinds_batch(session, moves: list[MirrorMove]) -> dict[str, tuple[str, int | None]]:
+    """Классификация пачки движений батчем: tx_hash → (kind, linked_id).
+
+    По одному запросу на таблицу, а не N запросов на движение: страница в
+    сто транзакций обрабатывается без сотни round-trip'ов к SQLite/Postgres.
+    """
+    result: dict[str, tuple[str, int | None]] = {}
+    in_moves = [m for m in moves if m.direction == "in"]
+    out_moves = [m for m in moves if m.direction == "out"]
+    income_by_ref: dict[str, Income] = {}
+    stake_by_hash: dict[str, Stake] = {}
+    if in_moves:
+        hashes = [m.tx_hash for m in in_moves]
+        for income in (
+            await session.execute(select(Income).where(Income.unit_ref.in_(hashes)))
+        ).scalars():
+            income_by_ref[income.unit_ref] = income
+        for stake in (
+            await session.execute(select(Stake).where(Stake.tx_hash.in_(hashes)))
+        ).scalars():
+            stake_by_hash.setdefault(stake.tx_hash, stake)
+    payout_by_id: dict[int, Payout] = {}
+    payout_by_hash: dict[str, Payout] = {}
+    wanted_ids: set[int] = set()
+    leftover: set[str] = set()
+    for move in out_moves:
+        parsed = parse_way_memo(move.comment)
+        if parsed is not None:
+            wanted_ids.add(parsed[1])
+        else:
+            leftover.add(move.tx_hash)
+    if wanted_ids:
+        for payout in (
+            await session.execute(select(Payout).where(Payout.id.in_(wanted_ids)))
+        ).scalars():
+            payout_by_id[payout.id] = payout
+    if leftover:
+        for payout in (
+            await session.execute(select(Payout).where(Payout.tx_hash.in_(leftover)))
+        ).scalars():
+            payout_by_hash.setdefault(payout.tx_hash, payout)
+    for move in moves:
+        if move.direction == "self":
+            result[move.tx_hash] = ("self", None)
+        elif move.direction == "other":
+            result[move.tx_hash] = ("other", None)
+        elif move.direction == "in":
+            income = income_by_ref.get(move.tx_hash)
+            if income is not None:
+                result[move.tx_hash] = (_incoming_kind_from_income(income), income.id)
+                continue
+            stake = stake_by_hash.get(move.tx_hash)
+            if stake is not None:
+                result[move.tx_hash] = ("stake", stake.id)
+                continue
+            result[move.tx_hash] = ("unknown_in", None)
+        else:
+            parsed = parse_way_memo(move.comment)
+            if parsed is not None and parsed[1] in payout_by_id:
+                payout = payout_by_id[parsed[1]]
+                tag = "refund" if parsed[0] == "refund" else f"payout:{parsed[0]}"
+                result[move.tx_hash] = (tag, payout.id)
+                continue
+            payout = payout_by_hash.get(move.tx_hash)
+            if payout is not None:
+                tag = "refund" if payout.kind == "refund" else f"payout:{payout.kind}"
+                result[move.tx_hash] = (tag, payout.id)
+                continue
+            result[move.tx_hash] = ("unknown_out", None)
+    return result
+
+
+async def _apply_page(
+    session, moves: list[MirrorMove], kinds: dict[str, tuple[str, int | None]]
+) -> tuple[int, int]:
+    """Запись/обновление пачки движений. Возвращает (added, updated).
+
+    Идемпотентно по tx_hash: повторный проход окна (перекрытие курсора или
+    реорганизация) не плодит строк — существующая строка обновляется под
+    текущее состояние цепочки (лёгкая перезапись при reorg).
+    """
+    if not moves:
+        return 0, 0
+    hashes = [m.tx_hash for m in moves]
+    rows = (
+        await session.execute(select(TreasuryMove).where(TreasuryMove.tx_hash.in_(hashes)))
+    ).scalars().all()
+    by_hash: dict[str, TreasuryMove] = {row.tx_hash: row for row in rows}
+    added = updated = 0
+    for move in moves:
+        kind, linked = kinds[move.tx_hash]
+        row = by_hash.get(move.tx_hash)
+        if row is None:
+            session.add(
+                TreasuryMove(
+                    tx_hash=move.tx_hash,
+                    network=move.network,
+                    utime=move.utime,
+                    lt=move.lt,
+                    direction=move.direction,
+                    kind=kind,
+                    value_nanotons=move.value_nanotons,
+                    fee_nanotons=move.fee_nanotons,
+                    balance_delta_nanotons=move.balance_delta_nanotons,
+                    counterparty=move.counterparty,
+                    comment=move.comment[:200],
+                    linked_id=linked,
+                    success=move.success,
+                )
+            )
+            added += 1
+            continue
+        changed = (
+            row.lt != move.lt
+            or row.utime != move.utime
+            or row.balance_delta_nanotons != move.balance_delta_nanotons
+            or row.direction != move.direction
+        )
+        row.lt = move.lt
+        row.utime = move.utime
+        row.balance_delta_nanotons = move.balance_delta_nanotons
+        row.direction = move.direction
+        row.kind = kind
+        row.linked_id = linked
+        row.counterparty = move.counterparty or row.counterparty
+        row.comment = move.comment[:200] or row.comment
+        row.success = move.success
+        if move.value_nanotons:
+            row.value_nanotons = move.value_nanotons
+        if move.fee_nanotons:
+            row.fee_nanotons = move.fee_nanotons
+        updated += int(changed)
+    await session.flush()
+    return added, updated
+
+
+# ---------- Синк: бутстрап от генезиса и инкремент к голове ----------
+
+
+def _active_network() -> str:
+    return "testnet" if settings.is_testnet else "mainnet"
+
+
+async def sync_treasury_mirror() -> dict:
+    """Один цикл синка зеркала. Возвращает сводку для лога/отчёта.
+
+    Два режима:
+      * бутстрап — спуск от головы вглубь (страницами по before_lt) до дна
+        истории провайдера; дно фиксируется в BOTTOM, при пустой странице
+        зеркало объявляется выстроенным (BOOTSTRAPPED) и тождество измеряется;
+      * инкремент — новые транзакции выше головы (CURSOR), до пересечения
+        известной границы; при реорганизации монтируется перезапись строк.
+
+    Каждая страница коммитится отдельно: краш между страницами не теряет
+    наработанного прогресса. Когда зеркало выстроено, цикл дополнительно
+    проверяет тождество «Σ balance_delta = живой баланс» и кладет результат
+    в CHECK (читается автосверкой без лишнего запроса к индексатору).
+    """
+    summary = {
+        "pages": 0,
+        "added": 0,
+        "updated": 0,
+        "source": "none",
+        "bootstrapped": False,
+        "exact": None,
+        "diff_nanotons": None,
+        "mirror_balance": None,
+        "chain_balance": None,
+    }
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        return summary
+    max_pages = max(1, settings.treasury_mirror_max_pages_per_sync)
+    network = _active_network()
+
+    async with SessionLocal() as session:
+        bootstrapped = (
+            await session.get(WatcherState, TREASURY_MIRROR_BOOTSTRAP_KEY)
+        ) is not None
+        head_lt = await _state_int(session, TREASURY_MIRROR_CURSOR_KEY)
+        bottom_lt = await _state_int(session, TREASURY_MIRROR_BOTTOM_KEY)
+        pages = added = updated = 0
+        source = "none"
+        page_ok = False
+
+        if not bootstrapped:
+            # Спуск к генезису: продолжаем с достигнутого дна либо с головы.
+            before_lt = bottom_lt
+            for _ in range(max_pages):
+                moves, source, ok = await _fetch_page(before_lt)
+                if not ok:
+                    break
+                page_ok = True
+                pages += 1
+                if not moves:
+                    bootstrapped = True
+                    await _set_state(session, TREASURY_MIRROR_BOOTSTRAP_KEY, "1")
+                    await session.commit()
+                    break
+                if head_lt is None:
+                    head_lt = moves[0].lt
+                kinds = await _resolve_kinds_batch(session, moves)
+                part_added, part_updated = await _apply_page(session, moves, kinds)
+                added += part_added
+                updated += part_updated
+                before_lt = min(move.lt for move in moves)
+                await _set_state(session, TREASURY_MIRROR_BOTTOM_KEY, str(before_lt))
+                if head_lt is not None:
+                    await _set_state(session, TREASURY_MIRROR_CURSOR_KEY, str(head_lt))
+                await session.commit()
+        else:
+            # Новое поверх головы; первая страница — самая свежая.
+            before_lt = None
+            for _ in range(max_pages):
+                moves, source, ok = await _fetch_page(before_lt)
+                if not ok:
+                    break
+                page_ok = True
+                pages += 1
+                if not moves:
+                    break
+                page_max = max(move.lt for move in moves)
+                if head_lt is not None and page_max <= head_lt:
+                    break  # самая свежая уже учтена — ничего нового
+                kinds = await _resolve_kinds_batch(session, moves)
+                part_added, part_updated = await _apply_page(session, moves, kinds)
+                added += part_added
+                updated += part_updated
+                prev_head = head_lt
+                head_lt = max(head_lt or 0, page_max)
+                await _set_state(session, TREASURY_MIRROR_CURSOR_KEY, str(head_lt))
+                await session.commit()
+                before_lt = min(move.lt for move in moves)
+                if prev_head is not None and before_lt <= prev_head:
+                    # Страница пересекла известную границу — хвост под меткой,
+                    # новые транзакции выше головы все учтены.
+                    break
+
+        if page_ok:
+            await _set_state(session, TREASURY_MIRROR_SOURCE_KEY, source)
+        summary.update(
+            pages=pages,
+            added=added,
+            updated=updated,
+            source=source,
+            bootstrapped=bootstrapped,
+        )
+
+        if not bootstrapped:
+            return summary
+
+        mirror_sum = int(
+            (
+                await session.execute(
+                    select(func.coalesce(func.sum(TreasuryMove.balance_delta_nanotons), 0))
+                    .where(TreasuryMove.network == network)
+                )
+            ).scalar_one()
+        )
+        # Безопасно: ton_pay импортируется локально — ton_pay загружает тяжёлые
+        # pytoniq-зависимости и держит циклический импорт с этим модулем.
+        from app.ton_pay import fetch_account_state
+
+        try:
+            chain_balance, _status, _src = await fetch_account_state()
+        except Exception as exc:
+            logger.warning("Зеркало: живой баланс для сверки не прочитан: %s", exc)
+            chain_balance = None
+        exact = None
+        diff = None
+        if chain_balance is not None:
+            diff = mirror_sum - chain_balance
+            exact = diff == 0
+            await _set_state(
+                session,
+                TREASURY_MIRROR_CHECK_KEY,
+                json.dumps(
+                    {
+                        "exact": exact,
+                        "diff_nanotons": diff,
+                        "mirror_balance": mirror_sum,
+                        "chain_balance": chain_balance,
+                        "checked_at": datetime.now(UTC).isoformat(),
+                        "source": source,
+                    }
+                ),
+            )
+        summary.update(
+            exact=exact,
+            diff_nanotons=diff,
+            mirror_balance=mirror_sum,
+            chain_balance=chain_balance,
+        )
+        await _set_state(session, TREASURY_MIRROR_BEAT_KEY, datetime.now(UTC).isoformat())
+        await session.commit()
+        logger.info(
+            "Зеркало казны: страниц %d, +%d/%d, источник %s, бутстрап %s, "
+            "тождество %s (diff %.4f Gram)",
+            pages, added, updated, source, "да" if bootstrapped else "нет",
+            "±0" if exact else "N/A", (diff or 0) / 1e9,
+        )
+    return summary
+
+
+async def mirror_balance(session, network: str) -> int:
+    """Сумма сальдо всех движений зеркала активного контура."""
+    return int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(TreasuryMove.balance_delta_nanotons), 0))
+                .where(TreasuryMove.network == network)
+            )
+        ).scalar_one()
+    )
