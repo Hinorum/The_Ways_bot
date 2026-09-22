@@ -20,7 +20,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio pytest-cov ruff
       - name: Lint (runtime errors only)
-        run: python -m ruff check app tests
+        run: python -m ruff check .
       - name: Alembic drift check
         env:
           DATABASE_URL: "sqlite+aiosqlite:///./data/ci_drift.db"
