@@ -1,0 +1,54 @@
+"""Маркер-гард живого e2e-контура (scripts/e2e_testnet.py).
+
+Полный прогон ставка → подсчёт → выплаты → зеркало идёт только против живого
+тестнета и включается явно: E2E_TESTNET=1 плюс тестнет-ключи (охранный гейт
+сам перечислит недостающее). Живой тест помечен `e2e` и в регулярном прогоне
+молча скапывается (skipif) — сеть и чужие деньги не трогаются. Охранный гейт
+всегда тестируется без сети отдельными юнит-тестами.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+import pytest
+
+from scripts.e2e_testnet import guard
+
+_LIVE = os.environ.get("E2E_TESTNET") == "1"
+
+
+def test_guard_rejects_dev_checkout(monkeypatch) -> None:
+    """В «пустом» окружении гейт обязан назвать причины, а не стартовать."""
+    monkeypatch.delenv("E2E_PLAYER_MNEMONIC", raising=False)
+    monkeypatch.delenv("TREASURY_TESTNET_MNEMONIC", raising=False)
+    text = " ".join(guard())
+    assert "TON_NETWORK" in text
+    assert "E2E_PLAYER_MNEMONIC" in text
+
+
+def test_guard_rejects_mainnet_even_with_all_keys(monkeypatch) -> None:
+    """На mainnet скрипт не запустится даже с полным набором ключей — это не баг."""
+    monkeypatch.setenv("TON_NETWORK", "mainnet")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("TREASURY_TESTNET_ADDRESS", "kQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    monkeypatch.setenv("TREASURY_TESTNET_MNEMONIC", "a b c d e f g h i j k l")
+    monkeypatch.setenv("OWNER_WALLET_ADDRESS", "kQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    monkeypatch.setenv("E2E_PLAYER_ID", "1")
+    monkeypatch.setenv("E2E_PLAYER_MNEMONIC", "a b c d e f g h i j k l")
+    assert any("TON_NETWORK" in reason for reason in guard())
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(not _LIVE, reason="E2E_TESTNET не включён: это живой прогон против тестнета")
+def test_live_testnet_check_phase() -> None:
+    """Живой гейт: при E2E_TESTNET=1 скрипт обязан пройти check без ошибок."""
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.e2e_testnet", "check"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, f"e2e check не прошёл:\n{result.stdout}\n{result.stderr}"
