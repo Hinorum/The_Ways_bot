@@ -605,30 +605,38 @@ async def _treasury_mirror_anomaly(session) -> str | None:
     Читает результат тождества, который синк зеркала кладёт в watcher_state
     каждым циклом (без лишнего запроса к индексатору здесь). Расхождение
     «Σ движений ≠ живой баланс» — инцидент, который прежний допуск на газ
-    мог маскировать неделями. Пока история не выстроена — это не тревога,
-    если циклы зеркала живы (тихо идёт бутстрап); замирание циклов — тревога.
+    мог маскировать неделями. Замерший синк — тревога в ЛЮБОМ состоянии:
+    у не-выстроенного зеркала это «бутстрап остановился», у выстроенного —
+    «протухший CHECK» (последний «зелёный» результат устарел, расхождение
+    может расти без контроля). Живой бутстрап — тихая работа, не тревога.
     """
     from app.treasury_mirror import treasury_mirror_stats
 
     stats = await treasury_mirror_stats(session)
-    if stats["bootstrapped"]:
-        check = stats["check"]
-        if not check:
-            return "зеркало казны: тождество ещё не измерено"
-        if check.get("exact") is True:
-            return None
-        diff = int(check.get("diff_nanotons") or 0)
-        return (
-            f"зеркало казны расходится с цепочкой на {diff / 1e9:+.4f} Gram: "
-            "∑ движений ≠ живой баланс"
-        )
+    bootstrapped = stats["bootstrapped"]
     beat_age: float | None = None
     beat_iso = stats.get("beat_iso")
     if beat_iso:
         beat_age = _age_seconds(beat_iso)
     if beat_age is None or beat_age > _WATCHER_STALE_AFTER.total_seconds():
+        if bootstrapped:
+            return (
+                "зеркало казны не обновляется: синк замер при выстроенном "
+                "зеркале — последняя сверка устарела, смотри /treasury"
+            )
         return "зеркало казны не выстроено и циклы не идут — индексаторы молчат?"
-    return None  # бутстрап идёт: тихая работа, не тревога
+    if not bootstrapped:
+        return None  # бутстрап идёт: тихая работа, не тревога
+    check = stats["check"]
+    if not check:
+        return "зеркало казны: тождество ещё не измерено"
+    if check.get("exact") is True:
+        return None
+    diff = int(check.get("diff_nanotons") or 0)
+    return (
+        f"зеркало казны расходится с цепочкой на {diff / 1e9:+.4f} Gram: "
+        "∑ движений ≠ живой баланс"
+    )
 
 
 async def record_manual_adjustment(

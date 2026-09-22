@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from datetime import UTC, datetime
 
@@ -517,5 +518,31 @@ async def test_mirror_anomaly_bootstrap_in_progress_is_not_alarm(ton_mirror, mon
         async with SessionLocal() as session:
             note = await ops._treasury_mirror_anomaly(session)
         assert note is not None and "циклы не идут" in note
+    finally:
+        await _wipe_mirror()
+
+
+async def test_mirror_anomaly_warns_when_bootstrapped_mirror_freezes(ton_mirror) -> None:
+    """Выстроенное зеркало с протухшим «зелёным» CHECK обязано кричать:
+    последняя сверка устарела, расхождение может расти без контроля."""
+    from datetime import timedelta
+
+    try:
+        async with SessionLocal() as db:
+            db.add(WatcherState(key=TREASURY_MIRROR_BOOTSTRAP_KEY, value="1"))
+            db.add(WatcherState(key=TREASURY_MIRROR_BEAT_KEY,
+                                value=datetime.now(UTC).isoformat()))
+            db.add(WatcherState(key=TREASURY_MIRROR_CHECK_KEY,
+                                value=json.dumps({"exact": True, "diff_nanotons": 0})))
+            await db.commit()
+        async with SessionLocal() as session:
+            assert await ops._treasury_mirror_anomaly(session) is None  # свежий CHECK
+        async with SessionLocal() as db:
+            beat = await db.get(WatcherState, TREASURY_MIRROR_BEAT_KEY)
+            beat.value = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+            await db.commit()
+        async with SessionLocal() as session:
+            note = await ops._treasury_mirror_anomaly(session)
+        assert note is not None and "не обновляется" in note
     finally:
         await _wipe_mirror()
