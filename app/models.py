@@ -546,7 +546,7 @@ class TreasuryMove(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        Index("ix_treasury_moves_lt", "network", "lt", "id"),
+        Index("ix_treasury_moves_lt_id", "network", "lt", "id"),
     )
 
 
