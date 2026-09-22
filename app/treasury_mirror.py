@@ -742,6 +742,35 @@ async def sync_treasury_mirror() -> dict:
     return summary
 
 
+async def reset_treasury_mirror() -> str:
+    """Полный re-bootstrap зеркала по команде хранителя (/mirror reset confirm).
+
+    Сбрасывает состояние синка (голова/дно/флаг выстроенности/сверка), но
+    НЕ трогает строки treasury_moves: следующий цикл синка пересканирует
+    историю от головы к генезису и идемпотентно перезапишет движения под
+    текущую цепочку. Именно так лечатся глубокие реорганизации — строки,
+    изменившие баланс, перезапишутся, новые добавятся, а удалённые реоргом
+    транзакции останутся висеть как «фантом», если не подчищать их отдельно.
+    """
+    async with SessionLocal() as session:
+        for key in (
+            TREASURY_MIRROR_BOOTSTRAP_KEY,
+            TREASURY_MIRROR_BOTTOM_KEY,
+            TREASURY_MIRROR_CURSOR_KEY,
+            TREASURY_MIRROR_CHECK_KEY,
+            TREASURY_MIRROR_BEAT_KEY,
+            TREASURY_MIRROR_SOURCE_KEY,
+        ):
+            row = await session.get(WatcherState, key)
+            if row is not None:
+                await session.delete(row)
+        await session.commit()
+    return (
+        "Зеркало казны: состояние сброшено — следующий цикл синка перестроит "
+        "историю от головы к генезису и сверит тождество заново"
+    )
+
+
 async def mirror_balance(session, network: str) -> int:
     """Сумма сальдо всех движений зеркала активного контура."""
     return int(

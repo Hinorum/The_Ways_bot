@@ -408,3 +408,30 @@ async def cmd_blockchain(message: Message) -> None:
     except Exception as exc:
         logger.exception("Отчёт /blockchain не собран")
         await message.answer(f"Не собрал отчёт: {exc}")
+
+
+@router.message(Command("mirror"))
+async def cmd_mirror(message: Message) -> None:
+    """Пересборка зеркала казны: /mirror reset confirm.
+
+    Сбрасывает курсоры синка — следующий цикл пересканирует историю кошелька
+    от головы к генезису и перепроверит тождество «Σ = баланс». Лекарство от
+    глубокого рассинхрона (сбои индексаторов, реорги вглубь истории).
+    """
+    if message.from_user is None or message.from_user.id not in settings.admin_id_set:
+        await message.answer("Команда только для хранителя игры.")
+        return
+    if message.text.split()[1:] != ["reset", "confirm"]:
+        await message.answer(
+            "Пересборка зеркала казны: /mirror reset confirm\n"
+            "После сброса зеркало пересканирует историю и сверку запускает "
+            "/treasury (бутстрап занимает несколько циклов синка)."
+        )
+        return
+    from app.treasury_mirror import reset_treasury_mirror
+
+    try:
+        await message.answer(await reset_treasury_mirror())
+    except Exception as exc:
+        logger.exception("Сброс зеркала казны не выполнен")
+        await message.answer(f"Не сбросил зеркало: {exc}")

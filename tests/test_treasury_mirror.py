@@ -13,6 +13,8 @@ import base64
 import json
 import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -38,6 +40,7 @@ from app.treasury_mirror import (
     parse_tonapi_move,
     parse_toncenter_move,
     parse_way_memo,
+    reset_treasury_mirror,
     resolve_kind,
     treasury_mirror_block,
 )
@@ -284,6 +287,12 @@ _MIRROR_STATE_KEYS = [
     TREASURY_MIRROR_BEAT_KEY,
     TREASURY_MIRROR_SOURCE_KEY,
 ]
+
+
+async def _count_moves() -> int:
+    async with SessionLocal() as db:
+        return int((await db.execute(
+            select(func.count()).select_from(TreasuryMove))).scalar_one())
 
 
 async def _wipe_mirror() -> None:
@@ -546,3 +555,71 @@ async def test_mirror_anomaly_warns_when_bootstrapped_mirror_freezes(ton_mirror)
         assert note is not None and "не обновляется" in note
     finally:
         await _wipe_mirror()
+
+
+# ---------- Re-bootstrap по команде хранителя (/mirror reset confirm) ----------
+
+
+def _admin_message(user_id: int, text: str) -> SimpleNamespace:
+    return SimpleNamespace(from_user=SimpleNamespace(id=user_id), answer=AsyncMock(), text=text)
+
+
+async def test_reset_mirror_keeps_rows_and_rebootstraps(ton_mirror, monkeypatch) -> None:
+    """Сброс состояния НЕ трогает строки: следующий цикл перестраивает зеркало
+    без дублей и заново доказывает тождество."""
+    ledger = [_tonapi_item(f"rs{i}", lt=80_000 + i) for i in range(5)]
+    monkeypatch.setattr(treasury_mirror, "_fetch_page", _fake_page_serving(ledger))
+    import app.ton_pay
+
+    monkeypatch.setattr(app.ton_pay, "fetch_account_state",
+                        _fake_chain_balance_async(_fake_chain_balance(ledger)))
+    try:
+        first = await treasury_mirror.sync_treasury_mirror()
+        assert first["bootstrapped"] is True and first["added"] == 5
+        async with SessionLocal() as db:
+            rows_before = (await db.execute(
+                select(func.count()).select_from(TreasuryMove))).scalar_one()
+        await reset_treasury_mirror()
+        async with SessionLocal() as db:
+            for key in _MIRROR_STATE_KEYS:
+                assert await db.get(WatcherState, key) is None
+        rows_after_reset = (await _count_moves())
+        assert rows_after_reset == rows_before  # данные зеркала не удаляются
+
+        rebuilt = await treasury_mirror.sync_treasury_mirror()
+        assert rebuilt["bootstrapped"] is True
+        assert rebuilt["added"] == 0  # идемпотентная перезапись без дублей
+        assert rebuilt["exact"] is True
+        async with SessionLocal() as db:
+            rows_final = (await db.execute(
+                select(func.count()).select_from(TreasuryMove))).scalar_one()
+        assert rows_final == rows_before
+    finally:
+        await _wipe_mirror()
+
+
+async def test_mirror_command_guards_nonadmin(monkeypatch) -> None:
+    from app.handlers.payout import cmd_mirror
+
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    message = _admin_message(777_777, "/mirror reset confirm")
+    await cmd_mirror(message)
+    assert "хранителя" in message.answer.await_args.args[0]
+
+
+async def test_mirror_command_requires_confirm(monkeypatch) -> None:
+    from app.handlers.payout import cmd_mirror
+
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    message = _admin_message(42, "/mirror")
+    await cmd_mirror(message)
+    assert "reset confirm" in message.answer.await_args.args[0]
+
+
+async def test_mirror_command_resets_state(monkeypatch) -> None:
+    from app.handlers.payout import cmd_mirror
+
+    monkeypatch.setattr(settings, "admin_ids", "42")
+    message = _admin_message(42, "/mirror reset confirm")
+    await cmd_mirror(message)
+    assert "сброшено" in message.answer.await_args.args[0]
