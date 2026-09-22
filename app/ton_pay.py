@@ -1244,6 +1244,16 @@ async def treasury_diagnostics() -> str:
             lines.append(
                 f"Сверка с БД сходится ✓ (ожидается ~{drift_state.expected_nanotons / 1e9:.4f} Gram)"
             )
+    # Зеркало казны: независимая копия истории кошелька со сверкой «в ноль».
+    try:
+        from app.treasury_mirror import treasury_mirror_block
+
+        mirror_text = await treasury_mirror_block()
+        if mirror_text:
+            lines.append("")
+            lines.append(mirror_text)
+    except Exception as exc:
+        logger.warning("Блок «Зеркало казны» в /treasury не собрался: %s", exc)
     async with SessionLocal() as session:
         waiting = (
             await session.execute(

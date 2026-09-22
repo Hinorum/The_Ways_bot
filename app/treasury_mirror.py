@@ -752,3 +752,177 @@ async def mirror_balance(session, network: str) -> int:
             )
         ).scalar_one()
     )
+
+
+# ---------- Отчёт для хранителя (/treasury) ----------
+
+_KIND_LABELS = {
+    "stake": "ставки",
+    "revote": "смена пути",
+    "walletverify": "проверка кошелька",
+    "paused": "на паузе (возврат)",
+    "income": "прочий приход",
+    "unknown_in": "пыль/чужие ⚠️",
+    "refund": "возвраты",
+    "self": "self-переводы",
+    "other": "служебные",
+    "unknown_out": "вывод мимо бота ⚠️",
+}
+
+
+def _kind_label(kind: str) -> str:
+    if kind.startswith("payout:"):
+        return f"выплаты:{kind.split(':', 1)[1]}"
+    return _KIND_LABELS.get(kind, kind)
+
+
+async def treasury_mirror_stats(session) -> dict:
+    """Сводка зеркала для отчёта: покрытие, балансы, трафик по типам."""
+    network = _active_network()
+    bootstrapped = (
+        await session.get(WatcherState, TREASURY_MIRROR_BOOTSTRAP_KEY)
+    ) is not None
+    head_lt = await _state_int(session, TREASURY_MIRROR_CURSOR_KEY)
+    bottom_lt = await _state_int(session, TREASURY_MIRROR_BOTTOM_KEY)
+    beat_row = await session.get(WatcherState, TREASURY_MIRROR_BEAT_KEY)
+    source_row = await session.get(WatcherState, TREASURY_MIRROR_SOURCE_KEY)
+    check_row = await session.get(WatcherState, TREASURY_MIRROR_CHECK_KEY)
+    move_count = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(TreasuryMove).where(TreasuryMove.network == network)
+            )
+        ).scalar_one()
+    )
+    last_utime = (
+        await session.execute(
+            select(func.max(TreasuryMove.utime)).where(TreasuryMove.network == network)
+        )
+    ).scalar_one()
+    groups = {
+        kind: {
+            "count": count,
+            "delta": int(delta or 0),
+            "value": int(value or 0),
+            "fee": int(fee or 0),
+        }
+        for kind, count, delta, value, fee in (
+            await session.execute(
+                select(
+                    TreasuryMove.kind,
+                    func.count(),
+                    func.sum(TreasuryMove.balance_delta_nanotons),
+                    func.sum(TreasuryMove.value_nanotons),
+                    func.sum(TreasuryMove.fee_nanotons),
+                )
+                .where(TreasuryMove.network == network)
+                .group_by(TreasuryMove.kind)
+            )
+        ).all()
+    }
+    check: dict = {}
+    if check_row is not None:
+        try:
+            check = json.loads(check_row.value or "{}")
+        except (ValueError, TypeError):
+            check = {}
+    return {
+        "bootstrapped": bootstrapped,
+        "head_lt": head_lt,
+        "bottom_lt": bottom_lt,
+        "beat_iso": beat_row.value if beat_row is not None else None,
+        "source": source_row.value if source_row is not None else None,
+        "move_count": move_count,
+        "last_utime": last_utime,
+        "groups": groups,
+        "check": check if isinstance(check, dict) else {},
+    }
+
+
+def _exact_line(check: dict, bootstrapped: bool) -> str:
+    """Строка тождества: ±0 при точной сверке, иначе честный диагноз."""
+    if not bootstrapped:
+        return "тождество: недоступно — бутстрап ещё идёт (сверка стартует после покрытия истории)"
+    if not check:
+        return "тождество: пока не измерено"
+    exact = check.get("exact")
+    if exact is True:
+        mirror = int(check.get("mirror_balance") or 0)
+        return (
+            f"тождество: сходится ±0 ✓ (Σ {mirror / 1e9:.4f} Gram = баланс цепочки)"
+        )
+    diff = int(check.get("diff_nanotons") or 0)
+    return (
+        f"тождество: расходится на {diff / 1e9:+.4f} Gram ⚠️ — "
+        "зеркало не совпадает с цепочкой, смотри /blockchain и логи зеркала"
+    )
+
+
+async def treasury_mirror_block() -> str:
+    """Текстовый блок «Зеркало казны» для /treasury (без доступа к сети)."""
+    from datetime import UTC as _UTC
+
+    async with SessionLocal() as session:
+        stats = await treasury_mirror_stats(session)
+    network = _active_network()
+    lines = [f"Зеркало казны ({network}):"]
+    if not settings.ton_enabled or not settings.active_treasury_address:
+        lines.append("  не активно (TON выключен или адрес казначея не задан)")
+        return "\n".join(lines)
+    beat_age = None
+    if stats["beat_iso"]:
+        try:
+            moment = datetime.fromisoformat(stats["beat_iso"])
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=_UTC)
+            beat_age = max(0, int((datetime.now(_UTC) - moment).total_seconds()))
+        except ValueError:
+            pass
+    lag = None
+    if stats["last_utime"] is not None:
+        lag = max(0, int(datetime.now(_UTC).timestamp()) - int(stats["last_utime"]))
+    moves = stats["move_count"]
+    if moves == 0 and not stats["bootstrapped"]:
+        lines.append("  история кошелька пуста либо бутстрап ещё не начался")
+    else:
+        cov = f"{moves:,}".replace(",", " ")
+        lag_part = "—"
+        if lag is not None and lag >= 0:
+            lag_part = f"{lag // 60} мин назад" if lag >= 60 else "только что"
+        src = f" · источник {stats['source']}" if stats["source"] else ""
+        lines.append(f"  покрытие: {cov} транзакций · актуально {lag_part}{src}")
+    if beat_age is not None:
+        lines.append(f"  последний цикл: {beat_age} с назад")
+    elif moves:
+        lines.append("  последний цикл: не завершался (индексаторы молчат) ⚠️")
+    if stats["bootstrapped"]:
+        lines.append(f"  {_exact_line(stats['check'], True)}")
+        groups = stats["groups"]
+        traffic = [g for g in groups if g not in ("self", "other")]
+        if traffic:
+            shown = ", ".join(
+                f"{_kind_label(kind)} {groups[kind]['count']} "
+                f"({groups[kind]['value'] / 1e9:.2f} Gram)"
+                for kind in sorted(traffic)
+            )
+            lines.append(f"  трафик: {shown}")
+        fees = sum(g["fee"] for g in groups.values())
+        if fees:
+            lines.append(
+                f"  газ (реальный, из цепочки): {fees / 1e9:.4f} Gram суммарно"
+            )
+        unknown = (
+            groups.get("unknown_in", {}).get("value", 0)
+            + groups.get("unknown_out", {}).get("value", 0)
+        )
+        if unknown:
+            lines.append(
+                f"  ☑️ непонятых переводов на {unknown / 1e9:.3f} Gram — "
+                "разбери вручную (пыль/jetton/вывод мимо бота)"
+            )
+    else:
+        remaining_note = ""
+        if stats["bottom_lt"] is not None:
+            remaining_note = " — история дотягивается от головы к генезису"
+        lines.append(f"  бутстрап: идёт{remaining_note}, сверка станет возможной после покрытия")
+    return "\n".join(lines)
