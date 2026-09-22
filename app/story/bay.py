@@ -31,7 +31,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from app.config import settings
-from app.core.registry import STORY_CASSETTE_NEXT_KEY
+from app.core.registry import (
+    STORY_CASSETTE_EDIT_KEY,
+    STORY_CASSETTE_NEXT_KEY,
+)
 from app.story.schema import Cassette, validate_file
 
 logger = logging.getLogger(__name__)
@@ -222,6 +225,42 @@ async def set_next_cassette(session, file_name: str | None) -> None:
     else:
         row.value = file_name
     await session.commit()
+
+
+async def get_edit_intent(session) -> tuple[str | None, str | None]:
+    """Намерение правки из /cassette: (имя файла, месяц|день) или (None, None)."""
+    from app.models import WatcherState
+
+    row = await session.get(WatcherState, STORY_CASSETTE_EDIT_KEY)
+    if row is None:
+        return None, None
+    file_name, sep, mode = row.value.partition("|")
+    if not sep:
+        return None, None
+    return file_name, mode
+
+
+async def set_edit_intent(session, file_name: str, mode: str) -> None:
+    """Ставит намерение правки кассеты; следующий документ — правок её сценария."""
+    from app.models import WatcherState
+
+    row = await session.get(WatcherState, STORY_CASSETTE_EDIT_KEY)
+    value = f"{file_name}|{mode}"
+    if row is None:
+        session.add(WatcherState(key=STORY_CASSETTE_EDIT_KEY, value=value))
+    else:
+        row.value = value
+    await session.commit()
+
+
+async def clear_edit_intent(session) -> None:
+    """Снимает намерение правки (после приёма файла или кнопкой отмены)."""
+    from app.models import WatcherState
+
+    row = await session.get(WatcherState, STORY_CASSETTE_EDIT_KEY)
+    if row is not None:
+        await session.delete(row)
+        await session.commit()
 
 
 async def _plan_and_render(

@@ -7,6 +7,9 @@
 отредактированный YAML обратно в JSON через тот же `validate_payload` —
 контракт не дублируется, единственный гейт остаётся в schema.py.
 
+Весь функционал делегирован `app.story.editor` — тому же ядру, что
+использует панель хранителя в боте (`/cassette` → «Редактор плёнки»).
+
 Примеры:
     python scripts/cassette_tool.py dump app/story/cassettes/imeniny-chasov.json
     python scripts/cassette_tool.py dump app/story/cassettes/imeniny-chasov.json --day 5
@@ -20,7 +23,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -34,6 +36,7 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # isort: on
 
+from app.story import editor as ed
 from app.story.schema import (
     Cassette,
     DayModel,
@@ -47,68 +50,29 @@ _COMPILE_USAGE = "compile СЦЕНАРИЙ.yaml [-o КАССЕТА.json] [--chec
 _PATCH_USAGE = "patch КАССЕТА.json ФРАГМЕНТ.yaml --day N [--road ДОРОГА] [-o КАССЕТА.json] [--check]"
 
 
-def _safe_dump(payload: dict) -> str:
-    return yaml.safe_dump(
-        payload,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-        width=120,
-    )
-
-
 def to_yaml_text(cassette: Cassette) -> str:
     """Полная кассета → YAML-сценарий (порядок ключей = контракту, defaults явные)."""
-    return _safe_dump(cassette.model_dump(mode="json"))
+    return ed.scenario_yaml(cassette)
 
 
-def to_day_yaml(day: DayModel) -> str:
-    """Один день (фрагмент для patch): та же нормализация, что у полного сценария."""
-    return _safe_dump(day.model_dump(mode="json"))
+def to_day_yaml(day: DayModel, road: str = "main") -> str:
+    """Фрагмент дня для patch: YAML + заголовок-метка дороги (`# дорога: …`)."""
+    return ed.day_yaml(day, road)
 
 
 def day_view(cassette: Cassette, day: int, road: str = "main") -> str:
     """Человекочитаемый кадр одного дня на дороге (по умолчанию — main)."""
-    item = cassette.day_for(day, road)
-    if item is None:
-        raise ValueError(
-            f"дня {day} нет на дороге {road} (месяц {cassette.month}, "
-            f"дней на main: {len(cassette.days)})"
-        )
-    header = f"=== {cassette.month} · День {item.day_index}"
-    if road != "main":
-        header += f" · дорога {road}"
-    header += f" · закон-метка {item.rule_hint} · {item.station} ==="
-    lines = [header, item.chapter_title, "", item.chapter_text, ""]
-    for card in sorted(item.cards, key=lambda entry: entry.position):
-        lines.append(f"[{card.position}] {card.title}")
-        lines.append(f"    Суть: {card.description}")
-        lines.append(f"    Канон, если уцелеет: {card.consequence}")
-        if card.image_path:
-            lines.append(f"    image_path: {card.image_path}")
-        lines.append("")
-    if item.hook_text:
-        lines.append(f"(пометка автора) {item.hook_text}")
-    if item.tie_note:
-        lines.append(f"(оговорка ничьей) {item.tie_note}")
-    return "\n".join(lines).rstrip()
+    return ed.day_view_text(cassette, day, road)
 
 
 def compose(yaml_text: str) -> ValidationResult:
     """YAML-сценарий → ValidationResult (тот же гейт, что у движка)."""
-    try:
-        payload = yaml.safe_load(yaml_text)
-    except yaml.YAMLError as exc:
-        return ValidationResult(cassette=None, errors=[f"не YAML: {exc}"])
-    if not isinstance(payload, dict):
-        return ValidationResult(cassette=None, errors=["корень YAML — объект кассеты"])
-    return validate_payload(payload)
+    return ed.scenario_from_text(yaml_text)
 
 
 def dump_json(cassette: Cassette, path: Path) -> None:
     """Пишет JSON-эталон кассеты (нормализованный, серж голов авто-дефолтами)."""
-    text = json.dumps(cassette.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
-    _atomic_write(path, text)
+    ed.write_json(cassette, path)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -116,25 +80,6 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
-
-
-def _replace_day(cassette_payload: dict, road: str, new_day: dict) -> bool:
-    """Вставляет день в payload кассеты. False — день вне пределов дороги."""
-    n = new_day["day_index"]
-    if road == "main":
-        if not 1 <= n <= len(cassette_payload["days"]):
-            return False
-        cassette_payload["days"][n - 1] = new_day
-        return True
-    for fork in cassette_payload["switch"]:
-        if fork["to"] != road:
-            continue
-        offset = n - fork["at_day"]
-        if not 0 <= offset < len(fork["days"]):
-            return False
-        fork["days"][offset] = new_day
-        return True
-    return False
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -205,7 +150,7 @@ def run(argv: list[str] | None = None) -> int:
                 return 1
             if args.out:
                 out = Path(args.out)
-                _atomic_write(out, to_day_yaml(item))
+                _atomic_write(out, to_day_yaml(item, road=args.road))
                 print(f"dump: день {args.day} (дорога {args.road}) -> {out}")
                 return 0
             try:
@@ -289,7 +234,7 @@ def run(argv: list[str] | None = None) -> int:
             )
             return 1
         payload = base.cassette.model_dump(mode="json")
-        if not _replace_day(payload, args.road, day.model_dump(mode="json")):
+        if not ed.replace_day(payload, args.road, day.model_dump(mode="json")):
             print(
                 f"patch: день {args.day} вне пределов дороги {args.road}",
                 file=sys.stderr,
