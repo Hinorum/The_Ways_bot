@@ -15,7 +15,8 @@
     python scripts/cassette_tool.py dump app/story/cassettes/imeniny-chasov.json --day 5
     python scripts/cassette_tool.py dump app/story/cassettes/imeniny-chasov.json --day 14 --road morning
     python scripts/cassette_tool.py dump app/story/cassettes/imeniny-chasov.json --day 12 -o edits/day12.yaml
-    python scripts/cassette_tool.py patch app/story/cassettes/imeniny-chasov.json edits/day12.yaml --day 12 --check
+    python scripts/cassette_tool.py patch app/story/cassettes/imeniny-chasov.json edits/day12.yaml --check
+    python scripts/cassette_tool.py patch app/story/cassettes/imeniny-chasov.json edits/fork.yaml --road morning --check
     python scripts/cassette_tool.py compile edits/imeniny-chasov.yaml --check
     python scripts/cassette_tool.py compile edits/imeniny-chasov.yaml
 """
@@ -47,7 +48,10 @@ from app.story.schema import (
 
 _DUMP_USAGE = "dump КАССЕТА.json [-o СЦЕНАРИЙ.yaml] [--day N] [--road ДОРОГА]"
 _COMPILE_USAGE = "compile СЦЕНАРИЙ.yaml [-o КАССЕТА.json] [--check]"
-_PATCH_USAGE = "patch КАССЕТА.json ФРАГМЕНТ.yaml --day N [--road ДОРОГА] [-o КАССЕТА.json] [--check]"
+_PATCH_USAGE = "patch КАССЕТА.json ФРАГМЕНТ.yaml [--day N] [--road ДОРОГА] [-o КАССЕТА.json] [--check]"
+
+# Дорогу и день patch по умолчанию читает из самого фрагмента (заголовок
+# `# дорога: …` + day_index); флаги --day/--road задают явный override.
 
 
 def to_yaml_text(cassette: Cassette) -> str:
@@ -115,10 +119,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_patch = sub.add_parser("patch", usage=_PATCH_USAGE, help="правка одного дня кассеты")
     p_patch.add_argument("cassette", help="путь к *.json кассеты")
     p_patch.add_argument("day_file", help="путь к *.yaml фрагменту дня (dump --day N -o ФРАГМЕНТ.yaml)")
-    p_patch.add_argument("--day", type=int, required=True, help="день месяца, который правим")
     p_patch.add_argument(
-        "--road", default="main",
-        help="дорога: main или имя перемотки (switch.to); по умолчанию main",
+        "--day", type=int, default=None,
+        help="день месяца (по умолчанию — из фрагмента); для сверки с day_index фрагмента",
+    )
+    p_patch.add_argument(
+        "--road", default=None,
+        help="дорога: main или имя перемотки (switch.to); по умолчанию — из фрагмента",
     )
     p_patch.add_argument(
         "-o", "--out", default=None,
@@ -195,7 +202,7 @@ def run(argv: list[str] | None = None) -> int:
             for error in base.errors:
                 print(f"  - {error}", file=sys.stderr)
             return 1
-        if args.road != "main" and not any(
+        if args.road is not None and args.road != "main" and not any(
             fork.to == args.road for fork in base.cassette.switch
         ):
             roads = ", ".join(
@@ -210,6 +217,15 @@ def run(argv: list[str] | None = None) -> int:
             text = Path(args.day_file).read_text(encoding="utf-8-sig")
         except OSError as exc:
             print(f"patch: не прочитать {args.day_file}: {exc}", file=sys.stderr)
+            return 1
+        header_road, _fragment = ed.road_from_fragment(text)
+        road = args.road if args.road is not None else (header_road or "main")
+        if road != "main" and not any(fork.to == road for fork in base.cassette.switch):
+            roads = ", ".join(["main"] + [fork.to for fork in base.cassette.switch])
+            print(
+                f"patch: дороги {road} в кассете нет (есть: {roads})",
+                file=sys.stderr,
+            )
             return 1
         try:
             fragment = yaml.safe_load(text)
@@ -227,16 +243,16 @@ def run(argv: list[str] | None = None) -> int:
                 location = ".".join(str(part) for part in error["loc"])
                 print(f"  - {location}: {error['msg']}", file=sys.stderr)
             return 1
-        if day.day_index != args.day:
+        if args.day is not None and day.day_index != args.day:
             print(
                 f"patch: в фрагменте day_index {day.day_index}, а заявлен --day {args.day}",
                 file=sys.stderr,
             )
             return 1
         payload = base.cassette.model_dump(mode="json")
-        if not ed.replace_day(payload, args.road, day.model_dump(mode="json")):
+        if not ed.replace_day(payload, road, day.model_dump(mode="json")):
             print(
-                f"patch: день {args.day} вне пределов дороги {args.road}",
+                f"patch: день {day.day_index} вне пределов дороги {road}",
                 file=sys.stderr,
             )
             return 1
@@ -250,13 +266,13 @@ def run(argv: list[str] | None = None) -> int:
             print(f"patch: замечание — {warning}")
         if args.check:
             print(
-                f"patch --check: правка дня {args.day} ({args.road}) валидна "
+                f"patch --check: правка дня {day.day_index} ({road}) валидна "
                 f"для {cassette_path.name}."
             )
             return 0
         out = Path(args.out) if args.out else cassette_path
         dump_json(result.cassette, out)
-        print(f"patch: {cassette_path} -> {out} (день {args.day}, дорога {args.road})")
+        print(f"patch: {cassette_path} -> {out} (день {day.day_index}, дорога {road})")
         return 0
 
     return 2  # не должно случаться: subparsers required

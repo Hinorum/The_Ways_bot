@@ -9,6 +9,8 @@
 дня, намерение «жду документ» (watcher_state) и установка правки документом.
 """
 
+import calendar
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,19 +21,30 @@ from aiogram.types import BufferedInputFile
 
 import app.handlers.panel as panel_mod
 from app.db import SessionLocal
+from app.models import Round, RoundStatus, WinRule
 from app.story import editor as ed
 from app.story.bay import (
     clear_edit_intent,
     get_edit_intent,
     set_edit_intent,
+    set_next_cassette,
+    today_road,
 )
 from app.story.schema import validate_file, validate_payload
 
 HOLDER_ID = 4242
 
 
-def _mk_cassette(days_n: int = 28) -> object:
-    """Синтетическая кассета: main-дорога + одна перемотка «morning» с дня 10."""
+def _days_in_month(month: str) -> int:
+    year, m = (int(part) for part in month.split("-"))
+    return calendar.monthrange(year, m)[1]
+
+
+def _mk_cassette(
+    days_n: int | None = None, month: str = "2026-02", at_day: int = 10
+) -> object:
+    """Синтетическая кассета: main-дорога + одна перемотка «morning» с дня at_day."""
+    days_n = days_n or _days_in_month(month)
     days = [
         {
             "day_index": i,
@@ -49,12 +62,17 @@ def _mk_cassette(days_n: int = 28) -> object:
     ]
     payload = {
         "cassette_id": "mel.json".removesuffix(".json"),
-        "month": "2026-02",
+        "month": month,
         "title": "Метель",
         "attribution": "Фанфик по мотивам.",
         "days": days,
         "switch": [
-            {"to": "morning", "at_day": 10, "winner": 0, "days": days[9:]}
+            {
+                "to": "morning",
+                "at_day": at_day,
+                "winner": 0,
+                "days": days[at_day - 1 :],
+            }
         ],
     }
     result = validate_payload(payload)
@@ -143,7 +161,7 @@ def test_apply_month_edits_cassette(tmp_path) -> None:
     source = _write_cassette(tmp_path)
     cassette = validate_file(source).cassette
     text = ed.scenario_yaml(cassette).replace(cassette.title, "Метель зима")
-    ok, lines = ed.apply_cassette_file(
+    ok, lines, _final = ed.apply_cassette_file(
         text.encode("utf-8"), "mel.json", "month", tmp_path
     )
     assert ok, lines
@@ -163,7 +181,7 @@ def test_apply_day_edits_fork_road(tmp_path) -> None:
     fragment = ed.day_yaml(fork_day, road="morning").replace(
         fork_day.chapter_title, "Правка с бота"
     )
-    ok, lines = ed.apply_cassette_file(
+    ok, lines, _final = ed.apply_cassette_file(
         fragment.encode("utf-8"), "mel.json", "day", tmp_path
     )
     assert ok, lines
@@ -181,7 +199,7 @@ def test_apply_broken_month_keeps_file(tmp_path) -> None:
     text = ed.scenario_yaml(cassette)
     payload = yaml.safe_load(text)
     payload["days"].pop()
-    ok, lines = ed.apply_cassette_file(
+    ok, lines, _final = ed.apply_cassette_file(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).encode("utf-8"),
         "mel.json",
         "month",
@@ -195,7 +213,7 @@ def test_apply_broken_month_keeps_file(tmp_path) -> None:
 def test_apply_broken_day_keeps_file(tmp_path) -> None:
     source = _write_cassette(tmp_path)
     before = source.read_bytes()
-    ok, lines = ed.apply_cassette_file(
+    ok, lines, _final = ed.apply_cassette_file(
         yaml.safe_dump({"day_index": 3, "rule_hint": "not-a-rule"}).encode("utf-8"),
         "mel.json",
         "day",
@@ -207,13 +225,108 @@ def test_apply_broken_day_keeps_file(tmp_path) -> None:
 
 
 def test_apply_unknown_file_and_mode(tmp_path) -> None:
-    ok, lines = ed.apply_cassette_file(b"", "ghost.json", "month", tmp_path)
+    ok, lines, _final = ed.apply_cassette_file(b"", "ghost.json", "month", tmp_path)
     assert not ok
     assert "нет в библиотеке" in lines[0]
     _write_cassette(tmp_path)
-    ok, lines = ed.apply_cassette_file(b"{}", "mel.json", "nonsense", tmp_path)
+    ok, lines, _final = ed.apply_cassette_file(b"{}", "mel.json", "nonsense", tmp_path)
     assert not ok
     assert "режим" in lines[0]
+
+
+def test_apply_dry_run_month_validates_without_write(tmp_path) -> None:
+    """Проверка без записи: отчёт «проверено», файл на диске тот же."""
+    source = _write_cassette(tmp_path)
+    before = source.read_bytes()
+    cassette = validate_file(source).cassette
+    assert cassette is not None
+    text = ed.scenario_yaml(cassette).replace(cassette.title, "Метель зима")
+    ok, lines, final = ed.apply_cassette_file(
+        text.encode("utf-8"), "mel.json", "month", tmp_path, dry_run=True
+    )
+    assert ok, lines
+    assert final == "mel.json"
+    assert "не изменён" in "\n".join(lines)
+    assert source.read_bytes() == before
+    relit = validate_file(source).cassette
+    assert relit is not None
+    assert relit.title == "Метель"
+
+
+def test_apply_dry_run_day_rejects_broken(tmp_path) -> None:
+    source = _write_cassette(tmp_path)
+    before = source.read_bytes()
+    ok, lines, final = ed.apply_cassette_file(
+        b"day_index: [", "mel.json", "day", tmp_path, dry_run=True
+    )
+    assert not ok
+    assert source.read_bytes() == before
+
+
+def test_apply_new_cassette_derives_name(tmp_path) -> None:
+    """Хранитель присылает сценарий новой плёнки — файл получает имя дорожкой."""
+    text = ed.scenario_yaml(_mk_cassette())
+    ok, lines, final = ed.apply_cassette_file(
+        text.encode("utf-8"), "<new>", "new", tmp_path
+    )
+    assert ok, lines
+    assert final == "mel-2026-02.json"
+    target = tmp_path / final
+    assert target.is_file()
+    assert validate_file(target).cassette is not None
+
+
+def test_apply_new_refuses_overwrite(tmp_path) -> None:
+    """Новая кассета с именем существующей плёнки — отказ, без записи."""
+    (tmp_path / "mel-2026-02.json").touch()
+    text = ed.scenario_yaml(_mk_cassette())
+    ok, lines, final = ed.apply_cassette_file(
+        text.encode("utf-8"), "<new>", "new", tmp_path
+    )
+    assert not ok
+    assert final == "mel-2026-02.json"
+    assert "уже есть" in lines[0]
+
+
+def test_backup_and_restore_after_apply(tmp_path) -> None:
+    """Каждый apply оставляет .bak; restore возвращает предыдущий вариант."""
+    source = _write_cassette(tmp_path)
+    cassette = validate_file(source).cassette
+    assert cassette is not None
+    text_a = ed.scenario_yaml(cassette).replace(cassette.title, "Версия A")
+    ok, _lines, _final = ed.apply_cassette_file(
+        text_a.encode("utf-8"), "mel.json", "month", tmp_path
+    )
+    assert ok
+    assert (tmp_path / "mel.json.bak").is_file()
+    assert validate_file(source).cassette.title == "Версия A"
+    text_b = ed.scenario_yaml(_mk_cassette()).replace("Метель", "Версия B")
+    ok, _lines, _final = ed.apply_cassette_file(
+        text_b.encode("utf-8"), "mel.json", "month", tmp_path
+    )
+    assert ok
+    assert validate_file(source).cassette.title == "Версия B"
+    ok, lines = ed.restore_backup("mel.json", tmp_path)
+    assert ok, lines
+    assert validate_file(source).cassette.title == "Версия A"  # предыдущий вариант
+
+
+def test_restore_without_backup_fails(tmp_path) -> None:
+    _write_cassette(tmp_path)
+    ok, lines = ed.restore_backup("mel.json", tmp_path)
+    assert not ok
+    assert "Бэкапа" in lines[0]
+    assert "mel.json.bak" in lines[0]
+
+
+def test_restore_broken_backup_rejected(tmp_path) -> None:
+    """Битый бэкап не трогает рабочую кассету (валидация перед копией)."""
+    source = _write_cassette(tmp_path)
+    (tmp_path / "mel.json.bak").write_text("не json", encoding="utf-8")
+    ok, lines = ed.restore_backup("mel.json", tmp_path)
+    assert not ok
+    assert "нечитаем" in lines[0]
+    assert validate_file(source).cassette is not None
 
 
 # --- bay: намерение «жду документ» ---------------------------------------
@@ -234,6 +347,48 @@ async def test_edit_intent_via_global_db(monkeypatch, tmp_path) -> None:
     async with SessionLocal() as session:
         await set_edit_intent(session, "mel.json", "month")
         assert await get_edit_intent(session) == ("mel.json", "month")
+
+
+# --- bay: контекст плёнки (today_road) ------------------------------------
+
+
+async def test_today_road_main_without_engine_decisions(session) -> None:
+    """Без закрытых раундов движка кассета идёт по main (fail-open)."""
+    today = datetime.now(UTC).date()
+    cassette = _mk_cassette(month=today.strftime("%Y-%m"), at_day=2)
+    road, dates = await today_road(session, cassette, today)
+    assert road == "main"
+    assert dates == []
+
+
+async def test_today_road_resolves_fork_with_engine_winner(session) -> None:
+    """Закрытый раунд движка в день перемотки — кассета сворачивает на ветку."""
+    today = datetime.now(UTC).date()
+    at_day = max(2, min(today.day, 27))
+    cassette = _mk_cassette(month=today.strftime("%Y-%m"), at_day=at_day)
+    fork = cassette.switch[0]
+    decision = datetime.combine(
+        date(today.year, today.month, at_day - 1),
+        time(12, 0),
+        tzinfo=UTC,
+    )
+    session.add(
+        Round(
+            day_index=at_day - 1,
+            status=RoundStatus.CLOSED,
+            win_rule=WinRule.MAJORITY,
+            chapter_title="раунд",
+            chapter_text="x",
+            opens_at=decision,
+            voting_ends_at=decision,
+            tally_ends_at=decision,
+            winner_card=fork.winner,
+        )
+    )
+    await session.commit()
+    road, dates = await today_road(session, cassette, today)
+    assert road == "morning"
+    assert decision.date() in dates
 
 
 # --- панель: сцена «Редактор плёнки» --------------------------------------
@@ -356,6 +511,123 @@ async def test_edit_sets_and_stop_clears_intent(monkeypatch, tmp_path) -> None:
         assert await get_edit_intent(session) == (None, None)
 
 
+async def test_scene_shows_placed_and_playing(monkeypatch, tmp_path) -> None:
+    """Контекст плёнки: назначена следующей, играется, сегодняшний день и дорога."""
+    source = _enable_library(monkeypatch, tmp_path)
+    today = datetime.now(UTC).date()
+    ed.write_json(_mk_cassette(month=today.strftime("%Y-%m"), at_day=2), source)
+    async with SessionLocal() as session:
+        await set_next_cassette(session, "mel.json")
+    callback = _make_callback("cassette:scene:mel.json")
+    await panel_mod.on_cassette_action(callback)
+    text = callback.message.edit_text.call_args.args[0]
+    assert "🟢 назначена «следующей»" in text
+    assert "▶ играется" in text
+    assert f"день {today.day}" in text
+    assert "дорога main" in text  # без решений движка — fail-open
+
+
+async def test_check_sets_check_intent(monkeypatch, tmp_path) -> None:
+    """Кнопка «Проверить день»: намерение с суффиксом -check, без записи."""
+    _enable_library(monkeypatch, tmp_path)
+    callback = _make_callback("cassette:check:mel.json:day")
+    await panel_mod.on_cassette_action(callback)
+    async with SessionLocal() as session:
+        assert await get_edit_intent(session) == ("mel.json", "day-check")
+    text = callback.message.edit_text.call_args.args[0]
+    assert "проверю фрагмент дня" in text
+    labels = _flat(callback.message.edit_text.call_args.kwargs["reply_markup"])
+    assert "⏹ Отменить загрузку" in labels
+
+
+async def test_document_handler_check_does_not_write(monkeypatch, tmp_path) -> None:
+    """Проверка без записи: отчёт ✅, файл кассеты не тронут, бэкапа нет."""
+    source = _enable_library(monkeypatch, tmp_path)
+    before = source.read_bytes()
+    cassette = validate_file(source).cassette
+    text = ed.scenario_yaml(cassette).replace(cassette.title, "Метель зима")
+
+    async def _download(file=None, destination=None):
+        destination.write(text.encode("utf-8"))
+
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=HOLDER_ID),
+        bot=SimpleNamespace(download=AsyncMock(side_effect=_download)),
+        document=SimpleNamespace(file_id="doc-check"),
+        reply=AsyncMock(),
+    )
+    async with SessionLocal() as session:
+        await set_edit_intent(session, "mel.json", "month-check")
+    await panel_mod.on_cassette_document(message)
+    assert message.reply.call_args.args[0].startswith("✅")
+    assert "не изменён" in message.reply.call_args.args[0]
+    assert source.read_bytes() == before
+    assert not (tmp_path / "mel.json.bak").exists()
+
+
+async def test_new_sets_new_intent(monkeypatch, tmp_path) -> None:
+    _enable_library(monkeypatch, tmp_path)
+    callback = _make_callback("cassette:new")
+    await panel_mod.on_cassette_action(callback)
+    async with SessionLocal() as session:
+        assert await get_edit_intent(session) == ("<new>", "new")
+    text = callback.message.edit_text.call_args.args[0]
+    assert "НОВАЯ КАССЕТА" in text
+
+
+async def test_document_handler_creates_new_cassette(monkeypatch, tmp_path) -> None:
+    """Документ новой плёнки: файл по имени дорожки, отчёт ведёт на её сцену."""
+    _enable_library(monkeypatch, tmp_path)
+    text = ed.scenario_yaml(_mk_cassette())
+
+    async def _download(file=None, destination=None):
+        destination.write(text.encode("utf-8"))
+
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(id=HOLDER_ID),
+        bot=SimpleNamespace(download=AsyncMock(side_effect=_download)),
+        document=SimpleNamespace(file_id="doc-new"),
+        reply=AsyncMock(),
+    )
+    async with SessionLocal() as session:
+        await set_edit_intent(session, "<new>", "new")
+    await panel_mod.on_cassette_document(message)
+    assert message.reply.call_args.args[0].startswith("✅")
+    labels = _flat(message.reply.call_args.kwargs["reply_markup"])
+    assert "🎞 Плёнка" in labels
+    assert "🗄 Вернуть бэкап" not in labels  # новой пленке откатывать нечего
+    target = tmp_path / "mel-2026-02.json"
+    assert target.is_file()
+    assert validate_file(target).cassette is not None
+
+
+async def test_restore_callback_restores_previous(monkeypatch, tmp_path) -> None:
+    """«🗄 Вернуть бэкап»: откат к предыдущему варианту кассеты."""
+    source = _enable_library(monkeypatch, tmp_path)
+    cassette = validate_file(source).cassette
+    old_title = cassette.title
+    ok, _lines, _final = ed.apply_cassette_file(
+        ed.scenario_yaml(cassette).replace(old_title, "Версия A").encode("utf-8"),
+        "mel.json",
+        "month",
+        tmp_path,
+    )
+    assert ok
+    assert validate_file(source).cassette.title == "Версия A"
+    callback = _make_callback("cassette:restore:mel.json")
+    await panel_mod.on_cassette_action(callback)
+    assert callback.answer.call_args.args[0] == "Кассета восстановлена из бэкапа."
+    assert validate_file(source).cassette.title == old_title
+    assert "КАССЕТЫ" in callback.message.edit_text.call_args.args[0]
+
+
+async def test_restore_callback_without_backup(monkeypatch, tmp_path) -> None:
+    _enable_library(monkeypatch, tmp_path)
+    callback = _make_callback("cassette:restore:mel.json")
+    await panel_mod.on_cassette_action(callback)
+    assert "Бэкапа" in callback.answer.call_args.args[0]
+
+
 async def test_document_handler_applies_day_edit(monkeypatch, tmp_path) -> None:
     """Документ «фрагмент дня» компилируется и кладётся в кассету, намерение гаснет."""
     source = _enable_library(monkeypatch, tmp_path)
@@ -379,6 +651,10 @@ async def test_document_handler_applies_day_edit(monkeypatch, tmp_path) -> None:
         await set_edit_intent(session, "mel.json", "day")
     await panel_mod.on_cassette_document(message)
     assert message.reply.call_args.args[0].startswith("✅")
+    labels = _flat(message.reply.call_args.kwargs["reply_markup"])
+    assert "🎞 Плёнка" in labels
+    assert "🗄 Вернуть бэкап" in labels  # apply сделал .bak — undo одной кнопкой
+    assert "📼 К кассетам" in labels
     async with SessionLocal() as session:
         assert await get_edit_intent(session) == (None, None)
     relit = validate_file(source).cassette

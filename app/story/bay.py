@@ -210,6 +210,18 @@ async def _resolution(
     return cassette.road(today.day, winners), decision_dates
 
 
+async def today_road(
+    session, cassette: Cassette, today: date | None = None
+) -> tuple[str, list[date]]:
+    """Дорога, по которой сегодня идёт кассета (для контекста редактора).
+
+    Читает только честные прошлые решения движка (закрытые раунды по opens_at);
+    сбоя нет — main. Дата по умолчанию — сегодня.
+    """
+    today = today or datetime.now(UTC).date()
+    return await _resolution(session, cassette, today)
+
+
 async def set_next_cassette(session, file_name: str | None) -> None:
     """Назначает/снимает «следующую» кассету (file_name=None — снять выбор)."""
     from app.models import WatcherState

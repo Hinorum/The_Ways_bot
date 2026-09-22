@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import yaml
@@ -178,60 +179,147 @@ def _bullet(line: str) -> str:
     return f"  - {line}"
 
 
+def _warnings(result: ValidationResult) -> list[str]:
+    if not result.warnings:
+        return []
+    lines = ["Замечания:"]
+    lines.extend(_bullet(warning) for warning in result.warnings)
+    return lines
+
+
+def _derive_name(cassette: Cassette) -> str:
+    """Имя файла новой кассеты: slug из cassette_id + месяц (только имена-дорожки)."""
+    slug = "".join(
+        ch if ch.isalnum() or ch in "-_" else "-" for ch in cassette.cassette_id.lower()
+    ).strip("-")
+    if not slug:
+        slug = "kasseta"
+    return f"{slug}-{cassette.month}.json"
+
+
+def validate_edit(
+    data: bytes,
+    file_name: str,
+    mode: str,
+    directory: Path,
+) -> tuple[bool, list[str], str | None, Cassette | None]:
+    """Проверка правки файлом без записи.
+
+    mode: month — целый сценарий поверх существующей кассеты; day — фрагмент
+    одного дня (дорога и день читаются из самого фрагмента); new — новая
+    кассета (имя выводится из cassette_id+месяца, существующие не трогаются).
+    Возвращает (ok, строки отчёта, конечное имя файла, кассета результата).
+    """
+    text = data.decode("utf-8-sig")
+
+    if mode == "new":
+        result = scenario_from_text(text)
+        if result.cassette is None:
+            lines = ["Новая кассета не принята:", *(_bullet(e) for e in result.errors)]
+            return False, lines, None, None
+        cassette = result.cassette
+        final_name = _derive_name(cassette)
+        if (directory / final_name).is_file():
+            return (
+                False,
+                [f"Файл {final_name} уже есть — существующую плёнку не перезаписываем.",],
+                final_name,
+                None,
+            )
+        lines = [
+            f"Новая кассета готова: {cassette.title} · {cassette.month} · "
+            f"{len(cassette.days)} дней → {final_name}.",
+            *_warnings(result),
+        ]
+        return True, lines, final_name, cassette
+
+    path = directory / file_name
+    if not path.is_file():
+        return False, [f"Кассеты {file_name} нет в библиотеке."], file_name, None
+
+    if mode == "month":
+        result = scenario_from_text(text)
+        if result.cassette is None:
+            lines = [f"Сценарий {file_name} не принят:", *(_bullet(e) for e in result.errors)]
+            return False, lines, file_name, None
+        cassette = result.cassette
+        lines = [
+            f"Сценарий {file_name} принят: {cassette.title} · {cassette.month} · "
+            f"{len(cassette.days)} дней.",
+            *_warnings(result),
+        ]
+        return True, lines, file_name, cassette
+
+    if mode == "day":
+        try:
+            road, day = day_from_text(text)
+        except ValueError as exc:
+            return False, ["Фрагмент дня не принят:", f"  - {exc}"], file_name, None
+        base = validate_file(path)
+        if base.cassette is None:
+            lines = [f"Кассета {file_name} сейчас не читается:", *(_bullet(e) for e in base.errors)]
+            return False, lines, file_name, None
+        result = patch_cassette(base.cassette, road, day)
+        if result.cassette is None:
+            lines = [
+                f"Правка дня {day.day_index} дороги {road} не принята:",
+                *(_bullet(e) for e in result.errors),
+            ]
+            return False, lines, file_name, None
+        lines = [
+            f"День {day.day_index} дороги {road} готов к записи в {file_name} · "
+            f"{day.chapter_title}.",
+            *_warnings(result),
+        ]
+        return True, lines, file_name, result.cassette
+
+    return False, [f"Неизвестный режим правки: {mode!r}."], file_name, None
+
+
+def _backup(path: Path) -> None:
+    """Слепок текущего файла перед перезаписью (для Undo хранителя)."""
+    if path.is_file():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+
+
 def apply_cassette_file(
     data: bytes,
     file_name: str,
     mode: str,
     directory: Path,
-) -> tuple[bool, list[str]]:
-    """Правка кассеты внешним файлом (месяц целиком или один день).
+    dry_run: bool = False,
+) -> tuple[bool, list[str], str | None]:
+    """Правка кассеты внешним файлом (месяц, день или новая кассета).
 
-    Единственный безопасный источник: файлы существующей библиотеки. Пишет
-    атомарно на место кассеты; битая правка ничего не меняет. Возвращает
-    (ok, строки отчёта).
+    Проверка всегда опережает запись: битая/невалидная правка ничего не меняет.
+    Apply пишет атомарно и перед записью делает бэкап старого файла.
+    dry_run=True — только проверка (`--check`/кнопка «Проверить»).
+    Возвращает (ok, строки отчёта, конечное имя файла).
+    """
+    ok, lines, final_name, cassette = validate_edit(data, file_name, mode, directory)
+    if not ok or cassette is None:
+        return False, lines, final_name
+    if dry_run:
+        return True, [*lines, "Проверено — файл не изменён."], final_name
+    path = directory / final_name
+    if mode != "new":
+        _backup(path)
+    write_json(cassette, path)
+    return True, lines, final_name
+
+
+def restore_backup(file_name: str, directory: Path) -> tuple[bool, list[str]]:
+    """Откат кассеты к сохранённому бэкапу (Undo правки хранителя).
+
+    Бэкап сперва валидируется: битый бэкап не трогает рабочую кассету.
     """
     path = directory / file_name
-    if not path.is_file():
-        return False, [f"кассеты {file_name} нет в библиотеке."]
-    text = data.decode("utf-8-sig")
-    if mode == "month":
-        result = scenario_from_text(text)
-        if result.cassette is None:
-            lines = [f"Сценарий {file_name} не принят:"]
-            lines.extend(_bullet(error) for error in result.errors)
-            return False, lines
-        write_json(result.cassette, path)
-        cassette = result.cassette
-        lines = [
-            f"Сценарий {file_name} принят: {cassette.title} · {cassette.month} "
-            f"· {len(cassette.days)} дней.",
-        ]
-        if result.warnings:
-            lines.append("Замечания:")
-            lines.extend(_bullet(warning) for warning in result.warnings)
-        return True, lines
-    if mode == "day":
-        try:
-            road, day = day_from_text(text)
-        except ValueError as exc:
-            return False, ["Фрагмент дня не принят:", f"  - {exc}"]
-        base = validate_file(path)
-        if base.cassette is None:
-            lines = [f"Кассета {file_name} сейчас не читается:"]
-            lines.extend(_bullet(error) for error in base.errors)
-            return False, lines
-        result = patch_cassette(base.cassette, road, day)
-        if result.cassette is None:
-            lines = [f"Правка дня {day.day_index} дороги {road} не принята:"]
-            lines.extend(_bullet(error) for error in result.errors)
-            return False, lines
-        write_json(result.cassette, path)
-        lines = [
-            f"День {day.day_index} дороги {road} обновлён в {file_name} · "
-            f"{day.chapter_title}.",
-        ]
-        if result.warnings:
-            lines.append("Замечания:")
-            lines.extend(_bullet(warning) for warning in result.warnings)
-        return True, lines
-    return False, [f"Неизвестный режим правки: {mode!r}."]
+    bak = directory / (file_name + ".bak")
+    if not bak.is_file():
+        return False, [f"Бэкапа {file_name}.bak нет — восстанавливать нечего."]
+    result = validate_file(bak)
+    if result.cassette is None:
+        lines = [f"Бэкап {file_name}.bak нечитаем:", *(_bullet(e) for e in result.errors)]
+        return False, lines
+    shutil.copy2(bak, path)
+    return True, [f"Кассета {file_name} восстановлена из {file_name}.bak."]

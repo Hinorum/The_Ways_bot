@@ -235,6 +235,32 @@ def test_patch_unknown_road_rejected(tmp_path) -> None:
     assert not out.exists()
 
 
+def test_patch_without_flags_reads_day_and_road_from_fragment(tmp_path) -> None:
+    """Без --day/--road patch берёт дорогу и день из заголовка фрагмента сам."""
+    ke = _write_cassette(tmp_path)
+    frag = tmp_path / "fork-day.yaml"
+    assert _run("dump", str(ke), "--day", "20", "--road", "morning", "-o", str(frag)) == 0
+    payload = yaml.safe_load(frag.read_text(encoding="utf-8"))
+    payload["chapter_title"] = "Правка без флагов"
+    frag.write_text(
+        "# дорога: morning\n"
+        + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    out = tmp_path / "patched.json"
+    assert _run("patch", str(ke), str(frag), "-o", str(out)) == 0
+    patched = validate_file(out).cassette
+    original = validate_file(ke).cassette
+    assert patched is not None and original is not None
+    fork = next(f for f in patched.switch if f.to == "morning")
+    assert fork.days[10].chapter_title == "Правка без флагов"
+    assert patched.days[19].chapter_title == original.days[19].chapter_title
+    # --check без флагов тоже работает и ничего не пишет
+    before = ke.read_bytes()
+    assert _run("patch", str(ke), str(frag), "--check") == 0
+    assert ke.read_bytes() == before
+
+
 def test_patch_check_validates_without_write(tmp_path) -> None:
     ke = _write_cassette(tmp_path)
     frag = tmp_path / "day4.yaml"
