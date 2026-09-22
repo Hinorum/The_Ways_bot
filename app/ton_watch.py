@@ -382,6 +382,35 @@ async def _stash_refund(
         )
         await _ledger_stuck_incoming(session, transfer, ledger_player_id, "refund:dust")
         return "refund_dust"
+    # Защита от двойной выплаты: транзакция уже учтена как ставка (Stake) или
+    # как входящий доход казны (Income — ставка, revote-оплата, микро-верификация).
+    # Повторный проход (сброс курсора, overlap-окно, пауза, ре-скан) НЕ должен
+    # создавать второй авто-возврат: монета уже легла в банк дня (приз/Фонд)
+    # или в выручку, и повторный refund — это двойной расход казны.
+    booked = await session.execute(
+        select(Stake.id).where(
+            Stake.tx_hash == transfer.tx_hash, Stake.network == current_network()
+        )
+    )
+    if booked.scalar_one_or_none() is not None:
+        logger.warning(
+            "Перевод %s уже учтён ставкой (tx в Stake) — авто-возврат отменён "
+            "(защита от двойной выплаты)",
+            transfer.tx_hash[:16],
+        )
+        return "already_booked"
+    booked = await session.execute(
+        select(Income.id).where(
+            Income.unit_ref == transfer.tx_hash, Income.network == current_network()
+        )
+    )
+    if booked.scalar_one_or_none() is not None:
+        logger.warning(
+            "Перевод %s уже учтён входящим доходом казны (Income) — авто-возврат "
+            "отменён (защита от двойной выплаты)",
+            transfer.tx_hash[:16],
+        )
+        return "already_booked"
     duplicate = await session.execute(
         select(Payout.id).where(Payout.kind == "refund", Payout.tx_hash == transfer.tx_hash).limit(1)
     )
