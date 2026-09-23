@@ -315,3 +315,129 @@ async def test_http_channel_alert_silent_without_bot(monkeypatch: pytest.MonkeyP
     finally:
         ton_pay._http_channel_engaged_at = None
         ton_pay._last_http_channel_alert_at = None
+
+
+def _player_setup() -> tuple[list[str], str]:
+    """Мнемоника + производный v5r1 адрес игрока (детерминировано внутри теста)."""
+    mnemonic = mnemonic_new(24)
+    words = list(mnemonic)
+    _, private_key = mnemonic_to_private_key(words)
+    pub = private_key_to_public_key(private_key)
+    return words, ton_pay._wallet_address("v5r1", pub, -3)
+
+
+async def test_build_offline_wallet_generic_v5() -> None:
+    """Общий строитель для игрока: та же локальная математика v5r1, что у казны."""
+    words, address = _player_setup()
+    wallet, version = ton_pay.build_offline_wallet(" ".join(words), address, -3)
+    assert version == "v5r1"
+    assert wallet.address.to_str(False) == address
+    assert wallet.private_key is not None
+    assert wallet.provider is None
+    assert wallet.wallet_id == 2147483645  # 0x80000000 ^ (-3)
+
+
+async def test_build_offline_wallet_matches_treasury_builder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Те же входы (мнемоника+адрес+сеть) → общий строитель = обёртке казначея."""
+    words = _setup_testnet_treasury(monkeypatch)
+    generic, g_version = ton_pay.build_offline_wallet(
+        " ".join(words), settings.active_treasury_address, -3, forced_version="v5r1"
+    )
+    treasury, t_version = ton_pay._build_offline_treasury_wallet()
+    assert g_version == t_version == "v5r1"
+    assert generic.address.to_str(False) == treasury.address.to_str(False)
+    assert generic.private_key == treasury.private_key
+    assert generic.wallet_id == treasury.wallet_id
+
+
+async def test_build_offline_wallet_forced_v4() -> None:
+    """forced_version='v4r2': wallet_id — константа контракта, адрес v4."""
+    words, _ = _player_setup()
+    _, private_key = mnemonic_to_private_key(words)
+    pub = private_key_to_public_key(private_key)
+    v4_address = ton_pay._wallet_address("v4r2", pub, -3)
+    wallet, version = ton_pay.build_offline_wallet(" ".join(words), v4_address, -3, forced_version="v4r2")
+    assert version == "v4r2"
+    assert wallet.address.to_str(False) == v4_address
+    assert wallet.wallet_id == ton_pay._V4R2_WALLET_ID
+
+
+def test_build_offline_wallet_detect_none_raises() -> None:
+    """Мнемоника не даёт привязанного адреса ни в одной версии — ValueError."""
+    words, _ = _player_setup()
+    with pytest.raises(ValueError, match="не совпадает ни с одной"):
+        ton_pay.build_offline_wallet(" ".join(words), "0:" + "aa" * 32, -3)
+
+
+def test_build_offline_wallet_forced_mismatch_raises() -> None:
+    """Принудительная версия, но адрес — от другой мнемоники: ValueError."""
+    words, _ = _player_setup()
+    with pytest.raises(ValueError, match="не совпадает с производным"):
+        ton_pay.build_offline_wallet(" ".join(words), "0:" + "bb" * 32, -3, forced_version="v5r1")
+
+
+async def test_http_get_seqno_generic_uninit_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """generic-адрес: exit_code!=0 → 0 (init-external задеплоит), статус не прощупываем."""
+    _setup_testnet_treasury(monkeypatch)
+    words, address = _player_setup()
+    wallet, _ = ton_pay.build_offline_wallet(" ".join(words), address, -3)
+    probed = False
+
+    async def fake_account_state():
+        nonlocal probed
+        probed = True
+        raise AssertionError("generic-путь не прощупывает статус")
+
+    async def fake_post(client, url, *, json=None, headers=None, timeout=None, **kw):
+        assert json["address"] == address
+        return _Resp(body={"exit_code": 11, "stack": []})
+
+    monkeypatch.setattr(ton_pay, "fetch_account_state", fake_account_state)
+    monkeypatch.setattr(ton_pay, "http_post_with_retry", fake_post)
+    assert await ton_pay._http_get_wallet_seqno(wallet, address=address) == 0
+    assert not probed
+
+
+async def test_http_get_seqno_generic_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """generic-адрес: развёрнутый контракт → seqno из runGetMethod без статус-пробы."""
+    _setup_testnet_treasury(monkeypatch)
+    words, address = _player_setup()
+    wallet, _ = ton_pay.build_offline_wallet(" ".join(words), address, -3)
+    probed = False
+
+    async def fake_account_state():
+        nonlocal probed
+        probed = True
+        raise AssertionError("generic-путь не прощупывает статус")
+
+    async def fake_post(client, url, *, json=None, headers=None, timeout=None, **kw):
+        return _Resp(body={"exit_code": 0, "stack": [{"type": "num", "value": "0x5"}]})
+
+    monkeypatch.setattr(ton_pay, "fetch_account_state", fake_account_state)
+    monkeypatch.setattr(ton_pay, "http_post_with_retry", fake_post)
+    assert await ton_pay._http_get_wallet_seqno(wallet, address=address) == 5
+    assert not probed
+
+
+async def test_send_wallet_transfer_http_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ставка игрока: seqno по адресу кошелька + sendBoc; возврат метки bcast."""
+    _setup_testnet_treasury(monkeypatch)
+    words, address = _player_setup()
+    wallet, _ = ton_pay.build_offline_wallet(" ".join(words), address, -3)
+    calls = []
+
+    async def fake_post(client, url, *, json=None, headers=None, timeout=None, **kw):
+        if json.get("method") == "seqno":
+            return _Resp(body={"exit_code": 0, "stack": [{"type": "num", "value": "0x6"}]})
+        calls.append(json)
+        return _Resp(body={"ok": True, "result": {"@type": "ok"}})
+
+    monkeypatch.setattr(ton_pay, "http_post_with_retry", fake_post)
+    dest = "0:" + "11" * 32
+    marker = await ton_pay.send_wallet_transfer_http(
+        wallet, dest_address=dest, amount_nanotons=to_nano(0.5), comment="e2e:день7"
+    )
+    assert marker and marker.startswith("bcast:")
+    assert len(calls) == 1
+    assert calls[0]["method"] == "sendBoc"
+    assert calls[0]["params"]["boc"]

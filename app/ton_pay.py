@@ -578,48 +578,49 @@ def _is_liteserver_down(exc: BaseException) -> bool:
     return "no alive peers" in str(exc).lower()
 
 
-def _build_offline_treasury_wallet():
-    """Кошелёк казначея БЕЗ провайдера: чистая локальная математика.
+def build_offline_wallet(
+    mnemonic: str,
+    address: str,
+    network_global_id: int,
+    forced_version: str | None = None,
+):
+    """Кошелёк БЕЗ провайдера по мнемонике: чистая локальная математика.
 
-    Вариант для HTTP-канала: лайтсерверы мертвы, поэтому экземпляр кошелька
-    создаётся без подключения (provider=None), а StateInit собирается из кода
-    контракта и data ровно как в _get_wallet/_wallet_address (пары мнемоника/
-    адрес валидируются тем же детектом версии). Сеть не трогается: seqno и
-    публичный ключ онлайн-путь берут у liteclient, здесь их читаем по HTTP.
-    Возвращает (wallet, version).
+    Общий строитель для HTTP-канала (лайтсерверы мертвы, сеть не нужна):
+    версия контракта детектится по привязанному адресу, StateInit собирается
+    из кода контракта и data ровно как в _get_wallet/_wallet_address (пара
+    мнемоника/адрес валидируется тем же детектом). Возвращает (wallet, version).
+    forced_version — «v4r2»|«v5r1» принудительно (как TREASURY_WALLET_VERSION);
+    иначе авто-детект.
     """
     from pytoniq.contract.wallets.wallet import WALLET_V4_R2_CODE, WalletV4R2
     from pytoniq.contract.wallets.wallet_v5 import WALLET_V5_R1_CODE, WalletV5R1
     from pytoniq_core import Address, StateInit
     from pytoniq_core.crypto.keys import mnemonic_to_private_key, private_key_to_public_key
 
-    words = settings.active_treasury_mnemonic.replace("\n", " ").split()
+    words = mnemonic.replace("\n", " ").split()
     if len(words) < 12:
-        raise ValueError("Мнемоника казначея неполная (нужно 24 слова)")
+        raise ValueError("Мнемоника неполная (нужно 24 слова)")
     _, private_key = mnemonic_to_private_key(words)
     public_key = private_key_to_public_key(private_key)
-    network = "testnet" if settings.is_testnet else "mainnet"
-    network_global_id = NETWORK_GLOBAL_IDS[network]
 
-    requested = settings.treasury_wallet_version.strip().lower()
+    requested = (forced_version or "").strip().lower()
     if requested in WALLET_VERSIONS:
         derived = _wallet_address(requested, public_key, network_global_id)
-        if normalize_address(derived) != normalize_address(settings.active_treasury_address):
+        if normalize_address(derived) != normalize_address(address):
             raise ValueError(
-                f"Адрес казначея не совпадает с производным от мнемоники "
-                f"(TREASURY_WALLET_VERSION={requested}): {derived}. "
-                "Проверь пару мнемоника/адрес или верни auto."
+                f"Адрес не совпадает с производным от мнемоники "
+                f"(версия {requested}): {derived}. Проверь пару мнемоника/адрес "
+                "или верни auto."
             )
         version = requested
     else:
-        version, candidates = _detect_wallet_version(
-            public_key, settings.active_treasury_address, network_global_id
-        )
+        version, candidates = _detect_wallet_version(public_key, address, network_global_id)
         if version is None:
             raise ValueError(
-                "Адрес казначея не совпадает ни с одной поддерживаемой версией "
-                f"кошелька для этой мнемоники: {candidates}. Проверь адрес и "
-                "мнемонику, либо задай TREASURY_WALLET_VERSION=v4r2|v5r1 явно."
+                "Адрес не совпадает ни с одной поддерживаемой версией кошелька "
+                f"для этой мнемоники: {candidates}. Проверь адрес и мнемонику, "
+                "либо задай TREASURY_WALLET_VERSION=v4r2|v5r1 явно."
             )
 
     if version == "v5r1":
@@ -631,27 +632,49 @@ def _build_offline_treasury_wallet():
         code = WALLET_V4_R2_CODE
         wallet_class = WalletV4R2
     state_init = StateInit(code=code, data=data)
-    address = Address((0, state_init.serialize().hash))
+    address_obj = Address((0, state_init.serialize().hash))
     if version == "v5r1":
         # wallet_id — свойство, читающее data из self.state; кода на аккаунте
         # для этого не нужно, но self.state обязан быть заполнен.
         wallet = wallet_class(
             provider=None,
-            address=address,
+            address=address_obj,
             state_init=state_init,
             private_key=private_key,
         )
         wallet.state = state_init
     else:
-        # v4: wallet_id — обычный атрибут (константа контракта, как в data).
+        # v4: wallet_id — read-only свойство, читающее data из self.state
+        # (константа контракта внутри data-ячейки); kwarg'ом задать нельзя.
         wallet = wallet_class(
             provider=None,
-            address=address,
+            address=address_obj,
             state_init=state_init,
             private_key=private_key,
-            wallet_id=_V4R2_WALLET_ID,
         )
+        wallet.state = state_init
     return wallet, version
+
+
+def _build_offline_treasury_wallet():
+    """Кошелёк казначея БЕЗ провайдера: build_offline_wallet от настроек.
+
+    Вариант для HTTP-канала: лайтсерверы мертвы, поэтому экземпляр кошелька
+    создаётся без подключения (provider=None), а StateInit собирается из кода
+    контракта и data ровно как в _get_wallet/_wallet_address (пары мнемоника/
+    адрес валидируются тем же детектом версии). Сеть не трогается: seqno и
+    публичный ключ онлайн-путь берут у liteclient, здесь их читаем по HTTP.
+    Возвращает (wallet, version).
+    """
+    network = "testnet" if settings.is_testnet else "mainnet"
+    requested = settings.treasury_wallet_version.strip().lower() if settings.treasury_wallet_version else ""
+    forced = requested if requested in WALLET_VERSIONS else None
+    return build_offline_wallet(
+        settings.active_treasury_mnemonic,
+        settings.active_treasury_address,
+        NETWORK_GLOBAL_IDS[network],
+        forced_version=forced,
+    )
 
 
 def _parse_run_method_seqno(data: dict) -> int | None:
@@ -681,38 +704,45 @@ def _parse_run_method_seqno(data: dict) -> int | None:
         return None
 
 
-async def _http_get_wallet_seqno(wallet) -> int:
-    """seqno казначея для оффлайн-подписи: чтение через Toncenter v3.
+async def _http_get_wallet_seqno(wallet, *, address: str | None = None) -> int:
+    """seqno для оффлайн-подписи: чтение через Toncenter v3.
 
-    Активный аккаунт с развёрнутым кодом — число из get-метода «seqno»
-    (единое имя для v4r2 и v5r1). Нет контракта (uninit/unactive) — 0:
-    внешнее сообщение с init задеплоит казну и выполнится в одной транзакции.
-    Статус читается через fetch_account_state (TonAPI → Toncenter): если контур
-    активен, а seqno прочитать не удалось — падаем, слать «вслепую» нельзя
-    (init-external по развёрнутому кошельку ещё и сеть отвергнет).
+    address=None — казначей (статус сначала прощупывается fetch_account_state):
+    активный аккаунт с развёрнутым кодом — число из get-метода «seqno» (единое
+    имя для v4r2 и v5r1); нет контракта (uninit/unactive) — 0: внешнее сообщение
+    с init задеплоит кошелёк и выполнится в одной транзакции; если казначёй
+    активен, а seqno прочитать не удалось — падаем (слать «вслепую» нельзя).
+
+    address задан — generic-путь (кошелёк игрока/e2e): статус не прощупывается,
+    exit_code != 0 трактуется как uninit → 0 (send_wallet_transfer_http в этом
+    случае разворачивает контракт init-external'ом). Для тест-сценария это
+    достаточно: активный, но нечитаемый метод на игроке — редкость, и перевод
+    просто не пройдёт подтверждение watcher'ом.
     """
-    try:
-        _, status, _ = await fetch_account_state()
-        active = status == "active"
-    except Exception:
-        status = None
-        active = False
-    if status is not None and not active:
-        return 0
+    target = address or settings.active_treasury_address
+    if address is None:
+        try:
+            _, status, _ = await fetch_account_state()
+            active = status == "active"
+        except Exception:
+            status = None
+            active = False
+        if status is not None and not active:
+            return 0
     url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/runGetMethod"
     headers = api_headers(settings.toncenter_api_key)
     client = get_http_client()
     response = await http_post_with_retry(
         client,
         url,
-        json={"address": settings.active_treasury_address, "method": "seqno", "stack": []},
+        json={"address": target, "method": "seqno", "stack": []},
         headers=headers,
     )
     response.raise_for_status()
     seqno = _parse_run_method_seqno(response.json())
     if seqno is not None:
         return seqno
-    if active:
+    if address is None and active:
         raise RuntimeError(
             "казначёй активен, но seqno не читается (toncenter runGetMethod "
             f"exit_code={response.json().get('exit_code')}) — отправка отложена"
@@ -793,6 +823,39 @@ async def _send_ton_transfer_http(dest_address: str, amount_nanotons: int, comme
         amount_nanotons,
         dest_address[-6:],
         _batch_seqno - 1,
+    )
+    return marker
+
+
+async def send_wallet_transfer_http(
+    wallet, *, dest_address: str, amount_nanotons: int, comment: str
+) -> str:
+    """Оффлайн-подпись + HTTPS-вещание для ПРОИЗВОЛЬНОГО кошелька.
+
+    Generic-путь HTTP-канала (кошелёк игрока из build_offline_wallet): seqno
+    читается через runGetMethod по адресу кошелька, seqno==0 разворачивает
+    контракт init-external'ом в одной транзакции. Возвращает метку bcast.
+    """
+    if not wallet.private_key:
+        raise ValueError("Кошелёк без приватного ключа — оффлайн-подпись невозможна")
+    from pytoniq_core import Address
+
+    seqno = await _http_get_wallet_seqno(
+        wallet,
+        address=wallet.address.to_str(is_user_friendly=False, is_bounceable=False, is_url_safe=True),
+    )
+    internal_msg = wallet.create_wallet_internal_message(
+        destination=Address(dest_address),
+        value=amount_nanotons,
+        body=_comment_cell(comment),
+    )
+    await _http_broadcast_external(wallet, seqno, internal_msg)
+    marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
+    logger.info(
+        "Перевод %d нанотонов к …%s разослан через HTTP (toncenter, seqno=%d)",
+        amount_nanotons,
+        dest_address[-6:],
+        seqno,
     )
     return marker
 

@@ -5,7 +5,8 @@
 зеркало), кроме бота Telegram: рассылки и личные сообщения не задействованы
 (bot=None везде). Цель — полный цикл «в железе» на testnet: ставка реальным
 переводом приходит на казначея, день закрывается, приз уходит обратно,
-зеркало сходится в ноль.
+зеркало сходится в ноль. Ставка и выплаты идут через HTTP-канал (Toncenter
+sendBoc/runGetMethod, оффлайн-подпись) — лайтсерверы не нужны.
 
 Безопасность: скрипт отказывается стартовать, пока окружение не выглядит как
 выделенный тестнет-контур (TON_NETWORK=testnet, тестнет-мнемоники, адрес
@@ -15,7 +16,7 @@ mainnet или без полного набора ключей просто па
 Фазы (по одной или все подряд):
 
     python scripts/e2e_testnet.py check     # охранный гейт + диагностика казначея
-    python scripts/e2e_testnet.py stake     # голос + реальная ставка с кошелька игрока
+    python scripts/e2e_testnet.py stake     # голос + ставка с кошелька игрока (HTTP-канал)
     python scripts/e2e_testnet.py close     # закрыть день: подсчёт, победитель, выплаты
     python scripts/e2e_testnet.py dispatch  # разобрать очередь выплат (реальные переводы)
     python scripts/e2e_testnet.py mirror    # синк зеркала и тождество баланса «в ноль»
@@ -95,84 +96,6 @@ async def _treasury_address() -> str:
     if not settings.active_treasury_address:
         raise RuntimeError("Нет адреса казначея для активной сети (TREASURY_TESTNET_ADDRESS?)")
     return settings.active_treasury_address
-
-
-async def _player_provider():
-    """Лайтсерверный провайдер для кошелька игрока (тот же источник, что казначей)."""
-    from pytoniq import LiteBalancer
-
-    from app.config import settings
-    from app.ton_pay import _fetch_remote_json
-
-    if settings.liteserver_config_url:
-        config = await _fetch_remote_json(settings.liteserver_config_url)
-        provider = LiteBalancer.from_config(config)
-        logger.info("Лайтсерверы игрока: конфиг из LITESERVER_CONFIG_URL")
-    else:
-        provider = LiteBalancer.from_testnet_config()
-    await provider.start_up()
-    # Разогрев: без первого запроса пиры не успевают зарегистрироваться,
-    # и создание кошелька падает «have no alive peers» сразу после старта.
-    for attempt in range(30):
-        try:
-            await provider.get_masterchain_info()
-            return provider
-        except Exception as exc:
-            if attempt % 5 == 0:
-                logger.warning(
-                    "Разогрев провайдера (попытка %s) упал: %s (живых пиров %s)",
-                    attempt + 1,
-                    exc,
-                    getattr(provider, "alive_peers_num", "?"),
-                )
-            await asyncio.sleep(2)
-    raise RuntimeError("Лайтсерверы не ответили на разогрев (have no alive peers)")
-
-
-async def _player_wallet(provider):
-    """Кошелёк игрока из E2E_PLAYER_MNEMONIC; версия контракта — по привязанному адресу."""
-    from pytoniq.contract.wallets.wallet import WalletV4R2
-    from pytoniq.contract.wallets.wallet_v5 import WalletV5R1
-    from pytoniq_core.crypto.keys import mnemonic_to_private_key, private_key_to_public_key
-
-    from app.db import SessionLocal
-    from app.models import Player
-    from app.ton_pay import NETWORK_GLOBAL_IDS, WALLET_VERSIONS, _wallet_address
-    from app.ton_utils import normalize_address
-
-    words = os.environ["E2E_PLAYER_MNEMONIC"].replace("\n", " ").split()
-    _, private_key = mnemonic_to_private_key(words)
-    public_key = private_key_to_public_key(private_key)
-    gid = NETWORK_GLOBAL_IDS["testnet"]
-
-    async with SessionLocal() as session:
-        player = await session.get(Player, _player_id())
-    bound = normalize_address(player.wallet_address) if player and player.wallet_address else ""
-
-    version: str | None = None
-    for candidate in WALLET_VERSIONS:
-        derived = normalize_address(_wallet_address(candidate, public_key, gid))
-        if derived == bound:
-            version = candidate
-            break
-    if version is None:
-        raise RuntimeError(
-            "Кошелёк из E2E_PLAYER_MNEMONIC не совпадает с привязанным адресом игрока"
-            f" (привязан: {bound or '<нет>'}) — проверь мнемонику"
-        )
-
-    if version == "v5r1":
-        wallet = await WalletV5R1.from_private_key(provider, private_key=private_key, wc=0, network_global_id=gid)
-    else:
-        wallet = await WalletV4R2.from_private_key(provider, private_key, wc=0)
-    logger.info("Кошелёк игрока готов (%s, контракт %s)", wallet.address.to_str(), version)
-    return wallet
-
-
-def _comment_cell(text: str):
-    from pytoniq_core import begin_cell
-
-    return begin_cell().store_uint(0, 32).store_string(text[:120]).end_cell()
 
 
 async def phase_check() -> int:
@@ -263,10 +186,11 @@ async def _has_confirmed_stake(session, player_id: int, round_id: int) -> bool:
 
 
 async def phase_stake() -> int:
-    """Голос за путь + реальная ставка переводом с кошелька игрока."""
+    """Голос за путь + реальная ставка переводом с кошелька игрока (HTTP-канал)."""
     from app.config import settings
     from app.db import SessionLocal
-    from app.ton_utils import from_nano, to_nano
+    from app.models import Player
+    from app.ton_utils import from_nano, normalize_address, to_nano
     from app.voting import cast_vote
 
     player, round_row, position, existing_status, existing_amount = await _load_open_money_round()
@@ -287,38 +211,32 @@ async def phase_stake() -> int:
     logger.info("Путь выбран: %d (день %s)", chosen, round_row.day_index)
 
     if existing_status is None:
-        provider = await _player_provider()
-        try:
-            wallet = await _player_wallet(provider)
-            # Неразвёрнутый контракт: get_seqno() падает, пока аккаунт голый
-            # (баланс есть, кода нет). Разворачиваем v5r1 один раз внешним сообщением.
-            state = await wallet.get_account_state()
-            if state.is_uninitialized():
-                logger.info("Контракт игрока не развёрнут — раскладываем (деплой)…")
-                await wallet.deploy_via_external()
-                await asyncio.sleep(10)
-                state = await wallet.get_account_state()
-                if state.is_uninitialized():
-                    raise RuntimeError("Деплой контракта игрока не подтвердился")
-            amount = to_nano(settings.stake_min_ton)
-            comment = f"e2e:день{round_row.day_index}"
-            logger.info(
-                "Отправляю %.4f Gram на казначея (комментарий '%s')…",
-                from_nano(amount),
-                comment,
-            )
-            result = await wallet.transfer(
-                destination=await _treasury_address(),
-                amount=amount,
-                body=_comment_cell(comment),
-            )
-            if result != 1:
-                raise RuntimeError(f"Лайтсерверы не приняли ставку (результат {result})")
-        finally:
-            try:
-                await provider.close_all()
-            except Exception:
-                logger.warning("Не удалось закрыть провайдер игрока", exc_info=True)
+        from app.ton_pay import NETWORK_GLOBAL_IDS, build_offline_wallet, send_wallet_transfer_http
+
+        async with SessionLocal() as session:
+            player = await session.get(Player, _player_id())
+        bound = normalize_address(player.wallet_address) if player and player.wallet_address else ""
+        if not bound:
+            raise RuntimeError("У игрока не привязан кошелёк (/wallet) — ставка невозможна")
+        # Оффлайн-кошелёк из мнемоники (лайтсерверы не нужны): ставка уходит
+        # через Toncenter sendBoc, неразвёрнутый контракт деплоится init-external'ом.
+        wallet, version = build_offline_wallet(
+            os.environ["E2E_PLAYER_MNEMONIC"], bound, NETWORK_GLOBAL_IDS["testnet"]
+        )
+        amount = to_nano(settings.stake_min_ton)
+        comment = f"e2e:день{round_row.day_index}"
+        logger.info(
+            "Отправляю %.4f Gram на казначея через HTTP-канал (комментарий '%s', контракт %s)…",
+            from_nano(amount),
+            comment,
+            version,
+        )
+        await send_wallet_transfer_http(
+            wallet,
+            dest_address=await _treasury_address(),
+            amount_nanotons=amount,
+            comment=comment,
+        )
     else:
         logger.info(
             "Ставка на день %s в статусе %s — повторной отправки не будет, ждём подтверждение…",
