@@ -87,6 +87,16 @@ _RECONCILE_PAGE_OVERLAP = 16
 # False когда оба упали). Стартовое True = «история доступна»: до первого цикла
 # диспетчер всё равно ходит за маркерами до ретраев.
 _RECONCILE_HISTORY_OK = True
+# Переключение казначея на HTTP-канал (лайтсерверы режутся окружением):
+# запоминаем момент первого включения в процессе и стучим хранителю об этом
+# не чаще раза в _HTTP_CHANNEL_ALERT_COOLDOWN, чтобы на появление канала в
+# логах не сосать глаза, а статус был виден в чате.
+_http_channel_engaged_at: datetime | None = None
+_last_http_channel_alert_at: datetime | None = None
+_HTTP_CHANNEL_ALERT_COOLDOWN = timedelta(hours=6)
+# TONCENTER_API_KEY отсутствует: канал работает под анонимным лимитом и может
+# получить 429. Кричать об этом в лог один раз за процесс, не каждую выплату.
+_warned_no_toncenter_key = False
 
 
 @asynccontextmanager
@@ -758,7 +768,13 @@ async def _send_ton_transfer_http(dest_address: str, amount_nanotons: int, comme
     wallet, _ = _build_offline_treasury_wallet()
     from pytoniq_core import Address
 
-    global _batch_seqno
+    global _batch_seqno, _warned_no_toncenter_key
+    if not settings.toncenter_api_key and not _warned_no_toncenter_key:
+        _warned_no_toncenter_key = True
+        logger.warning(
+            "TONCENTER_API_KEY пуст: HTTP-канал работает под анонимным лимитом "
+            "Toncenter — при частых выплатах возможны 429; задай ключ в .env"
+        )
     if _batch_seqno is None:
         _batch_seqno = await _http_get_wallet_seqno(wallet)
     internal_msg = wallet.create_wallet_internal_message(
@@ -768,6 +784,9 @@ async def _send_ton_transfer_http(dest_address: str, amount_nanotons: int, comme
     )
     await _http_broadcast_external(wallet, _batch_seqno, internal_msg)
     _batch_seqno += 1
+    global _http_channel_engaged_at
+    if _http_channel_engaged_at is None:
+        _http_channel_engaged_at = datetime.now(UTC)
     marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
     logger.info(
         "Перевод %d нанотонов к …%s разослан через HTTP (toncenter, seqno=%d)",
@@ -972,6 +991,30 @@ async def _reset_retriable(session, network: str) -> None:
         await session.execute(
             update(Payout).where(Payout.id.in_(reset_ids)).values(status="pending")
         )
+
+
+async def _alert_http_channel_switch(bot: Bot | None, network: str) -> None:
+    """Разово (не чаще раза в кулдаун) сообщает хранителю: казначей пишет
+    исходящие через HTTP-канал, лайтсерверы недоступны. Без bot — тихо."""
+    global _last_http_channel_alert_at
+    if bot is None or _http_channel_engaged_at is None:
+        return
+    now = datetime.now(UTC)
+    if _last_http_channel_alert_at is not None:
+        if now - _last_http_channel_alert_at < _HTTP_CHANNEL_ALERT_COOLDOWN:
+            return
+    _last_http_channel_alert_at = now
+    try:
+        from app.ops import notify_admins  # локально: ops не импортируется наверху
+
+        await notify_admins(
+            bot,
+            "⚠️ Казначей: лайтсерверы недоступны (ADNL/TCP режется окружением) — "
+            f"исходящие идут через HTTP-канал (оффлайн-подпись + Toncenter sendBoc) "
+            f"[{network}]. Вернусь к лайтсерверам сам, когда они оживут.",
+        )
+    except Exception as exc:
+        logger.warning("Алерт о переключении на HTTP-канал не отправлен: %s", exc)
 
 
 async def _alert_admin(bot: Bot | None, network: str) -> None:
@@ -1280,19 +1323,11 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                     payout.last_error = f"таймаут вещания (>{settings.payout_send_timeout_seconds} с)"
                     tx_hash = None
                 except Exception as exc:
+                    # «no alive peers» сюда уже не доходит: send_ton_transfer
+                    # перехватывает сбой лайтсерверного канала и уходит в HTTP
+                    # (тот при неуспехе падает текстом провайдера — он и виден).
                     reason = str(exc)
-                    if "no alive peers" in reason.lower():
-                        # Типовой тестнет-случай: встроенный конфиг pytoniq мёртв
-                        # или UDP закрыт окружением. Причина должна звать к решению.
-                        logger.warning("Выплата %s: нет живых лайтсерверов", payout.id)
-                        reason = (
-                            "have no alive peers: лайтсерверы недоступны — задай "
-                            "LITESERVER_CONFIG_URL с живым конфигом тестнета "
-                            "(https://ton.org/testnet-global.config.json) или разошли "
-                            "очередь локально на той же БД"
-                        )
-                    else:
-                        logger.warning("Выплата %s не ушла: %s", payout.id, exc)
+                    logger.warning("Выплата %s не ушла: %s", payout.id, exc)
                     payout.last_error = reason[:200]
                     tx_hash = None
                 if tx_hash is None and payout.last_error is None:
@@ -1320,6 +1355,9 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
     # Алерт по ВСЕМ неотправленным без предупреждения (включая найденные
     # после рестарта): дедуп внутри _alert_admin по колонке alerted.
     await _alert_admin(bot, network)
+    # Отдельная история: выплаты ушли, но через HTTP-канал — хранитель должен
+    # знать, что лайтсерверы за стеной (дедуп по времени, см. хелпер).
+    await _alert_http_channel_switch(bot, network)
     return sent
 
 

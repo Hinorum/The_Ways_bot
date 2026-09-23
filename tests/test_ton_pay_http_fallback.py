@@ -256,3 +256,62 @@ async def test_send_ton_transfer_non_liteserver_error_not_fallback(
     with pytest.raises(ValueError, match="не совпадает"):
         await ton_pay.send_ton_transfer("0:" + "44" * 32, to_nano(1), comment="x")
     assert not called
+
+
+async def _alert_calls(monkeypatch: pytest.MonkeyPatch, bot) -> list[str]:
+    """Подмена notify_admins: возвращает список переданных текстов."""
+    sent: list[str] = []
+    async def fake_notify(b, text):
+        assert b is bot
+        sent.append(text)
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify)
+    return sent
+
+
+async def test_http_channel_alert_fires_once_per_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Хранитель узнаёт о переключении на HTTP-канал, но не чаще раза в кулдаун."""
+    ton_pay._http_channel_engaged_at = None
+    ton_pay._last_http_channel_alert_at = None
+    bot = object()
+
+    try:
+        sent = await _alert_calls(monkeypatch, bot)
+        # Канал ещё не задействован — алерта нет.
+        await ton_pay._alert_http_channel_switch(bot, "testnet")
+        assert sent == []
+
+        ton_pay._http_channel_engaged_at = ton_pay.datetime.now(ton_pay.UTC)
+        await ton_pay._alert_http_channel_switch(bot, "testnet")
+        assert len(sent) == 1
+        assert "HTTP-канал" in sent[0] and "testnet" in sent[0]
+
+        # Повтор внутри кулдауна — молчим.
+        await ton_pay._alert_http_channel_switch(bot, "testnet")
+        assert len(sent) == 1
+
+        # После кулдауна можно снова (канал всё ещё на HTTP).
+        ton_pay._last_http_channel_alert_at = ton_pay.datetime.now(ton_pay.UTC) - ton_pay._HTTP_CHANNEL_ALERT_COOLDOWN - ton_pay.timedelta(minutes=1)
+        await ton_pay._alert_http_channel_switch(bot, "testnet")
+        assert len(sent) == 2
+    finally:
+        ton_pay._http_channel_engaged_at = None
+        ton_pay._last_http_channel_alert_at = None
+
+
+async def test_http_channel_alert_silent_without_bot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Без bot алерт-хелпер не лезет за нотификацией (ядро не требует бота)."""
+    ton_pay._http_channel_engaged_at = ton_pay.datetime.now(ton_pay.UTC)
+    ton_pay._last_http_channel_alert_at = None
+    called = False
+
+    async def fake_notify(b, text):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("app.ops.notify_admins", fake_notify)
+    try:
+        await ton_pay._alert_http_channel_switch(None, "testnet")
+        assert not called
+    finally:
+        ton_pay._http_channel_engaged_at = None
+        ton_pay._last_http_channel_alert_at = None
