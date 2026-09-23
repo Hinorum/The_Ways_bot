@@ -42,7 +42,7 @@ from app.core.registry import (
 from app.db import SessionLocal
 from app.http_utils import get_http_client, http_get_with_retry
 from app.models import Income, Payout, Stake, TreasuryMove, WatcherState
-from app.payments import parse_revote_memo, parse_verify_memo
+from app.payments import parse_bank_memo, parse_revote_memo, parse_verify_memo
 from app.ton_codec import api_headers, extract_comment, norm_tx_hash
 from app.ton_utils import normalize_address
 
@@ -296,7 +296,9 @@ def parse_way_memo(comment: str) -> tuple[str, int] | None:
 
 
 def classify_incoming(comment: str) -> str:
-    """Базовый тег входящего движения по мемо: revote / walletverify / stake."""
+    """Базовый тег входящего движения по мемо: bank / revote / walletverify / stake."""
+    if parse_bank_memo(comment):
+        return "bank"
     if parse_revote_memo(comment) is not None:
         return "revote"
     if parse_verify_memo(comment) is not None:
@@ -323,6 +325,7 @@ def _incoming_kind_from_income(income: Income) -> str:
         ("in:stake", "stake"),
         ("in:revote", "revote"),
         ("in:walletverify", "walletverify"),
+        ("in:bank", "bank"),
         ("in:paused", "paused"),
         ("in:unknown", "unknown_in"),
     ):
