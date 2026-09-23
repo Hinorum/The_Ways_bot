@@ -61,10 +61,6 @@ async def award_points(session: AsyncSession, round_row: Round) -> int:
             .where(Player.id.in_(chunk))
             .values(score=Player.score + 10, correct_picks=Player.correct_picks + 1)
         )
-    # Жетон «Вдохновение» пока не выдаём: механики личной микросцены ещё нет,
-    # а непотратный ресурс копить нечестно. Поле inspiration в моделях —
-    # задел под неё (как ton_watch и не выдаёт покупку такого жетона).
-
     # Обновление стриков: победители увеличивают, проигравшие сбрасывают
     from app.streaks import update_streak
 

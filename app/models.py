@@ -72,9 +72,6 @@ class Player(Base):
     # совпадение «адрес + код» доказывает контроль. Null — ждать нечего.
     wallet_verify_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wallet_verify_created: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Жетоны «Второго нюха»: задел под личную микросцену дня; информации о
-    # законе не дают. Выдача приостановлена, пока нет механики траты.
-    inspiration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Подписка на личные дубликаты рассылок (итоги дня, новый день с обложкой,
     # вечерний пост и прочие анонсы) в личку бота. По умолчанию — да; игрок
     # может снять или вернуть её кнопкой в /start.
