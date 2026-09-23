@@ -29,6 +29,7 @@ tx_hash после отправки — метка вещания «bcast:<unix>
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -40,7 +41,7 @@ from sqlalchemy import func, or_, select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.http_utils import get_http_client, http_get_with_retry
+from app.http_utils import get_http_client, http_get_with_retry, http_post_with_retry
 from app.models import Income, Payout, Player, Round, RoundStatus, WatcherState
 from app.stakes import finalize_day_payouts
 from app.ton_codec import api_headers, extract_comment
@@ -86,6 +87,16 @@ _RECONCILE_PAGE_OVERLAP = 16
 # False когда оба упали). Стартовое True = «история доступна»: до первого цикла
 # диспетчер всё равно ходит за маркерами до ретраев.
 _RECONCILE_HISTORY_OK = True
+# Переключение казначея на HTTP-канал (лайтсерверы режутся окружением):
+# запоминаем момент первого включения в процессе и стучим хранителю об этом
+# не чаще раза в _HTTP_CHANNEL_ALERT_COOLDOWN, чтобы на появление канала в
+# логах не сосать глаза, а статус был виден в чате.
+_http_channel_engaged_at: datetime | None = None
+_last_http_channel_alert_at: datetime | None = None
+_HTTP_CHANNEL_ALERT_COOLDOWN = timedelta(hours=6)
+# TONCENTER_API_KEY отсутствует: канал работает под анонимным лимитом и может
+# получить 429. Кричать об этом в лог один раз за процесс, не каждую выплату.
+_warned_no_toncenter_key = False
 
 
 @asynccontextmanager
@@ -540,6 +551,315 @@ async def fetch_broadcast_markers() -> set[str]:
     return set(await fetch_broadcast_tx_map())
 
 
+# ---------- HTTP-канал отправки (fallback при мёртвых лайтсерверах) ----------
+#
+# ADNL/TCP до лайтсерверов может быть закрыт окружением (типовой тестнет под
+# файрволом: чтение через REST-индексаторы работает, а вещание — нет, payout
+# висит в очереди навсегда). Чтобы казна не «зависала», исходящие собираются
+# ОФФЛАЙН (чистая локальная математика + seqno/публичный ключ через Toncenter
+# v3 runGetMethod) и вещаются через HTTPS (Toncenter v2 jsonRPC sendBoc).
+# Жизненный цикл строки и анти-дубль по memo не меняются: диспетчер перед
+# повтором по-прежнему сверяется с историей исходящих.
+
+# Дефолтный wallet_id контракта v4r2 (константа pytoniq; в data-ячейке v4).
+_V4R2_WALLET_ID = 698983191
+
+
+def _is_liteserver_down(exc: BaseException) -> bool:
+    """Сбой именно лайтсерверного канала, а не самой выплаты.
+
+    «have no alive peers» — LiteBalancer не поднял ни одного пира;
+    TimeoutError — зависло ADNL-рукопожатие/отклик (порт режется файрволом).
+    В этих случаях уходим в HTTP-вещание. Прочие ошибки (пара мнемоника/адрес,
+    отказ контракта, нехватка средств) — настоящие: их показываем как есть.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    return "no alive peers" in str(exc).lower()
+
+
+def build_offline_wallet(
+    mnemonic: str,
+    address: str,
+    network_global_id: int,
+    forced_version: str | None = None,
+):
+    """Кошелёк БЕЗ провайдера по мнемонике: чистая локальная математика.
+
+    Общий строитель для HTTP-канала (лайтсерверы мертвы, сеть не нужна):
+    версия контракта детектится по привязанному адресу, StateInit собирается
+    из кода контракта и data ровно как в _get_wallet/_wallet_address (пара
+    мнемоника/адрес валидируется тем же детектом). Возвращает (wallet, version).
+    forced_version — «v4r2»|«v5r1» принудительно (как TREASURY_WALLET_VERSION);
+    иначе авто-детект.
+    """
+    from pytoniq.contract.wallets.wallet import WALLET_V4_R2_CODE, WalletV4R2
+    from pytoniq.contract.wallets.wallet_v5 import WALLET_V5_R1_CODE, WalletV5R1
+    from pytoniq_core import Address, StateInit
+    from pytoniq_core.crypto.keys import mnemonic_to_private_key, private_key_to_public_key
+
+    words = mnemonic.replace("\n", " ").split()
+    if len(words) < 12:
+        raise ValueError("Мнемоника неполная (нужно 24 слова)")
+    _, private_key = mnemonic_to_private_key(words)
+    public_key = private_key_to_public_key(private_key)
+
+    requested = (forced_version or "").strip().lower()
+    if requested in WALLET_VERSIONS:
+        derived = _wallet_address(requested, public_key, network_global_id)
+        if normalize_address(derived) != normalize_address(address):
+            raise ValueError(
+                f"Адрес не совпадает с производным от мнемоники "
+                f"(версия {requested}): {derived}. Проверь пару мнемоника/адрес "
+                "или верни auto."
+            )
+        version = requested
+    else:
+        version, candidates = _detect_wallet_version(public_key, address, network_global_id)
+        if version is None:
+            raise ValueError(
+                "Адрес не совпадает ни с одной поддерживаемой версией кошелька "
+                f"для этой мнемоники: {candidates}. Проверь адрес и мнемонику, "
+                "либо задай TREASURY_WALLET_VERSION=v4r2|v5r1 явно."
+            )
+
+    if version == "v5r1":
+        data = WalletV5R1.create_data_cell(public_key=public_key, wc=0, network_global_id=network_global_id)
+        code = WALLET_V5_R1_CODE
+        wallet_class = WalletV5R1
+    else:
+        data = WalletV4R2.create_data_cell(public_key=public_key, wc=0, wallet_id=_V4R2_WALLET_ID)
+        code = WALLET_V4_R2_CODE
+        wallet_class = WalletV4R2
+    state_init = StateInit(code=code, data=data)
+    address_obj = Address((0, state_init.serialize().hash))
+    if version == "v5r1":
+        # wallet_id — свойство, читающее data из self.state; кода на аккаунте
+        # для этого не нужно, но self.state обязан быть заполнен.
+        wallet = wallet_class(
+            provider=None,
+            address=address_obj,
+            state_init=state_init,
+            private_key=private_key,
+        )
+        wallet.state = state_init
+    else:
+        # v4: wallet_id — read-only свойство, читающее data из self.state
+        # (константа контракта внутри data-ячейки); kwarg'ом задать нельзя.
+        wallet = wallet_class(
+            provider=None,
+            address=address_obj,
+            state_init=state_init,
+            private_key=private_key,
+        )
+        wallet.state = state_init
+    return wallet, version
+
+
+def _build_offline_treasury_wallet():
+    """Кошелёк казначея БЕЗ провайдера: build_offline_wallet от настроек.
+
+    Вариант для HTTP-канала: лайтсерверы мертвы, поэтому экземпляр кошелька
+    создаётся без подключения (provider=None), а StateInit собирается из кода
+    контракта и data ровно как в _get_wallet/_wallet_address (пары мнемоника/
+    адрес валидируются тем же детектом версии). Сеть не трогается: seqno и
+    публичный ключ онлайн-путь берут у liteclient, здесь их читаем по HTTP.
+    Возвращает (wallet, version).
+    """
+    network = "testnet" if settings.is_testnet else "mainnet"
+    requested = settings.treasury_wallet_version.strip().lower() if settings.treasury_wallet_version else ""
+    forced = requested if requested in WALLET_VERSIONS else None
+    return build_offline_wallet(
+        settings.active_treasury_mnemonic,
+        settings.active_treasury_address,
+        NETWORK_GLOBAL_IDS[network],
+        forced_version=forced,
+    )
+
+
+def _parse_run_method_seqno(data: dict) -> int | None:
+    """seqno из ответа toncenter v3 runGetMethod (метод «seqno»).
+
+    exit_code 0 → число из первой записи стека (значение бывает hex «0x…» и
+    десятичным); иной exit_code — метод не выполнился (uninit/unactive либо
+    чужая версия контракта) → None.
+    """
+    if data.get("exit_code") != 0:
+        return None
+    stack = data.get("stack") or []
+    if not stack:
+        return None
+    value = (stack[0] or {}).get("value")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            return int(text, 16) if text.lower().startswith("0x") else int(text)
+        except ValueError:
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _http_get_wallet_seqno(wallet, *, address: str | None = None) -> int:
+    """seqno для оффлайн-подписи: чтение через Toncenter v3.
+
+    address=None — казначей (статус сначала прощупывается fetch_account_state):
+    активный аккаунт с развёрнутым кодом — число из get-метода «seqno» (единое
+    имя для v4r2 и v5r1); нет контракта (uninit/unactive) — 0: внешнее сообщение
+    с init задеплоит кошелёк и выполнится в одной транзакции; если казначёй
+    активен, а seqno прочитать не удалось — падаем (слать «вслепую» нельзя).
+
+    address задан — generic-путь (кошелёк игрока/e2e): статус не прощупывается,
+    exit_code != 0 трактуется как uninit → 0 (send_wallet_transfer_http в этом
+    случае разворачивает контракт init-external'ом). Для тест-сценария это
+    достаточно: активный, но нечитаемый метод на игроке — редкость, и перевод
+    просто не пройдёт подтверждение watcher'ом.
+    """
+    target = address or settings.active_treasury_address
+    if address is None:
+        try:
+            _, status, _ = await fetch_account_state()
+            active = status == "active"
+        except Exception:
+            status = None
+            active = False
+        if status is not None and not active:
+            return 0
+    url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v3/runGetMethod"
+    headers = api_headers(settings.toncenter_api_key)
+    client = get_http_client()
+    response = await http_post_with_retry(
+        client,
+        url,
+        json={"address": target, "method": "seqno", "stack": []},
+        headers=headers,
+    )
+    response.raise_for_status()
+    seqno = _parse_run_method_seqno(response.json())
+    if seqno is not None:
+        return seqno
+    if address is None and active:
+        raise RuntimeError(
+            "казначёй активен, но seqno не читается (toncenter runGetMethod "
+            f"exit_code={response.json().get('exit_code')}) — отправка отложена"
+        )
+    return 0
+
+
+async def _http_broadcast_external(wallet, seqno: int, internal_msg) -> None:
+    """Подписывает внешнее сообщение оффлайн и вещает через Toncenter sendBoc.
+
+    seqno == 0 (казна ещё не развёрнута) → сообщение несёт state_init и
+    деплоит кошелёк той же транзакцией. Возвращает None; неуспех — исключение
+    с текстом от провайдера.
+    """
+    transfer_msg = wallet.raw_create_transfer_msg(
+        private_key=wallet.private_key,
+        seqno=seqno,
+        wallet_id=wallet.wallet_id,
+        messages=[internal_msg],
+    )
+    external = wallet.create_external_msg(
+        src=None,
+        dest=wallet.address,
+        state_init=wallet.state_init if seqno == 0 else None,
+        body=transfer_msg,
+    )
+    boc_b64 = base64.b64encode(external.serialize().to_boc()).decode()
+    url = f"{settings.active_toncenter_api_base.rstrip('/')}/api/v2/jsonRPC"
+    headers = api_headers(settings.toncenter_api_key)
+    client = get_http_client()
+    response = await http_post_with_retry(
+        client,
+        url,
+        json={"jsonrpc": "2.0", "id": 1, "method": "sendBoc", "params": {"boc": boc_b64}},
+        headers=headers,
+    )
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if response.status_code != 200 or not data.get("ok"):
+        reason = str((data.get("error") if isinstance(data, dict) else None) or response.text)
+        raise RuntimeError(f"Toncenter не принял сообщение ({response.status_code}): {reason[:160]}")
+
+
+async def _send_ton_transfer_http(dest_address: str, amount_nanotons: int, comment: str) -> str:
+    """Оффлайн-подпись + вещание через HTTPS (fallback лайтсерверов).
+
+    Держит батч-счётчик _batch_seqno тем же инвариантом, что и лайтсерверный
+    путь: один seqno на пачку, локально наращивается только при УСПЕХЕ
+    вещания. Два подряд перевода (приз + рейк) не получат одинаковый seqno.
+    """
+    wallet, _ = _build_offline_treasury_wallet()
+    from pytoniq_core import Address
+
+    global _batch_seqno, _warned_no_toncenter_key
+    if not settings.toncenter_api_key and not _warned_no_toncenter_key:
+        _warned_no_toncenter_key = True
+        logger.warning(
+            "TONCENTER_API_KEY пуст: HTTP-канал работает под анонимным лимитом "
+            "Toncenter — при частых выплатах возможны 429; задай ключ в .env"
+        )
+    if _batch_seqno is None:
+        _batch_seqno = await _http_get_wallet_seqno(wallet)
+    internal_msg = wallet.create_wallet_internal_message(
+        destination=Address(dest_address),
+        value=amount_nanotons,
+        body=_comment_cell(comment),
+    )
+    await _http_broadcast_external(wallet, _batch_seqno, internal_msg)
+    _batch_seqno += 1
+    global _http_channel_engaged_at
+    if _http_channel_engaged_at is None:
+        _http_channel_engaged_at = datetime.now(UTC)
+    marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
+    logger.info(
+        "Перевод %d нанотонов к …%s разослан через HTTP (toncenter, seqno=%d)",
+        amount_nanotons,
+        dest_address[-6:],
+        _batch_seqno - 1,
+    )
+    return marker
+
+
+async def send_wallet_transfer_http(
+    wallet, *, dest_address: str, amount_nanotons: int, comment: str
+) -> str:
+    """Оффлайн-подпись + HTTPS-вещание для ПРОИЗВОЛЬНОГО кошелька.
+
+    Generic-путь HTTP-канала (кошелёк игрока из build_offline_wallet): seqno
+    читается через runGetMethod по адресу кошелька, seqno==0 разворачивает
+    контракт init-external'ом в одной транзакции. Возвращает метку bcast.
+    """
+    if not wallet.private_key:
+        raise ValueError("Кошелёк без приватного ключа — оффлайн-подпись невозможна")
+    from pytoniq_core import Address
+
+    seqno = await _http_get_wallet_seqno(
+        wallet,
+        address=wallet.address.to_str(is_user_friendly=False, is_bounceable=False, is_url_safe=True),
+    )
+    internal_msg = wallet.create_wallet_internal_message(
+        destination=Address(dest_address),
+        value=amount_nanotons,
+        body=_comment_cell(comment),
+    )
+    await _http_broadcast_external(wallet, seqno, internal_msg)
+    marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
+    logger.info(
+        "Перевод %d нанотонов к …%s разослан через HTTP (toncenter, seqno=%d)",
+        amount_nanotons,
+        dest_address[-6:],
+        seqno,
+    )
+    return marker
+
+
 async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: str) -> str | None:
     """Отправляет перевод с казначея. Возвращает метку вещания или None.
 
@@ -554,40 +874,55 @@ async def send_ton_transfer(dest_address: str, amount_nanotons: int, comment: st
     if not settings.ton_enabled or not settings.active_treasury_mnemonic:
         logger.warning("TON выключен или нет мнемоники: выплата к …%s не отправлена", dest_address[-6:])
         return None
-    wallet = await _get_wallet()
-    global _batch_seqno
-    if _batch_seqno is not None:
-        # Диспетчер держит seqno из одного get_seqno() на цикл: два подряд
-        # перевода не получают одинаковый seqno (иначе один молча потеряется).
-        # Инкремент — только при УСПЕХЕ вещания; при сбое батч отменяется:
-        # последующие переводы получат свежий seqno из нового get_seqno().
-        seqno = _batch_seqno
-        try:
-            result = await _send_raw_with_seqno(
-                wallet, seqno, dest_address, amount_nanotons, _comment_cell(comment)
+    try:
+        wallet = await _get_wallet()
+        global _batch_seqno
+        if _batch_seqno is not None:
+            # Диспетчер держит seqno из одного get_seqno() на цикл: два подряд
+            # перевода не получают одинаковый seqno (иначе один молча потеряется).
+            # Инкремент — только при УСПЕХЕ вещания; при сбое батч отменяется:
+            # последующие переводы получат свежий seqno из нового get_seqno().
+            seqno = _batch_seqno
+            try:
+                result = await _send_raw_with_seqno(
+                    wallet, seqno, dest_address, amount_nanotons, _comment_cell(comment)
+                )
+            except (Exception, asyncio.CancelledError):
+                # Таймаут диспетчера (asyncio.wait_for) обрывает корутину через
+                # CancelledError — это НЕ Exception, и без явного перехвата
+                # _batch_seqno остался бы протухшим: следующий перевод батча
+                # переиспользовал бы уже разосланный seqno и молча потерялся.
+                _batch_seqno = None
+                raise
+            if result != 1:
+                _batch_seqno = None
+                raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
+            _batch_seqno += 1
+        else:
+            result = await wallet.transfer(
+                destination=dest_address,
+                amount=amount_nanotons,
+                body=_comment_cell(comment),
             )
-        except (Exception, asyncio.CancelledError):
-            # Таймаут диспетчера (asyncio.wait_for) обрывает корутину через
-            # CancelledError — это НЕ Exception, и без явного перехвата
-            # _batch_seqno остался бы протухшим: следующий перевод батча
-            # переиспользовал бы уже разосланный seqno и молча потерялся.
-            _batch_seqno = None
-            raise
         if result != 1:
-            _batch_seqno = None
             raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
-        _batch_seqno += 1
-    else:
-        result = await wallet.transfer(
-            destination=dest_address,
-            amount=amount_nanotons,
-            body=_comment_cell(comment),
+        marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
+        logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
+        return marker
+    except asyncio.CancelledError:
+        # Таймаут диспетчера: он сам решит, что делать со строкой. HTTP-канал
+        # сюда не цепляем — рваную корутину «добивать» нельзя.
+        raise
+    except Exception as exc:
+        if not _is_liteserver_down(exc):
+            raise
+        # Лайтсерверы мертвы (ADNL/TCP режется окружением), а деньги слать
+        # надо: оффлайн-подпись + HTTPS-вещание через Toncenter.
+        logger.warning(
+            "Лайтсерверы недоступны (%s) — переключаюсь на HTTP-канал (toncenter)",
+            exc,
         )
-    if result != 1:
-        raise RuntimeError(f"Лайтсерверы не приняли перевод (результат {result})")
-    marker = f"bcast:{int(datetime.now(UTC).timestamp())}"
-    logger.info("Перевод %d нанотонов к …%s разослан (%s)", amount_nanotons, dest_address[-6:], comment[:40])
-    return marker
+        return await _send_ton_transfer_http(dest_address, amount_nanotons, comment)
 
 
 async def confirm_broadcast_payouts(bot: Bot | None = None) -> int:
@@ -719,6 +1054,30 @@ async def _reset_retriable(session, network: str) -> None:
         await session.execute(
             update(Payout).where(Payout.id.in_(reset_ids)).values(status="pending")
         )
+
+
+async def _alert_http_channel_switch(bot: Bot | None, network: str) -> None:
+    """Разово (не чаще раза в кулдаун) сообщает хранителю: казначей пишет
+    исходящие через HTTP-канал, лайтсерверы недоступны. Без bot — тихо."""
+    global _last_http_channel_alert_at
+    if bot is None or _http_channel_engaged_at is None:
+        return
+    now = datetime.now(UTC)
+    if _last_http_channel_alert_at is not None:
+        if now - _last_http_channel_alert_at < _HTTP_CHANNEL_ALERT_COOLDOWN:
+            return
+    _last_http_channel_alert_at = now
+    try:
+        from app.ops import notify_admins  # локально: ops не импортируется наверху
+
+        await notify_admins(
+            bot,
+            "⚠️ Казначей: лайтсерверы недоступны (ADNL/TCP режется окружением) — "
+            f"исходящие идут через HTTP-канал (оффлайн-подпись + Toncenter sendBoc) "
+            f"[{network}]. Вернусь к лайтсерверам сам, когда они оживут.",
+        )
+    except Exception as exc:
+        logger.warning("Алерт о переключении на HTTP-канал не отправлен: %s", exc)
 
 
 async def _alert_admin(bot: Bot | None, network: str) -> None:
@@ -1027,19 +1386,11 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
                     payout.last_error = f"таймаут вещания (>{settings.payout_send_timeout_seconds} с)"
                     tx_hash = None
                 except Exception as exc:
+                    # «no alive peers» сюда уже не доходит: send_ton_transfer
+                    # перехватывает сбой лайтсерверного канала и уходит в HTTP
+                    # (тот при неуспехе падает текстом провайдера — он и виден).
                     reason = str(exc)
-                    if "no alive peers" in reason.lower():
-                        # Типовой тестнет-случай: встроенный конфиг pytoniq мёртв
-                        # или UDP закрыт окружением. Причина должна звать к решению.
-                        logger.warning("Выплата %s: нет живых лайтсерверов", payout.id)
-                        reason = (
-                            "have no alive peers: лайтсерверы недоступны — задай "
-                            "LITESERVER_CONFIG_URL с живым конфигом тестнета "
-                            "(https://ton.org/testnet-global.config.json) или разошли "
-                            "очередь локально на той же БД"
-                        )
-                    else:
-                        logger.warning("Выплата %s не ушла: %s", payout.id, exc)
+                    logger.warning("Выплата %s не ушла: %s", payout.id, exc)
                     payout.last_error = reason[:200]
                     tx_hash = None
                 if tx_hash is None and payout.last_error is None:
@@ -1067,6 +1418,9 @@ async def _dispatch_pending_payouts_impl(limit: int, bot: Bot | None) -> int:
     # Алерт по ВСЕМ неотправленным без предупреждения (включая найденные
     # после рестарта): дедуп внутри _alert_admin по колонке alerted.
     await _alert_admin(bot, network)
+    # Отдельная история: выплаты ушли, но через HTTP-канал — хранитель должен
+    # знать, что лайтсерверы за стеной (дедуп по времени, см. хелпер).
+    await _alert_http_channel_switch(bot, network)
     return sent
 
 

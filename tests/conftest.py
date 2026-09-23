@@ -20,6 +20,19 @@ for _suffix in ("", "-journal", "-wal", "-shm"):
     except FileNotFoundError:
         pass
 
+# Герметичность к пользовательскому .env: pydantic (app.config) читает .env из
+# CWD, и файл с контуром (TON_NETWORK=testnet, TON_ENABLED=true) молча ломал
+# весь прогон — ставки тестов сидились под mainnet и обнулялись. Настоящие
+# переменные окружения имеют приоритет над .env, поэтому принудительно держим
+# нейтральный контур. Живой e2e-прогон — ТОЛЬКО через явные шелл-переменные
+# (setdefault не перетирает уже заданные), например:
+#   $env:E2E_TESTNET=1; $env:TON_NETWORK=testnet; pytest -m e2e
+os.environ.setdefault("TON_ENABLED", "false")
+os.environ.setdefault("TON_NETWORK", "mainnet")
+os.environ.setdefault("BOT_TOKEN", "")
+os.environ.setdefault("TREASURY_ADDRESS", "")
+os.environ.setdefault("TREASURY_MNEMONIC", "")
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 

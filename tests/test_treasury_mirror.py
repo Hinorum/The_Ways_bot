@@ -210,6 +210,8 @@ def test_parse_way_memo_forms() -> None:
 def test_classify_incoming_by_memo() -> None:
     assert classify_incoming("rv:123") == "revote"
     assert classify_incoming("Куда-то bv:A1B2") == "walletverify"
+    assert classify_incoming("bank: пополнение") == "bank"
+    assert classify_incoming("bank") == "bank"
     assert classify_incoming("") == "stake"
 
 

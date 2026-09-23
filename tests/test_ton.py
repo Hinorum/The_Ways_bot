@@ -651,6 +651,76 @@ async def test_unknown_sender_transfer_is_auto_refunded(monkeypatch: pytest.Monk
             await db.commit()
 
 
+async def test_owner_bank_credit_is_kept_not_refunded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пополнение казны владельцем (мемо bank: с OWNER_WALLET_ADDRESS) не
+    возвращается и не становится ставкой: пишется строкой входящего дохода."""
+    import os
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Income
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    owner = "0:" + os.urandom(32).hex()
+    monkeypatch.setattr(settings, "owner_wallet_address", owner)
+    tx_hash = "bank-" + os.urandom(8).hex()
+    transfer = Transfer(
+        tx_hash=tx_hash,
+        source=owner,
+        value_nanotons=to_nano(1.0),
+        comment="bank: депозит после тестов",
+        utime=int(datetime.now(UTC).timestamp()),
+    )
+    async with SessionLocal() as db:
+        try:
+            assert await process_transfer(transfer) == "bank_credit"
+            income = (
+                await db.execute(select(Income).where(Income.unit_ref == tx_hash))
+            ).scalar_one_or_none()
+            assert income is not None
+            assert income.player_id is None and income.round_id is None
+            assert "in:bank" in income.note
+            refund = (
+                await db.execute(select(Payout).where(Payout.tx_hash == tx_hash))
+            ).scalar_one_or_none()
+            assert refund is None
+            # Повторная обработка транзакции не плодит вторую строку дохода.
+            assert await process_transfer(transfer) == "bank_credit"
+            rows = (await db.execute(select(Income).where(Income.unit_ref == tx_hash))).scalars().all()
+            assert len(rows) == 1
+        finally:
+            await db.execute(Income.__table__.delete().where(Income.unit_ref == tx_hash))
+            await db.commit()
+
+
+async def test_stranger_bank_memo_is_still_refunded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bank: с чужого кошелька — не привилегия: обычный неизвестный возврат."""
+    import os
+
+    from app.db import SessionLocal
+    from app.ton_watch import Transfer, process_transfer
+
+    monkeypatch.setattr(settings, "ton_enabled", True)
+    monkeypatch.setattr(settings, "owner_wallet_address", "0:" + os.urandom(32).hex())
+    source = "0:" + os.urandom(32).hex()
+    tx_hash = "bk-" + os.urandom(8).hex()
+    transfer = Transfer(
+        tx_hash=tx_hash,
+        source=source,
+        value_nanotons=to_nano(1.0),
+        comment="bank: капитан",
+        utime=int(datetime.now(UTC).timestamp()),
+    )
+    async with SessionLocal() as db:
+        try:
+            assert await process_transfer(transfer) == "refund_queued"
+        finally:
+            await db.execute(Payout.__table__.delete().where(Payout.tx_hash == tx_hash))
+            await db.commit()
+
+
 async def test_dust_and_expired_transfers_reach_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
     """Пыль и древние переводы НЕ возвращаются, но пишут строку Income:
     деньги остаются в казне и обязан быть учтены в сверке с балансом."""

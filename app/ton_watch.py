@@ -27,7 +27,7 @@ from app.db import SessionLocal
 from app.http_utils import get_http_client, http_get_with_retry
 from app.models import Income, Payout, Player, RevoteGrant, Round, RoundStatus, Stake, WatcherState
 from app.ops import claim_once, is_game_paused
-from app.payments import parse_revote_memo, parse_verify_memo
+from app.payments import parse_bank_memo, parse_revote_memo, parse_verify_memo
 from app.stakes import confirm_stake, current_network, register_stake
 from app.ton_codec import api_headers, clean_comment, extract_comment, norm_tx_hash
 from app.ton_utils import from_nano, normalize_address, to_nano
@@ -539,6 +539,37 @@ async def _ledger_incoming(
 PAUSE_REFUND_COMMENT = "Игра приостановлена: идут технические работы"
 
 
+async def _record_bank_credit(session, transfer: Transfer) -> str:
+    """Пополнение казны владельцем (мемо bank:): доход без «банка дня».
+
+    Не ставка (пот дня не растёт) и не возврат (деньги остаются в казне),
+    пишется строкой входящего дохода — зеркало учитывает его в тождестве
+    «в ноль». Идемпотентно по tx_hash: повторный проход (overlap-окно, сброс
+    курсора) не плодит вторую строку.
+    """
+    existing = await session.execute(
+        select(Income.id).where(Income.unit_ref == transfer.tx_hash).limit(1)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return "bank_credit"
+    # Cross-process в той же транзакции, что и строка дохода (см. _ledger_incoming).
+    if not await claim_once(session, f"ledger:{transfer.tx_hash}"):
+        return "bank_credit"
+    session.add(
+        Income(
+            kind="ton",
+            amount_nanotons=transfer.value_nanotons,
+            round_id=None,
+            player_id=None,
+            network=current_network(),
+            unit_ref=transfer.tx_hash,
+            note="in:bank;src:…" + transfer.source[-10:][:200],
+        )
+    )
+    await session.commit()
+    return "bank_credit"
+
+
 async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     """Сопоставляет перевод с игроком и открытым днём: ставка или оплата смены пути."""
     # Самоперевод казначея: если OWNER_WALLET_ADDRESS совпадает с адресом казны,
@@ -553,6 +584,14 @@ async def process_transfer(transfer: Transfer, bot: Bot | None = None) -> str:
     async with SessionLocal() as session:
         if await session.get(WatcherState, f"refund:{transfer.tx_hash}") is not None:
             return "refund_duplicated"
+        # Капитал казны: перевод владельца игры с мемо bank: — внешнее пополнение
+        # казны. Не ставка (не создаёт «банка дня») и не возврат, идёт строкой
+        # входящего дохода. Принимаем ТОЛЬКО с кошелька OWNER_WALLET_ADDRESS;
+        # чужой отправитель с этим мемо обрабатывается штатно (возврат/ставка).
+        if parse_bank_memo(transfer.comment) and settings.owner_wallet_address and normalize_address(
+            transfer.source
+        ) == normalize_address(settings.owner_wallet_address):
+            return await _record_bank_credit(session, transfer)
         player_result = await session.execute(
             select(Player).where(Player.wallet_address == normalize_address(transfer.source))
         )
