@@ -272,11 +272,10 @@ async def phase_stake() -> int:
     from app.voting import cast_vote
 
     player, round_row, position, existing_status, existing_amount = await _load_open_money_round()
-    if existing_status is not None:
+    if existing_status == "confirmed":
         logger.info(
-            "Ставка на день %s уже есть (%s, %.4f Gram) — отправку пропускаю",
+            "Ставка на день %s уже подтверждена (%.4f Gram) — отправку пропускаю",
             round_row.day_index,
-            existing_status,
             from_nano(existing_amount),
         )
         return _EXIT_OK
@@ -289,42 +288,45 @@ async def phase_stake() -> int:
         await session.commit()
     logger.info("Путь выбран: %d (день %s)", chosen, round_row.day_index)
 
-    provider = await _player_provider()
-    try:
-        wallet = await _player_wallet(provider)
-        # Неразвёрнутый контракт: get_seqno() падает, пока аккаунт голый
-        # (баланс есть, кода нет). Разворачиваем v5r1 один раз внешним сообщением.
-        state = await wallet.get_account_state()
-        if state.is_uninitialized():
-            logger.info("Контракт игрока не развёрнут — раскладываем (деплой)…")
-            await wallet.deploy_via_external()
-            await asyncio.sleep(10)
+    if existing_status is None:
+        provider = await _player_provider()
+        try:
+            wallet = await _player_wallet(provider)
+            # Неразвёрнутый контракт: get_seqno() падает, пока аккаунт голый
+            # (баланс есть, кода нет). Разворачиваем v5r1 один раз внешним сообщением.
             state = await wallet.get_account_state()
             if state.is_uninitialized():
-                raise RuntimeError("Деплой контракта игрока не подтвердился")
-        amount = to_nano(settings.stake_min_ton)
-        comment = f"e2e:день{round_row.day_index}"
+                logger.info("Контракт игрока не развёрнут — раскладываем (деплой)…")
+                await wallet.deploy_via_external()
+                await asyncio.sleep(10)
+                state = await wallet.get_account_state()
+                if state.is_uninitialized():
+                    raise RuntimeError("Деплой контракта игрока не подтвердился")
+            amount = to_nano(settings.stake_min_ton)
+            comment = f"e2e:день{round_row.day_index}"
+            logger.info(
+                "Отправляю %.4f Gram на казначея (комментарий '%s')…",
+                from_nano(amount),
+                comment,
+            )
+            result = await wallet.transfer(
+                destination=await _treasury_address(),
+                amount=amount,
+                body=_comment_cell(comment),
+            )
+            if result != 1:
+                raise RuntimeError(f"Лайтсерверы не приняли ставку (результат {result})")
+        finally:
+            try:
+                await provider.close_all()
+            except Exception:
+                logger.warning("Не удалось закрыть провайдер игрока", exc_info=True)
+    else:
         logger.info(
-            "Отправляю %.4f Gram на казначея (комментарий '%s')…",
-            from_nano(amount),
-            comment,
+            "Ставка на день %s в статусе %s — повторной отправки не будет, ждём подтверждение…",
+            round_row.day_index,
+            existing_status,
         )
-        result = await wallet.transfer(
-            destination=await _treasury_address(),
-            amount=amount,
-            body=_comment_cell(comment),
-        )
-        if result != 1:
-            raise RuntimeError(f"Лайтсерверы не приняли ставку (результат {result})")
-    finally:
-        try:
-            await provider.close_all()
-        except Exception:
-            logger.warning("Не удалось закрыть провайдер игрока", exc_info=True)
-
-    wait = settings.stake_confirm_seconds + 15
-    logger.info("Ставка разослана. Жду %s с до подтверждения и цикла watcher…", wait)
-    time.sleep(wait)
 
     from app.ton_watch import confirm_aged_pending, watch_once
 
@@ -495,6 +497,16 @@ def main() -> int:
         choices=["check", "stake", "close", "dispatch", "mirror", "full"],
     )
     args = parser.parse_args()
+
+    # Каждая фаза (не только check) обязана упираться в охранный гейт:
+    # stake/dispatch шлют реальные переводы, и mainnet-окружение недопустимо.
+    if args.phase != "check":
+        reasons = guard()
+        if reasons:
+            logger.error("Скрипт не стартует — окружение не похоже на выделенный тестнет:")
+            for reason in reasons:
+                logger.error("  - %s", reason)
+            return _EXIT_GUARD
 
     phases = {
         "check": phase_check,

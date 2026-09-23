@@ -41,6 +41,23 @@ def test_guard_rejects_mainnet_even_with_all_keys(monkeypatch) -> None:
     assert any("TON_NETWORK" in reason for reason in guard())
 
 
+def test_standalone_stake_phase_refuses_on_mainnet() -> None:
+    """Отдельная фаза stake обязана упираться в гейт (реальные переводы!),
+    а не молча слать деньги в mainnet."""
+    env = dict(os.environ)
+    env["TON_NETWORK"] = "mainnet"
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.e2e_testnet", "stake"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert result.returncode == 2, f"ожидался отказ гейта (код 2):\n{result.stdout}\n{result.stderr}"
+    # logging пишет в stderr: причина отказа обязана быть видна
+    assert "TON_NETWORK" in result.stdout + result.stderr
+
+
 @pytest.mark.e2e
 @pytest.mark.skipif(not _LIVE, reason="E2E_TESTNET не включён: это живой прогон против тестнета")
 def test_live_testnet_check_phase() -> None:
