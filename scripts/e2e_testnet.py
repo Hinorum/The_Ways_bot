@@ -45,8 +45,6 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # isort: on
 
-load_dotenv()  # ключи из репозиторного .env (bot читает его в config.py)
-
 logger = logging.getLogger("e2e_testnet")
 
 _EXIT_OK = 0
@@ -488,6 +486,12 @@ async def run_full() -> int:
 
 
 def main() -> int:
+    # Ключи из репозиторного .env грузим ТОЛЬКО при запуске как CLI (python -m
+    # scripts.e2e_testnet ...). На уровне импорта этого делать нельзя: pytest,
+    # собирающий tests/test_e2e_testnet_guard.py, подхватил бы .env в ос.process и
+    # разнёс его по всему прогону тестов (TON_ENABLED/testnet/e2e-БД). override
+    # не трогаем: уже заданные переменные окружения сильнее файла.
+    load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Сквозной прогон игрового контура на живом тестнете")
     parser.add_argument(
@@ -517,7 +521,16 @@ def main() -> int:
         "full": run_full,
     }
     try:
-        return asyncio.run(phases[args.phase]())
+        async def _entry() -> int:
+            # Свежая/выделенная база (напр. data/e2e_testnet.db) без схемы:
+            # init_db идемпотентен (create_all + штамп alembic head), повторный
+            # вызов — no-op. Гейт уже прошёл, значит контур — тестнет.
+            from app.db import init_db
+
+            await init_db()
+            return await phases[args.phase]()
+
+        return asyncio.run(_entry())
     except Exception as exc:
         logger.error("e2e прерван: %s", exc)
         return 1
