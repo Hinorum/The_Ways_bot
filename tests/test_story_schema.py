@@ -278,4 +278,45 @@ def test_diary_too_long_rejected() -> None:
     payload["days"][0]["diary"] = "д" * (FIELD_LIMITS["diary"] + 1)
     result = validate_payload(payload)
     assert not result.ok
-    assert any("diary" in error for error in result.errors)
+
+
+def _fork_payload() -> dict:
+    payload = _payload("2026-11", 30)
+    branches = []
+    for name, winner in (("b", 1), ("c", 2)):
+        days = [_day(i) for i in range(28, 31)]
+        days[0]["prev"] = {winner: "Вчера стая выбрала свой путь."}
+        branches.append({"to": name, "at_day": 28, "winner": winner, "days": days})
+    payload["switch"] = branches
+    return payload
+
+
+def test_fork_duplicate_at_day_winner_rejected() -> None:
+    """Пара (at_day, winner) должна быть уникальна: вторая дорога в road() теряется."""
+    payload = _fork_payload()
+    payload["switch"].append(
+        {"to": "b2", "at_day": 28, "winner": 1, "days": [_day(i) for i in range(28, 31)]}
+    )
+    result = validate_payload(payload)
+    assert not result.ok
+    assert any("at_day=28" in error and "winner=1" in error for error in result.errors)
+
+
+def test_fork_dead_prev_key_on_entrance_warns() -> None:
+    """Первый день дороги помнит ТОЛЬКО своего победителя: чужие ключи мёртвые."""
+    payload = _fork_payload()
+    payload["switch"][0]["days"][0]["prev"] = {
+        0: "Вчера стая шла на свет.",
+        1: "Вчера стая выбрала свой путь.",
+        2: "Вчера стая ждала утра.",
+    }
+    result = validate_payload(payload)
+    assert result.ok
+    assert any("мёртвые" in warning for warning in result.warnings)
+
+
+def test_fork_only_own_prev_key_on_entrance_is_clean() -> None:
+    payload = _fork_payload()
+    result = validate_payload(payload)
+    assert result.ok
+    assert not any("мёртвые" in warning for warning in result.warnings)

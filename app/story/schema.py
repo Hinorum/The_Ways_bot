@@ -13,8 +13,10 @@
 Решение принимает не кассета, а ядро — кассета только объявляет условия.
 
 Проверка делится на жёсткую (кассета отвергнута) и мягкую (warning):
-жёстко — структура, длины, позиции карт и стоп-слова; мягко — бюджет
-режиссуры rule_hint (≈ N/3 дней на каждый закон).
+жёстко — структура, длины, позиции карт, уникальность дорог и пар
+(at_day, winner) перемоток, стоп-слова; мягко — бюджет режиссуры rule_hint
+(≈ N/3 дней на каждый закон по главной дороге) и мёртвые ключи prev на входе
+дороги перемотки.
 """
 
 from __future__ import annotations
@@ -233,6 +235,15 @@ class Cassette(BaseModel):
         roads: set[str] = {fork.to for fork in self.switch}
         if len(roads) != len(self.switch):
             raise ValueError("дороги перемоток не должны дублироваться")
+        windows: set[tuple[int, int]] = set()
+        for fork in self.switch:
+            window = (fork.at_day, fork.winner)
+            if window in windows:
+                raise ValueError(
+                    f"пара (at_day={fork.at_day}, winner={fork.winner}) дублируется: "
+                    "вторая такая дорога в road() молча теряется — её дни не отыграются"
+                )
+            windows.add(window)
         for fork in self.switch:
             if fork.at_day > expected:
                 raise ValueError(
@@ -292,7 +303,7 @@ class Cassette(BaseModel):
         return None
 
     def rule_hint_budget_warnings(self) -> list[str]:
-        """Отклонения бюджета режиссуры: ≈N/3 на каждый закон, ±толеранс."""
+        """Отклонения бюджета режиссуры по ГЛАВНОЙ дороге: ≈N/3 на каждый закон, ±толеранс."""
         counts = {value: 0 for value in RULE_HINT_VALUES}
         for day in self.days:
             counts[day.rule_hint] += 1
@@ -302,7 +313,29 @@ class Cassette(BaseModel):
             if abs(counts[law] - expected) > RULE_HINT_TOLERANCE:
                 warnings.append(
                     f"{law}: {counts[law]} дней вместо ≈{len(self.days) // 3} "
-                    f"(±{RULE_HINT_TOLERANCE})"
+                    f"(±{RULE_HINT_TOLERANCE}) по главной дороге"
+                )
+        return warnings
+
+    def dead_prev_warnings(self) -> list[str]:
+        """Мёртвые ключи эха на входе дороги перемотки (warning).
+
+        Первый день дороги (at_day) помнит победителя дня at_day − 1, а это РОВНО
+        фиксированный winner перемотки — ключи prev, не равные ему, не покажутся
+        никогда: эхо рендерится только под честного победителя, которым может быть
+        только этот winner. Дубликаты (at_day, winner) запрещены жёстко (см.
+        _days_match_month); здесь — предупреждение о мёртвом тексте.
+        """
+        warnings: list[str] = []
+        for fork in self.switch:
+            first_day = fork.days[0] if fork.days else None
+            if first_day is None or not first_day.prev:
+                continue
+            dead = sorted(key for key in first_day.prev if key != fork.winner)
+            if dead:
+                warnings.append(
+                    f"перемотка «{fork.to}» (at_day={fork.at_day}): ключи prev первого "
+                    f"дня {dead} — мёртвые, дорога играет только при winner={fork.winner}"
                 )
         return warnings
 
@@ -362,6 +395,7 @@ def validate_payload(payload: dict) -> ValidationResult:
             errors=[f"стоп-слова: {', '.join(taboo)}"],
         )
     warnings.extend(cassette.rule_hint_budget_warnings())
+    warnings.extend(cassette.dead_prev_warnings())
     if not (cassette.attribution or "").strip():
         warnings.append(
             "attribution не указано — клеймо плёнки-фанфика («по мотивам …») желательно"
