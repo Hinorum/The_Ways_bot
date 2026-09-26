@@ -15,6 +15,7 @@ from pytoniq_core.crypto.keys import mnemonic_new, mnemonic_to_private_key, priv
 
 from app import ton_pay
 from app.config import settings
+from app.ton_codec import api_headers
 from app.ton_utils import to_nano
 
 
@@ -93,7 +94,7 @@ async def test_http_get_seqno_active(monkeypatch: pytest.MonkeyPatch) -> None:
                         retry_delay=1.0, backoff_factor=2.0, max_delay=30.0):
         captured["url"] = url
         captured["json"] = json
-        assert headers == {"X-API-Key": settings.toncenter_api_key}
+        assert headers == api_headers(settings.toncenter_api_key)
         return _Resp(body={"exit_code": 0, "stack": [{"type": "num", "value": "0x3"}]})
 
     monkeypatch.setattr(ton_pay, "fetch_account_state", fake_account_state)
