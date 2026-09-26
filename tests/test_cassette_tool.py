@@ -268,3 +268,137 @@ def test_patch_check_validates_without_write(tmp_path) -> None:
     out = tmp_path / "patched.json"
     assert _run("patch", str(ke), str(frag), "--day", "4", "-o", str(out), "--check") == 0
     assert not out.exists()
+
+
+def _clean_cassette_payload(month: str = "2026-12", n: int = 31) -> dict:
+    """Ротационно-чистая кассета: стратегии циклят по позициям без залипаний,
+    станции/имена уникальны, эхо не пересказывает канон, штампов нет."""
+    tags = _TAGS_CYCLE
+    days = []
+    for i in range(1, n + 1):
+        tag = tags[i % 3]
+        days.append(
+            {
+                "day_index": i,
+                "station": f"станция {i}",
+                "chapter_title": f"глава {i}",
+                "chapter_text": f"текст {i}",
+                "rule_hint": "any",
+                "prev": (
+                    {p: "Мимо след вчерашнего дня" for p in (0, 1, 2)}
+                    if i > 1
+                    else None
+                ),
+                "cards": [
+                    {
+                        "position": p,
+                        "title": f"ход {i}-{p}",
+                        "description": "описание у котла",
+                        "consequence": f"канон {i}-{p}",
+                        "tag": tag,
+                    }
+                    for p in (0, 1, 2)
+                ],
+            }
+        )
+    return {
+        "cassette_id": "chistaya",
+        "month": month,
+        "title": "Чистая",
+        "attribution": "Фанфик по мотивам.",
+        "days": days,
+    }
+
+
+_TAGS_CYCLE = ("care", "dare", "trick")
+
+
+def test_lint_clean_cassette_has_no_warnings() -> None:
+    from app.story.schema import validate_payload
+
+    parsed = validate_payload(_clean_cassette_payload())
+    assert parsed.ok
+    assert parsed.cassette is not None
+    assert cassette_tool.lint_warnings(parsed.cassette) == []
+
+
+def test_lint_rotation_streak_warns() -> None:
+    from app.story.schema import validate_payload
+
+    payload = _clean_cassette_payload()
+    for i in range(1, 4):
+        for card in payload["days"][i - 1]["cards"]:
+            card["tag"] = "trick"
+    cassette = validate_payload(payload).cassette
+    assert cassette is not None
+    warnings = cassette_tool.lint_warnings(cassette)
+    assert any("три дня подряд" in warning for warning in warnings)
+
+
+def test_lint_rotation_underuse_warns() -> None:
+    from app.story.schema import validate_payload
+
+    payload = _clean_cassette_payload()
+    for day in payload["days"]:
+        day["cards"][2]["tag"] = "care"
+    cassette = validate_payload(payload).cassette
+    assert cassette is not None
+    warnings = cassette_tool.lint_warnings(cassette)
+    assert any("позиции 2" in warning and "dare" in warning for warning in warnings)
+
+
+def test_lint_duplicate_station_and_title_warn() -> None:
+    from app.story.schema import validate_payload
+
+    payload = _clean_cassette_payload()
+    payload["days"][1]["station"] = payload["days"][0]["station"]
+    payload["days"][1]["cards"][0]["title"] = payload["days"][0]["cards"][0]["title"]
+    cassette = validate_payload(payload).cassette
+    assert cassette is not None
+    warnings = cassette_tool.lint_warnings(cassette)
+    assert any("дубль станции" in warning for warning in warnings)
+    assert any("дубль имени карты" in warning for warning in warnings)
+
+
+def test_lint_echo_retelling_consequence_warns() -> None:
+    from app.story.schema import validate_payload
+
+    payload = _clean_cassette_payload()
+    yester = payload["days"][0]
+    payload["days"][1]["prev"] = {0: yester["cards"][0]["consequence"]}
+    cassette = validate_payload(payload).cassette
+    assert cassette is not None
+    warnings = cassette_tool.lint_warnings(cassette)
+    assert any("пересказывает канон" in warning for warning in warnings)
+
+
+def test_lint_style_antipatterns_warn() -> None:
+    from app.story.schema import validate_payload
+
+    payload = _clean_cassette_payload()
+    payload["days"][0]["chapter_text"] = "Как будто одна нота, будто один шаг, будто всё та же стена."
+    for day in payload["days"][:3]:
+        day["diary"] = "Впервые за месяц луна не уходит."
+    cassette = validate_payload(payload).cassette
+    assert cassette is not None
+    warnings = cassette_tool.lint_warnings(cassette)
+    assert any("штамп" in warning and "будто" in warning for warning in warnings)
+    assert any("штамп" in warning and "впервые" in warning for warning in warnings)
+
+
+def test_lint_cli_reports_and_strict_exit(tmp_path) -> None:
+    """lint: замечания печатаются; без --strict выход 0, со строгим — 1."""
+    import json as _json
+
+    ke = tmp_path / "linty.json"
+    payload = _clean_cassette_payload()
+    payload["days"][0]["station"] = payload["days"][1]["station"]  # дубль станции
+    ke.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    assert _run("lint", str(ke)) == 0
+    assert _run("lint", str(ke), "--strict") == 1
+
+
+def test_lint_cli_rejects_broken_cassette(tmp_path) -> None:
+    broken = tmp_path / "broken.json"
+    broken.write_text("{не json", encoding="utf-8")
+    assert _run("lint", str(broken)) != 0
