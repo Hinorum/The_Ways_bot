@@ -133,6 +133,14 @@ python -m alembic upgrade head
 python -m alembic check    # «No new upgrade operations» — модели синхронны с head
 ```
 
+Или одной командой через обёртку (читает `.env`/`DATABASE_URL`, прогоняет оба шага в правильном порядке):
+
+```bash
+python -m scripts.check_db
+```
+
+Удобно локально: на свежей БД `alembic check` без `upgrade head` валит «Target database is not up to date» — это не баг проекта, а сигнал, что схема не накатывалась.
+
 Для Postgres сделать резервный `pg_dump` перед первым `upgrade head`. В CI те же шаги гоняются на свежей SQLite (джоба «Alembic drift check»).
 
 Что делает старт бота:
