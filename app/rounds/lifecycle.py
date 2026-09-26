@@ -408,6 +408,10 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
             vote_counts_json=counts_json,
             stake_counts_json=stake_counts_json,
             tie_note=tie_note,
+            # Канон дня — уцелевший consequence: пост итогов читает epilogue_text
+            # (broadcast.results_body), выставить его надо в момент закрытия, а не
+            # в write_epilogue — тот срабатывает уже после рассылки итогов.
+            epilogue_text=winning_card.consequence[:700],
             status=RoundStatus.CLOSED,
         )
     )
@@ -419,6 +423,7 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
     round_row.vote_counts_json = counts_json
     round_row.stake_counts_json = stake_counts_json
     round_row.tie_note = tie_note
+    round_row.epilogue_text = winning_card.consequence[:700]
     round_row.status = RoundStatus.CLOSED
     # Канон дня — только победивший кадр. Крючка для следующей кассеты больше
     # нет: каждая кассета — самостоятельная история, месяц не обязан ничем.
