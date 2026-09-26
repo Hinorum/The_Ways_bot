@@ -221,3 +221,47 @@ def test_bom_is_tolerated(tmp_path) -> None:
     path = tmp_path / "bom.json"
     path.write_bytes(b"\xef\xbb\xbf" + raw)
     assert validate_file(path).ok
+
+
+def test_prev_echo_and_diary_accepted() -> None:
+    payload = _payload("2026-04", 30)
+    payload["days"][1]["prev"] = {
+        0: "Вчера стая пошла на свет.",
+        2: "Вчера стая ждала утра.",
+    }
+    payload["days"][1]["diary"] = "Щенок записал: мама почти выздоровела."
+    result = validate_payload(payload)
+    assert result.ok, result.errors
+    assert result.cassette is not None
+    assert result.cassette.days[1].diary
+    assert result.cassette.days[1].prev == {0: "Вчера стая пошла на свет.", 2: "Вчера стая ждала утра."}
+
+
+def test_prev_bad_keys_rejected() -> None:
+    payload = _payload("2026-04", 30)
+    payload["days"][1]["prev"] = {0: "текст", 5: "текст"}
+    result = validate_payload(payload)
+    assert not result.ok
+    assert any("ключи prev" in error for error in result.errors)
+
+
+def test_prev_empty_value_rejected() -> None:
+    payload = _payload("2026-04", 30)
+    payload["days"][1]["prev"] = {0: "   "}
+    result = validate_payload(payload)
+    assert not result.ok
+
+
+def test_prev_value_too_long_rejected() -> None:
+    payload = _payload("2026-04", 30)
+    payload["days"][1]["prev"] = {0: "а" * (FIELD_LIMITS["prev_value"] + 1)}
+    result = validate_payload(payload)
+    assert not result.ok
+
+
+def test_diary_too_long_rejected() -> None:
+    payload = _payload("2026-04", 30)
+    payload["days"][0]["diary"] = "д" * (FIELD_LIMITS["diary"] + 1)
+    result = validate_payload(payload)
+    assert not result.ok
+    assert any("diary" in error for error in result.errors)

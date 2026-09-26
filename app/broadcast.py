@@ -249,6 +249,21 @@ async def results_body(finished: Round, session=None) -> str:
                 text += f"\n\n{economics}"
         except Exception:
             logger.exception("Экономика дня %s не посчитана", getattr(finished, "day_index", "?"))
+    # Запись дневника кассеты (ПОВ-контраст): читается из активной кассеты
+    # месяца по дате и дню закрытого раунда. Нет кассеты / нет поля / сбой —
+    # дневника нет, сухие итоги не зависят от сюжетного слоя (fail-open).
+    try:
+        from app.story import bay as story_bay
+
+        if session is not None:
+            diary = await story_bay.day_diary(session, finished)
+        else:
+            async with SessionLocal() as _diary_db:
+                diary = await story_bay.day_diary(_diary_db, finished)
+        if diary:
+            text += f"\n\n📖 {html.escape(diary)}"
+    except Exception:
+        logger.debug("Дневник дня не добавлен в итоги", exc_info=True)
     # Плагиновые строки итогов (echoes, relations, bestiary и т.д.)
     try:
         plugin_text = await format_plugin_results(finished, session)

@@ -71,6 +71,10 @@ def day_view_text(cassette: Cassette, day: int, road: str = "main") -> str:
         header += f" · дорога {road}"
     header += f" · закон-метка {item.rule_hint} · {item.station} ==="
     lines = [header, item.chapter_title, "", item.chapter_text, ""]
+    for position in (0, 1, 2):
+        echo = (item.prev or {}).get(position)
+        if echo:
+            lines.append(f"(эхо, если вчера победила карта {position}) {echo}")
     for card in sorted(item.cards, key=lambda entry: entry.position):
         lines.append(f"[{card.position}] {card.title}")
         lines.append(f"    Суть: {card.description}")
@@ -78,6 +82,8 @@ def day_view_text(cassette: Cassette, day: int, road: str = "main") -> str:
         if card.image_path:
             lines.append(f"    image_path: {card.image_path}")
         lines.append("")
+    if item.diary:
+        lines.append(f"(дневник стаи) {item.diary}")
     if item.hook_text:
         lines.append(f"(пометка автора) {item.hook_text}")
     if item.tie_note:

@@ -36,6 +36,8 @@ FIELD_LIMITS = {
     "tie_note": 200,
     "attribution": 200,
     "track_name": 32,
+    "diary": 200,
+    "prev_value": 160,
 }
 
 # Максимум перемоток (развилок) в одной кассете: ветвление месяца держим
@@ -111,12 +113,39 @@ class DayModel(BaseModel):
     rule_hint: str = "any"
     cards: list[CardModel] = Field(min_length=3, max_length=3)
     tie_note: str | None = Field(default=None, max_length=FIELD_LIMITS["tie_note"])
+    prev: dict[int, str] | None = Field(
+        default=None,
+        description="Эхо вчерашнего выбора стаи: {позиция победителя: как стая "
+        "вспомнит его последствие}. Рендерится в начале главы следующего дня.",
+    )
+    diary: str | None = Field(
+        default=None,
+        max_length=FIELD_LIMITS["diary"],
+        description="Запись дневника (ПОВ-контраст к эпической главе): звучит "
+        "в итогах дня после канона.",
+    )
 
     @field_validator("rule_hint")
     @classmethod
     def _rule_hint_known(cls, value: str) -> str:
         if value not in RULE_HINT_VALUES:
             raise ValueError(f"rule_hint должен быть одним из: {', '.join(RULE_HINT_VALUES)}")
+        return value
+
+    @field_validator("prev")
+    @classmethod
+    def _prev_echo_sane(cls, value: dict[int, str] | None) -> dict[int, str] | None:
+        if value is None:
+            return value
+        for position, text in value.items():
+            if position not in (0, 1, 2):
+                raise ValueError("ключи prev — только позиции карт 0, 1 или 2")
+            if not text.strip():
+                raise ValueError("текст эха prev не может быть пустым")
+            if len(text) > FIELD_LIMITS["prev_value"]:
+                raise ValueError(
+                    f"эхо prev не длиннее {FIELD_LIMITS['prev_value']} знаков"
+                )
         return value
 
     @model_validator(mode="after")

@@ -35,7 +35,7 @@ from app.core.registry import (
     STORY_CASSETTE_EDIT_KEY,
     STORY_CASSETTE_NEXT_KEY,
 )
-from app.story.schema import Cassette, validate_file
+from app.story.schema import Cassette, DayModel, validate_file
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,47 @@ async def _decision_day_winner(session, decision: date) -> int | None:
     return int(row.winner_card) if row is not None else None
 
 
+async def _prev_echo(session, today: date, day: DayModel) -> str:
+    """Эхо вчерашнего выбора (поле `prev` дня): как стая вспомнит канон.
+
+    Отвечает на вопрос «когда следующий день знает о предыдущем»: здесь, при
+    рендере дня N — ровно по закрытому кадру дня N−1 (winner_card движка).
+    Победителя нет / эха под него нет / день первый — пусто (fail-open).
+    """
+    if not day.prev or today.day <= 1:
+        return ""
+    yesterday = today - timedelta(days=1)
+    winner = await _decision_day_winner(session, yesterday)
+    if winner in day.prev:
+        return day.prev[winner].strip()
+    return ""
+
+
+async def day_diary(session, finished) -> str:
+    """Запись дневника (`diary` кассеты) для поста итогов; «» при отсутствии.
+
+    Канон дня движок не трогает и не хранит — запись читается из активной
+    кассеты месяца по дате и дню закрытого раунда (память месяца локальна).
+    Сбой/нет кассеты/нет поля — пусто: итоги дня не зависят от дневника.
+    """
+    try:
+        opens = getattr(finished, "opens_at", None)
+        item_day = getattr(finished, "day_index", None)
+        if opens is None or not item_day:
+            return ""
+        day = opens.date() if getattr(opens, "tzinfo", None) else opens.replace(tzinfo=UTC).date()
+        selected = await get_next_cassette(session)
+        cassette = active_cassette(day, selected=selected, directory=_library_dir)
+        if cassette is None:
+            return ""
+        road, _ = await _resolution(session, cassette, day)
+        item = cassette.day_for(day.day, road)
+        return (item.diary or "").strip() if item else ""
+    except Exception:
+        logger.debug("Дневник дня не прочитан", exc_info=True)
+        return ""
+
+
 async def _resolution(
     session, cassette: Cassette, today: date
 ) -> tuple[str, list[date]]:
@@ -323,8 +364,15 @@ async def _plan_and_render(
         road,
         ", ".join(item.isoformat() for item in decision_dates) or "—",
     )
+    chapter_text = day.chapter_text
+    try:
+        echo = await _prev_echo(session, today, day)
+        if echo:
+            chapter_text = f"{echo}\n\n{chapter_text}"
+    except Exception:
+        logger.debug("Эхо вчерашнего дня не добавлено", exc_info=True)
     payload["chapter_title"] = day.chapter_title
-    payload["chapter_text"] = day.chapter_text
+    payload["chapter_text"] = chapter_text
     payload["cards"] = [card.model_dump() for card in day.cards]
     return payload
 
