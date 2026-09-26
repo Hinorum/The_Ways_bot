@@ -29,9 +29,15 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 # Лимиты из движка (см. docs/story_world_manifest.md, раздел «Формат полей»).
+# Схема не выпускает текст, который рендер поста не сможет показать целиком:
+# лимиты равны (или ниже) обрезкам в app/broadcast.py (глава 1500 → мы жёстче:
+# канон обязан читаться без многоточия; карта description показывается до 260).
 FIELD_LIMITS = {
     "chapter_title": 300,
+    "chapter_text": 700,
     "card_title": 120,
+    "card_description": 260,
+    "card_consequence": 300,
     "hook_text": 700,
     "tie_note": 200,
     "attribution": 200,
@@ -89,8 +95,8 @@ class CardModel(BaseModel):
 
     position: int
     title: str = Field(min_length=1, max_length=FIELD_LIMITS["card_title"])
-    description: str = Field(min_length=1)
-    consequence: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=FIELD_LIMITS["card_description"])
+    consequence: str = Field(min_length=1, max_length=FIELD_LIMITS["card_consequence"])
     tag: str = "care"
     image_path: str = ""
 
@@ -108,7 +114,7 @@ class DayModel(BaseModel):
     day_index: int = Field(ge=1)
     station: str = Field(min_length=1)
     chapter_title: str = Field(min_length=1, max_length=FIELD_LIMITS["chapter_title"])
-    chapter_text: str = Field(min_length=1)
+    chapter_text: str = Field(min_length=1, max_length=FIELD_LIMITS["chapter_text"])
     hook_text: str | None = Field(default=None, max_length=FIELD_LIMITS["hook_text"])
     rule_hint: str = "any"
     cards: list[CardModel] = Field(min_length=3, max_length=3)

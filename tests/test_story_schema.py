@@ -130,9 +130,23 @@ def test_field_length_limits_rejected() -> None:
     )
     assert not result.ok
 
+    too_long_chapter = "а" * (FIELD_LIMITS["chapter_text"] + 1)
+    result = validate_payload(
+        _payload("2026-04", 30, days=[_day(1, chapter_text=too_long_chapter)])
+    )
+    assert not result.ok
+
     too_long_card = "а" * (FIELD_LIMITS["card_title"] + 1)
     payload = _payload("2026-04", 30)
     payload["days"][0]["cards"][0]["title"] = too_long_card
+    assert not validate_payload(payload).ok
+
+    payload = _payload("2026-04", 30)
+    payload["days"][0]["cards"][0]["description"] = "д" * (FIELD_LIMITS["card_description"] + 1)
+    assert not validate_payload(payload).ok
+
+    payload = _payload("2026-04", 30)
+    payload["days"][0]["cards"][0]["consequence"] = "с" * (FIELD_LIMITS["card_consequence"] + 1)
     assert not validate_payload(payload).ok
 
     payload = _payload("2026-04", 30)

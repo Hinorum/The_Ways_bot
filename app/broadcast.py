@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 POSITIONS = ("I", "II", "III")
 _MAX_TEXT_LEN = 3900
+_TITLE_CLAMP = 80
 _FORGET_MARKS = ("forbidden", "not found", "kicked", "deactivated", "migrated")
 
 
@@ -93,8 +94,9 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
     # Пути голосования читаются словами: заголовок + суть каждого.
     # (Раньше описания жили в подписях трёх фото-карт — генерацию карт
     # убрали, и текст снова стал носителем смысла развилки.)
-    # Компактный профиль: промпт просит карту не длиннее 210 знаков, а показ
-    # здесь даёт задел до 260 — текст развилки не режется многоточием.
+    # Компактный профиль: контракт кассеты просит карту не длиннее 260 знаков
+    # (поле description, схема ≤260), а показ здесь даёт ровно этот задел —
+    # текст развилки не режется многоточием.
     cards = "\n".join(
         f"{POSITIONS[card.position]}. {_clamp(card.title, 80)} — {_clamp(card.description, 260)}"
         for card in sorted(round_row.cards, key=lambda item: item.position)
@@ -120,10 +122,10 @@ async def status_text(round_row: Round, *, show_title: bool = True) -> str:
         deadline = f"🗳 Голосование до {voting_at:%H:%M} UTC — итоги и новый день придут сразу после"
     head = ""
     if show_title:
-        head += f"{day_mark(str(round_row.id))} {round_row.chapter_title}\n\n"
+        head += f"{day_mark(str(round_row.id))} {_clamp(round_row.chapter_title, _TITLE_CLAMP)}\n\n"
     # Глава кассеты живым текстом между заголовком и развилкой: сначала стая
-    # слышит день, потом видит три сцены. Обрезка по словам страхует короткий
-    # лимит (3900) — механика поста не вытеснится прозой.
+    # слышит день, потом видит три сцены. Жёсткий потолок кассеты — 700 знаков
+    # (schema.py), обрезка по словам ниже лишь страхует легаси-раунды без кассеты.
     story = (
         f"{_clamp(round_row.chapter_text, 1500)}\n\n"
         if getattr(round_row, "chapter_text", "")
