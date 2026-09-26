@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.models import (
     Card,
     Income,
@@ -304,15 +305,16 @@ async def close_voting(session: AsyncSession, round_row: Round) -> Round:
     )
     counts = await _tally_counts_for(session, round_row)
     round_row._tally_counts = counts
+    votes = round_row._tally_votes
     # Честная жеребьёвка: при ничьей снимаем энтропию мастерчейна TON и
     # фиксируем в дне ОДИН раз. heal/пересчёт используют ту же сохранённую
     # энтропию, исход не зависит от состояния сети в момент подсчёта.
-    if len(tied_positions(counts, round_row.win_rule)) > 1 and not round_row.tie_entropy:
+    if len(tied_positions(counts, round_row.win_rule, votes)) > 1 and not round_row.tie_entropy:
         from app.ton_pay import fetch_masterchain_entropy
 
         round_row.tie_entropy = await fetch_masterchain_entropy()
     seed = tie_seed(round_row)
-    round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed)
+    round_row.winner_card, _ = await _winner_and_tied(session, round_row, counts, seed, votes)
     await session.commit()
     return round_row
 
@@ -355,30 +357,34 @@ async def finish_tally(session: AsyncSession, round_row: Round) -> tuple[Round, 
         staked_counts = await count_stakes_for_tally(session, round_row.id)
     display_counts = vote_counts
     seed = tie_seed(round_row)
-    winner, tied = await _winner_and_tied(session, round_row, counts, seed)
+    winner, tied = await _winner_and_tied(session, round_row, counts, seed, vote_counts)
     tie_note: str | None = None
     if len(tied) > 1:
-        theater = _TIE_THEATER[
-            sum(ord(c) for c in seed) % len(_TIE_THEATER)
-        ].format(
-            paths=" и ".join(_ROMAN[p] for p in tied),
-            chosen=_ROMAN[winner],
+        path_names = " и ".join(_ROMAN[p] for p in tied)
+        chosen = _ROMAN[winner]
+        theater = _TIE_THEATER[sum(ord(c) for c in seed) % len(_TIE_THEATER)].format(
+            paths=path_names,
+            chosen=chosen,
         )
-        block_ref = ""
+        head = (
+            "Счёт Gram на сценах разделился" if used_stakes else "Голоса разделились"
+        )
         if round_row.tie_entropy:
-            seqno = round_row.tie_entropy.split(":", 1)[0]
-            block_ref = f" Жребий брошен блоком TON №{seqno}."
-        if used_stakes:
-            intro = (
-                f"Счёт Gram на сценах разделился ({' и '.join(_ROMAN[p] for p in tied)}) — "
-                f"жребий закона выбрал сцену {_ROMAN[winner]}."
-            )
-        else:
-            intro = (
-                f"Голоса разделились ({' и '.join(_ROMAN[p] for p in tied)}) — "
-                f"жребий закона выбрал сцену {_ROMAN[winner]}."
-            )
-        tie_note = f"{intro} {theater}{block_ref}"[:200]
+            try:
+                seqno, root_hash = round_row.tie_entropy.split(":", 1)
+                block_url = (
+                    "https://testnet.tonviewer.com" if settings.is_testnet else "https://tonviewer.com"
+                )
+                tie_note = (
+                    f"{head} ({path_names}) — жребий блока TON №{seqno} "
+                    f"(хеш …{root_hash[-4:]}): выпала сцена {chosen}. "
+                    f"Проверка: {block_url}/block/-1:8000000000000000:{seqno}"
+                )
+            except (TypeError, ValueError):
+                pass
+        if tie_note is None:
+            tie_note = f"{head} ({path_names}) — {theater}"
+        tie_note = tie_note[:200]
     if not round_row.cards:
         loaded = await get_round(session, round_row.id)
         if loaded is not None:
